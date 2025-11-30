@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 import warnings
 import argparse
 import json
+from utils_2digit import is_valid_2d_number, to_2d_str
 warnings.filterwarnings('ignore')
 
 try:
@@ -310,8 +311,8 @@ class PreciseBetEngine:
     def get_andar_bahar(self, shortlist):
         if not shortlist:
             return None, None
-        tens_digits = [int(str(num['number']).zfill(2)[0]) for num in shortlist]
-        ones_digits = [int(str(num['number']).zfill(2)[1]) for num in shortlist]
+        tens_digits = [int(to_2d_str(num['number'])[0]) for num in shortlist]
+        ones_digits = [int(to_2d_str(num['number'])[1]) for num in shortlist]
         tens_counter = Counter(tens_digits)
         ones_counter = Counter(ones_digits)
         def break_tie(counter, digit_list):
@@ -322,7 +323,7 @@ class PreciseBetEngine:
             positions = {}
             for candidate in candidates:
                 for pos, item in enumerate(shortlist):
-                    num_str = str(item['number']).zfill(2)
+                    num_str = to_2d_str(item['number'])
                     if (digit_list is tens_digits and int(num_str[0]) == candidate) or (digit_list is ones_digits and int(num_str[1]) == candidate):
                         positions[candidate] = pos
                         break
@@ -658,7 +659,7 @@ class PreciseBetEngine:
         top_numbers = shortlist[:2]
         for top_item in top_numbers:
             number = top_item['number']
-            mirror_num = int(str(number).zfill(2)[::-1])
+            mirror_num = int(to_2d_str(number)[::-1])
             if mirror_num == number or any(item['number'] == mirror_num for item in shortlist):
                 continue
             mirror_item = None
@@ -964,7 +965,7 @@ class PreciseBetEngine:
                     'date': target_date,
                     'slot': slot,
                     'layer_type': 'Main',
-                    'number_or_digit': f"{number:02d}",
+                    'number_or_digit': to_2d_str(number),
                     'tier': tier,
                     'stake': stake,
                     'potential_return': potential_return,
