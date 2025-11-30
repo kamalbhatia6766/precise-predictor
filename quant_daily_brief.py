@@ -17,6 +17,7 @@ import pandas as pd
 
 import quant_data_core
 import quant_paths
+from utils_2digit import is_valid_2d_number, to_2d_str
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 PERFORMANCE_DIR = quant_paths.get_performance_logs_dir()
@@ -280,10 +281,21 @@ def _find_column(columns: Iterable[str], keywords: List[str], require_all: bool 
 
 
 def _format_number(value: object) -> str:
+    """
+    Small helper: for clean display only.
+    Behaviour must remain equivalent to the old version:
+    - 0–99 → zero-padded 2-digit
+    - other values → simple str(value)
+    """
     try:
+        # First try the 0–99 2-digit world using central helper
+        if is_valid_2d_number(value):
+            return to_2d_str(value)
+
+        # Fallback to old behaviour style for anything else
         num = float(value)
         if num.is_integer():
-            return f"{int(num):02d}"
+            return str(int(num))
         return str(value)
     except Exception:
         return str(value)
