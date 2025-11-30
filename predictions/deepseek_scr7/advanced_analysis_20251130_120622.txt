@@ -1,0 +1,26 @@
+ADVANCED LEARNING PREDICTOR REPORT
+==================================================
+
+Report Generated: 2025-11-30 12:06:22
+Historical Records: 1288
+Data Range: 2025-01-01 to 2025-11-28
+
+ADVANCED FEATURES:
+• Model-based voting with rank weights
+• Cross-slot correlation learning
+• Opposite number pattern analysis
+• EV-based dynamic top-k selection
+• Performance log auto-update
+• Diagnostic score breakdown
+
+MODEL PERFORMANCE SUMMARY:
+  SCR1_FRBD: 0.300 (weight: 0.300)
+  SCR1_GZBD: 0.300 (weight: 0.300)
+  SCR1_GALI: 0.300 (weight: 0.300)
+  SCR1_DSWR: 0.300 (weight: 0.300)
+  SCR2_FRBD: 0.300 (weight: 0.300)
+  SCR2_GZBD: 0.300 (weight: 0.300)
+  SCR2_GALI: 0.300 (weight: 0.300)
+  SCR2_DSWR: 0.300 (weight: 0.300)
+  SCR3_FRBD: 0.300 (weight: 0.300)
+  SCR3_GZBD: 0.300 (weight: 0.300)

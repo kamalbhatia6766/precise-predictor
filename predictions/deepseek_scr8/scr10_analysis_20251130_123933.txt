@@ -1,0 +1,36 @@
+SCR10 ULTIMATE PREDICTOR - PATTERN ANALYSIS REPORT
+============================================================
+
+PATTERN PACKS USED:
+• Slot HOT packs: {'FRBD': [1, 3, 26, 44, 64, 71, 77, 82, 84], 'GZBD': [20, 23, 50, 52, 67, 89], 'GALI': [23, 28, 31, 32, 42, 57, 64, 72, 80, 94, 95], 'DSWR': [25, 36, 48, 55, 68, 70, 88, 94, 96]}
+• Global multi-slot HOT: [71, 96, 64, 94, 3, 57, 67, 68, 26, 70, 72, 80, 84, 28, 37, 42, 50, 63, 88, 98]
+• Digit bias patterns: {'FRBD': {'tens': [0, 7, 4, 6, 5], 'ones': [4, 2, 8, 0, 1], 'sums': [8, 10, 9, 6, 12]}, 'GZBD': {'tens': [9, 5, 2, 6, 8], 'ones': [3, 9, 0, 1, 4], 'sums': [9, 8, 6, 7, 11]}, 'GALI': {'tens': [6, 9, 4, 3, 2], 'ones': [2, 4, 1, 5, 7], 'sums': [10, 9, 5, 8, 12]}, 'DSWR': {'tens': [9, 5, 7, 8, 0], 'ones': [8, 6, 4, 3, 1], 'sums': [9, 7, 10, 8, 6]}}
+
+ADVANCED FEATURES:
+• Pattern-based scoring engine
+• HOT/COLD number weighting
+• Digit pattern bias integration
+• Cross-slot opposite analysis
+• Online source integration ready
+• Range diversity enforcement
+• Smart top-k selection
+
+PREDICTIONS SUMMARY:
+
+2025-11-29:
+  FRBD (Top-15): 03, 64, 84, 71, 82
+  GZBD (Top-15): 23, 50, 67, 52, 63
+  GALI (Top-15): 28, 42, 94, 72, 64
+  DSWR (Top-15): 25, 48, 70, 88, 96
+
+2025-11-30:
+  FRBD (Top-15): 03, 64, 84, 71, 82
+  GZBD (Top-15): 23, 50, 67, 52, 63
+  GALI (Top-15): 28, 42, 94, 72, 64
+  DSWR (Top-15): 25, 48, 70, 88, 96
+
+2025-12-01:
+  FRBD (Top-15): 03, 64, 84, 71, 82
+  GZBD (Top-15): 23, 50, 67, 52, 63
+  GALI (Top-15): 28, 42, 94, 72, 64
+  DSWR (Top-15): 25, 48, 70, 88, 96
