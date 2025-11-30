@@ -1,0 +1,44 @@
+ULTIMATE PREDICTION ANALYSIS REPORT - SCR6 ENHANCED
+============================================================
+
+Report Generated: 2025-11-30 10:43:58
+Total Records: 1288
+Data Range: 2025-01-01 to 2025-11-28
+
+ENHANCED PREDICTION METHODOLOGY:
+- 10-Strategy Ultimate Ensemble with Pattern Integration
+- Real LSTM with Bidirectional Layers (FIXED retracing)
+- XGBoost with Advanced Feature Engineering
+- LightGBM with Gradient Boosting
+- Neural Network with Deep Learning
+- Bayesian Probability Analysis
+- Confidence-Based Gap Analysis
+- Advanced Pattern Mining
+- Frequency Momentum Tracking
+- Multi-step Markov Chains
+- Statistical Forest Simulation
+
+ADVANCED PATTERN INTEGRATION:
+- 3-digit pattern families: 10
+- 4-digit pattern families: 10
+- 6-digit pattern families: 6 (including 164950/164950)
+- S40 special numbers: 40
+- Cross-slot pattern detection
+- Cross-script pattern learning
+- Pattern performance tracking
+
+CROSS-SCRIPT INTELLIGENCE:
+- Tracks when script predictions hit in other slots/dates
+- Learns script effectiveness patterns
+- Uses cross-script knowledge for boosting
+
+PARTIAL-DAY PREDICTION SCHEDULE:
+- Automatically detects incomplete days
+- Predicts missing slots for current day
+- Maintains future day predictions
+
+PERFORMANCE OPTIMIZATIONS:
+- Aggressive TensorFlow warning suppression
+- Optimized cross-script pattern loading
+- Efficient error handling in ML strategies
+- Organized folder structure with absolute paths
