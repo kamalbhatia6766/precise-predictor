@@ -7,6 +7,7 @@ UPDATED: Corrected S40, 164950 family, and full k×k digit-pack universe
 import itertools
 import math
 from typing import Set, List, Dict, Tuple
+from utils_2digit import to_2d_str
 
 # S40 numbers (as zero-padded strings) - CORRECTED
 S40_STRINGS = {
@@ -33,18 +34,18 @@ DIGIT_STRINGS = [str(d) for d in DIGITS]
 def is_s40(number) -> bool:
     """Check if a number is in S40 set."""
     try:
-        num_str = str(number).zfill(2)
+        num_str = to_2d_str(number)
         return num_str in S40_STRINGS
-    except (ValueError, TypeError):
+    except Exception:
         return False
 
 def is_164950_family(number) -> bool:
     """Check if a number belongs to 164950 family."""
     try:
-        num_str = str(number).zfill(2)
+        num_str = to_2d_str(number)
         d1, d2 = num_str[0], num_str[1]
         return (d1 in PACK_164950_FAMILY) and (d2 in PACK_164950_FAMILY)
-    except (ValueError, TypeError):
+    except Exception:
         return False
 
 def get_kxk_pack_count(k: int) -> int:
@@ -119,7 +120,7 @@ def get_digit_pack_tags(n: int) -> List[str]:
     try:
         num = int(n)
         if 0 <= num <= 99:
-            num_str = str(num).zfill(2)
+            num_str = to_2d_str(num)
             
             # Add S40 tag
             if is_s40(num):
