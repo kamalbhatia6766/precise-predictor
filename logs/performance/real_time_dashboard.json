@@ -1,0 +1,73 @@
+{
+  "timestamp": "2025-11-30T10:44:19.157774",
+  "metrics": {
+    "total_profit": 11550.0,
+    "total_stake": 2310.0,
+    "total_return": 13860.0,
+    "overall_roi": 500.0,
+    "recent_profit": 2260.0,
+    "recent_roi": 158.04195804195805,
+    "slot_performance": {
+      "FRBD": {
+        "total_profit": 3050.0,
+        "performance_tier": "HIGH"
+      },
+      "GZBD": {
+        "total_profit": -280.0,
+        "performance_tier": "LOW"
+      },
+      "GALI": {
+        "total_profit": 6055.0,
+        "performance_tier": "HIGH"
+      },
+      "DSWR": {
+        "total_profit": 2725.0,
+        "performance_tier": "HIGH"
+      }
+    },
+    "source_performance": {
+      "fusion": {
+        "total_profit": 1007.0,
+        "roi": 261.55844155844153
+      },
+      "scr9": {
+        "total_profit": 867.0,
+        "roi": 225.1948051948052
+      }
+    },
+    "risk_metrics": {
+      "current_bankroll": 11550.0,
+      "recommended_daily_risk": 300,
+      "max_single_loss": 100,
+      "sharpe_ratio": 0.6465816482041525,
+      "max_drawdown": -1.0,
+      "risk_adjustment": "MODERATE",
+      "daily_caps": {
+        "total": 300,
+        "single": 100
+      },
+      "risk_mode": "NORMAL"
+    }
+  },
+  "recommendations": [
+    {
+      "type": "PERFORMANCE",
+      "priority": "HIGH",
+      "message": "\ud83d\ude80 Excellent recent performance! ROI: 158.0%",
+      "action": "Consider increasing stakes gradually"
+    },
+    {
+      "type": "SLOT_OPTIMIZATION",
+      "priority": "MEDIUM",
+      "message": "\ud83c\udfaf High performing slots: FRBD, GALI, DSWR",
+      "action": "Focus resources on these slots"
+    },
+    {
+      "type": "SLOT_OPTIMIZATION",
+      "priority": "MEDIUM",
+      "message": "\ud83d\udcc9 Underperforming slots: GZBD",
+      "action": "Reduce exposure or review strategy"
+    }
+  ],
+  "system_status": "OPTIMAL"
+}

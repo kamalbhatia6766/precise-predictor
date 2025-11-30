@@ -1,0 +1,35 @@
+{
+  "timestamp": "2025-11-30T15:26:28.388126",
+  "window_days": 10,
+  "strategy_totals": {
+    "BASE": {
+      "total_stake": 2090.0,
+      "total_return": 13680.0,
+      "total_profit": 11590.0,
+      "roi_percent": 554.5454545454546
+    },
+    "DYNAMIC": {
+      "total_stake": 0,
+      "total_return": 0,
+      "total_profit": 0,
+      "roi_percent": 0
+    },
+    "FINAL": {
+      "total_stake": 0,
+      "total_return": 0,
+      "total_profit": 0,
+      "roi_percent": 0
+    }
+  },
+  "best_strategy_by_roi": "BASE",
+  "best_strategy_by_profit": "BASE",
+  "meta_recommended_strategy": "STRAT_S40_BOOST",
+  "meta_confidence_level": "HIGH",
+  "meta_risk_mode": "DEFENSIVE",
+  "meta_alignment": "OVERLAY_OK",
+  "meta_mismatch": false,
+  "meta_strategy": "STRAT_S40_BOOST",
+  "meta_confidence": "HIGH",
+  "base_roi_ratio": 5.545454545454546,
+  "overall_roi_ratio": 8.0
+}

@@ -1,0 +1,49 @@
+{
+  "analysis_timestamp": "2025-11-24T23:53:00.498365",
+  "total_patterns_analyzed": 6,
+  "high_performance_patterns": 6,
+  "top_recommendations": [
+    {
+      "type": "PATTERN_FOCUS",
+      "priority": "HIGH",
+      "action": "Increase weight for Tens_0",
+      "reason": "Core tens digit from recent pattern window",
+      "impact": "HIGH"
+    },
+    {
+      "type": "PATTERN_FOCUS",
+      "priority": "HIGH",
+      "action": "Increase weight for Tens_2",
+      "reason": "Core tens digit from recent pattern window",
+      "impact": "HIGH"
+    },
+    {
+      "type": "PATTERN_FOCUS",
+      "priority": "HIGH",
+      "action": "Increase weight for Tens_4",
+      "reason": "Core tens digit from recent pattern window",
+      "impact": "HIGH"
+    },
+    {
+      "type": "PATTERN_FOCUS",
+      "priority": "HIGH",
+      "action": "Increase weight for Ones_0",
+      "reason": "Core ones digit from recent pattern window",
+      "impact": "HIGH"
+    },
+    {
+      "type": "PATTERN_FOCUS",
+      "priority": "HIGH",
+      "action": "Increase weight for Ones_1",
+      "reason": "Core ones digit from recent pattern window",
+      "impact": "HIGH"
+    },
+    {
+      "type": "PATTERN_FOCUS",
+      "priority": "HIGH",
+      "action": "Increase weight for Ones_2",
+      "reason": "Core ones digit from recent pattern window",
+      "impact": "HIGH"
+    }
+  ]
+}

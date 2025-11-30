@@ -1,0 +1,143 @@
+{
+  "timestamp": "2025-11-29T15:00:38.023159",
+  "window_days": 30,
+  "golden_days": [
+    {
+      "date": "2025-11-09",
+      "profit": 3200.0
+    },
+    {
+      "date": "2025-11-10",
+      "profit": 3200.0
+    },
+    {
+      "date": "2025-11-11",
+      "profit": 2930.0
+    },
+    {
+      "date": "2025-11-12",
+      "profit": 2930.0
+    },
+    {
+      "date": "2025-11-08",
+      "profit": -40.0
+    }
+  ],
+  "scripts": {
+    "SCR5": {
+      "direct_hits": 0,
+      "cross_hits": 0,
+      "total_hits": 8,
+      "golden_score": 3.17,
+      "effectiveness": 160.0
+    },
+    "SCR6": {
+      "direct_hits": 0,
+      "cross_hits": 0,
+      "total_hits": 7,
+      "golden_score": 3.17,
+      "effectiveness": 140.0
+    },
+    "SCR7": {
+      "direct_hits": 0,
+      "cross_hits": 0,
+      "total_hits": 21,
+      "golden_score": 6.67,
+      "effectiveness": 420.0
+    },
+    "SCR8": {
+      "direct_hits": 0,
+      "cross_hits": 0,
+      "total_hits": 12,
+      "golden_score": 4.28,
+      "effectiveness": 240.0
+    },
+    "SCR9": {
+      "direct_hits": 0,
+      "cross_hits": 0,
+      "total_hits": 13,
+      "golden_score": 3.96,
+      "effectiveness": 260.0
+    }
+  },
+  "cross_slot_pairs": {},
+  "digits": {
+    "tens": [
+      3,
+      6,
+      0,
+      1,
+      5
+    ],
+    "ones": [
+      7,
+      2,
+      4,
+      5,
+      8
+    ],
+    "hero_numbers": [
+      32,
+      37,
+      67,
+      15,
+      64,
+      8,
+      44,
+      2,
+      54,
+      5
+    ],
+    "total_unique_numbers": 12,
+    "most_frequent_number": [
+      32,
+      11
+    ]
+  },
+  "day_of_week": {
+    "FRBD": {
+      "best_day": "Tuesday",
+      "hits": 8,
+      "all_days": {
+        "Tuesday": 8,
+        "Wednesday": 3,
+        "Monday": 2
+      }
+    },
+    "GZBD": {
+      "best_day": "Wednesday",
+      "hits": 7,
+      "all_days": {
+        "Wednesday": 7,
+        "Monday": 2
+      }
+    },
+    "GALI": {
+      "best_day": "Sunday",
+      "hits": 11,
+      "all_days": {
+        "Sunday": 11,
+        "Monday": 7,
+        "Wednesday": 2,
+        "Tuesday": 1
+      }
+    },
+    "DSWR": {
+      "best_day": "Sunday",
+      "hits": 8,
+      "all_days": {
+        "Sunday": 8,
+        "Saturday": 5,
+        "Tuesday": 4,
+        "Wednesday": 1
+      }
+    }
+  },
+  "summary": {
+    "total_golden_days": 5,
+    "total_profits": 12220.0,
+    "avg_profit_per_golden_day": 2444.0,
+    "top_script": "SCR7",
+    "top_cross_pattern": "NONE"
+  }
+}

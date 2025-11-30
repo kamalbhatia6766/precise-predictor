@@ -1,0 +1,56 @@
+{
+  "timestamp": "2025-11-30T19:27:55.300159",
+  "source": "PatternIntelligenceEnhanced + GoldenBlockAnalyzer",
+  "tens_core_base": [
+    9,
+    7,
+    4
+  ],
+  "ones_core_base": [
+    4,
+    2,
+    8
+  ],
+  "tens_core_golden": [
+    3,
+    6,
+    0
+  ],
+  "ones_core_golden": [
+    7,
+    2,
+    4
+  ],
+  "hero_numbers": [
+    32,
+    37,
+    67,
+    15,
+    64
+  ],
+  "cross_slot_pairs_top": [],
+  "boost_scripts": [
+    "SCR7",
+    "SCR8",
+    "SCR9"
+  ],
+  "time_boost_slots": {
+    "FRBD": {
+      "best_day": "Tuesday",
+      "boost_factor": 1.1
+    },
+    "GZBD": {
+      "best_day": "Wednesday",
+      "boost_factor": 1.1
+    },
+    "GALI": {
+      "best_day": "Sunday",
+      "boost_factor": 1.1
+    },
+    "DSWR": {
+      "best_day": "Sunday",
+      "boost_factor": 1.1
+    }
+  },
+  "notes": "Auto-generated adaptive pattern packs"
+}

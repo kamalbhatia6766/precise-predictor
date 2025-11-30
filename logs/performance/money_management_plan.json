@@ -1,0 +1,77 @@
+{
+  "timestamp": "2025-11-30T15:26:29.611055",
+  "kelly_stakes": {
+    "FRBD": {
+      "win_probability": 0.5454545454545454,
+      "avg_win": 545.0,
+      "avg_loss": -44.0,
+      "kelly_fraction": 0.17806505421184313,
+      "optimal_stake": 9,
+      "risk_level": "MEDIUM",
+      "risk_multiplier_applied": 0.7
+    },
+    "GZBD": {
+      "win_probability": 0.2727272727272727,
+      "avg_win": 35.0,
+      "avg_loss": -48.125,
+      "kelly_fraction": 0.0,
+      "optimal_stake": 0,
+      "risk_level": "LOW",
+      "risk_multiplier_applied": 0.7
+    },
+    "GALI": {
+      "win_probability": 0.2727272727272727,
+      "avg_win": 2165.0,
+      "avg_loss": -55.0,
+      "kelly_fraction": 0.08898803275246693,
+      "optimal_stake": 4,
+      "risk_level": "LOW",
+      "risk_multiplier_applied": 0.7
+    },
+    "DSWR": {
+      "win_probability": 0.2727272727272727,
+      "avg_win": 1055.0,
+      "avg_loss": -55.0,
+      "kelly_fraction": 0.08218440327445066,
+      "optimal_stake": 4,
+      "risk_level": "LOW",
+      "risk_multiplier_applied": 0.7
+    }
+  },
+  "bankroll_rules": {
+    "current_bankroll": 11550.0,
+    "recommended_daily_risk": 200,
+    "max_single_loss": 70,
+    "sharpe_ratio": 0.6465816482041525,
+    "max_drawdown": -1.0,
+    "risk_adjustment": "MODERATE",
+    "daily_caps": {
+      "total": 200,
+      "single": 70
+    },
+    "risk_mode": "DEFENSIVE"
+  },
+  "recommendations": [
+    {
+      "type": "RISK_MANAGEMENT",
+      "priority": "HIGH",
+      "action": "Apply DEFENSIVE risk mode: \u20b9200 daily cap, \u20b970 single max",
+      "reason": "Strategy recommendation: DEFENSIVE mode",
+      "impact": "HIGH"
+    }
+  ],
+  "daily_limits": {
+    "max_total_stake": 200,
+    "max_single_stake": 70,
+    "max_daily_loss": 200,
+    "target_daily_profit": 500
+  },
+  "risk_configuration": {
+    "risk_mode": "DEFENSIVE",
+    "risk_multiplier": 0.7,
+    "daily_caps": {
+      "total": 200,
+      "single": 70
+    }
+  }
+}

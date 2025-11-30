@@ -1,0 +1,183 @@
+{
+  "timestamp": "2025-11-24T23:53:12.219764",
+  "date": "20251124",
+  "phase": "PHASE_2_RISK_AUTOPILOT",
+  "components": {
+    "strategy": {
+      "timestamp": "2025-11-24T23:53:10.888166",
+      "window_days": 10,
+      "strategies": {
+        "BASE": {
+          "total_stake": 2090.0,
+          "total_return": 13680.0,
+          "total_profit": 11590.0,
+          "roi_percent": 554.5454545454546
+        },
+        "DYNAMIC": {
+          "total_stake": 1980.0,
+          "total_return": 12312.0,
+          "total_profit": 10332.0,
+          "roi_percent": 521.8181818181818
+        },
+        "CONVICTION": {
+          "total_stake": 1980.0,
+          "total_return": 12312.0,
+          "total_profit": 10332.0,
+          "roi_percent": 521.8181818181818
+        }
+      },
+      "recommended_strategy": "BASE",
+      "confidence_level": "LOW",
+      "risk_mode": "AGGRESSIVE",
+      "reason": "BASE has the highest ROI and profit over the last 10 days",
+      "notes": [
+        "BASE achieved 554.5% ROI with \u20b9+11,590 profit",
+        "Total stake for BASE: \u20b92,090"
+      ]
+    },
+    "money_management": {
+      "timestamp": "2025-11-24T23:53:05.003723",
+      "kelly_stakes": {
+        "FRBD": {
+          "win_probability": 0.5454545454545454,
+          "avg_win": 545.0,
+          "avg_loss": -44.0,
+          "kelly_fraction": 0.33069224353628013,
+          "optimal_stake": 18,
+          "risk_level": "HIGH",
+          "risk_multiplier_applied": 1.3
+        },
+        "GZBD": {
+          "win_probability": 0.2727272727272727,
+          "avg_win": 35.0,
+          "avg_loss": -48.125,
+          "kelly_fraction": 0.0,
+          "optimal_stake": 0,
+          "risk_level": "LOW",
+          "risk_multiplier_applied": 1.3
+        },
+        "GALI": {
+          "win_probability": 0.2727272727272727,
+          "avg_win": 2165.0,
+          "avg_loss": -55.0,
+          "kelly_fraction": 0.1652634893974386,
+          "optimal_stake": 9,
+          "risk_level": "MEDIUM",
+          "risk_multiplier_applied": 1.3
+        },
+        "DSWR": {
+          "win_probability": 0.2727272727272727,
+          "avg_win": 1055.0,
+          "avg_loss": -55.0,
+          "kelly_fraction": 0.1526281775096941,
+          "optimal_stake": 8,
+          "risk_level": "MEDIUM",
+          "risk_multiplier_applied": 1.3
+        }
+      },
+      "bankroll_rules": {
+        "current_bankroll": 11550.0,
+        "recommended_daily_risk": 500,
+        "max_single_loss": 150,
+        "sharpe_ratio": 0.6465816482041525,
+        "max_drawdown": -1.0,
+        "risk_adjustment": "MODERATE",
+        "daily_caps": {
+          "total": 500,
+          "single": 150
+        },
+        "risk_mode": "AGGRESSIVE"
+      },
+      "recommendations": [
+        {
+          "type": "STAKE_OPTIMIZATION",
+          "priority": "HIGH",
+          "action": "Apply Kelly stake for FRBD: \u20b918",
+          "reason": "Win probability: 54.5%, Kelly fraction: 0.331",
+          "impact": "HIGH"
+        },
+        {
+          "type": "RISK_MANAGEMENT",
+          "priority": "HIGH",
+          "action": "Apply AGGRESSIVE risk mode: \u20b9500 daily cap, \u20b9150 single max",
+          "reason": "Strategy recommendation: AGGRESSIVE mode",
+          "impact": "HIGH"
+        }
+      ],
+      "daily_limits": {
+        "max_total_stake": 500,
+        "max_single_stake": 150,
+        "max_daily_loss": 200,
+        "target_daily_profit": 500
+      },
+      "risk_configuration": {
+        "risk_mode": "AGGRESSIVE",
+        "risk_multiplier": 1.3,
+        "daily_caps": {
+          "total": 500,
+          "single": 150
+        }
+      }
+    },
+    "dynamic_stakes": {
+      "timestamp": "2025-11-24T23:53:02.623610",
+      "stakes": {
+        "FRBD": 54,
+        "GZBD": 18,
+        "GALI": 100,
+        "DSWR": 54
+      },
+      "total_daily_stake": 226,
+      "max_single_stake": 100,
+      "risk_level": "MEDIUM-HIGH",
+      "multiplier_notes": [
+        "Risk mode: AGGRESSIVE"
+      ],
+      "stake_configuration": {
+        "base_tiers": [
+          10,
+          20,
+          30,
+          50,
+          100
+        ],
+        "applied_multipliers": true
+      }
+    },
+    "loss_recovery": {
+      "analysis_date": "2025-11-24T23:53:09.745719",
+      "total_days_analyzed": 11,
+      "underperforming_slots": [
+        "GZBD",
+        "GALI",
+        "DSWR"
+      ],
+      "recent_loss_streak": 6,
+      "recovery_actions": [
+        "\ud83d\udea8 CRITICAL: 3+ consecutive loss days detected",
+        "Reduce total daily stake by 30% for next 3 days",
+        "Focus on BASE strategy only (disable DYNAMIC/CONVICTION)",
+        "\u26a0\ufe0f GZBD: Reduce stake by 25% (underperforming)",
+        "\u26a0\ufe0f GALI: Reduce stake by 25% (underperforming)",
+        "\u26a0\ufe0f DSWR: Reduce stake by 25% (underperforming)"
+      ],
+      "slot_recommendations": {
+        "GZBD": {
+          "total_profit": -280.0,
+          "loss_count": 7,
+          "suggested_action": "Reduce stake by 25-50% for next 3 days"
+        },
+        "GALI": {
+          "total_profit": 6055.0,
+          "loss_count": 8,
+          "suggested_action": "Reduce stake by 25-50% for next 3 days"
+        },
+        "DSWR": {
+          "total_profit": 2725.0,
+          "loss_count": 8,
+          "suggested_action": "Reduce stake by 25-50% for next 3 days"
+        }
+      }
+    }
+  }
+}

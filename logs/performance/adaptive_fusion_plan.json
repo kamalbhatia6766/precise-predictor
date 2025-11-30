@@ -1,0 +1,80 @@
+{
+  "timestamp": "2025-11-30T10:44:06.862981",
+  "source_weights": {
+    "fusion": {
+      "weight": 1.7,
+      "roi": 261.55844155844153,
+      "total_profit": 1007.0,
+      "avg_profit": 143.85714285714286,
+      "consistency": "HIGH"
+    },
+    "scr9": {
+      "weight": 1.7,
+      "roi": 225.1948051948052,
+      "total_profit": 867.0,
+      "avg_profit": 123.85714285714286,
+      "consistency": "HIGH"
+    }
+  },
+  "slot_optimization": {
+    "FRBD": {
+      "total_profit": 3050.0,
+      "preferred_source": "fusion",
+      "performance_tier": "HIGH"
+    },
+    "GZBD": {
+      "total_profit": -280.0,
+      "preferred_source": "scr9",
+      "performance_tier": "LOW"
+    },
+    "GALI": {
+      "total_profit": 6055.0,
+      "preferred_source": "scr9",
+      "performance_tier": "HIGH"
+    },
+    "DSWR": {
+      "total_profit": 2725.0,
+      "preferred_source": "fusion",
+      "performance_tier": "HIGH"
+    }
+  },
+  "overall_recommendations": [
+    {
+      "type": "SOURCE_OPTIMIZATION",
+      "priority": "HIGH",
+      "action": "Prioritize fusion source",
+      "reason": "ROI: 261.6% vs 261.6%",
+      "weight_adjustment": "Increase fusion weight by 0.3"
+    },
+    {
+      "type": "SLOT_FOCUS",
+      "priority": "HIGH",
+      "action": "Maximize focus on FRBD",
+      "reason": "Total profit: \u20b93050",
+      "weight_adjustment": "Double stake in FRBD"
+    },
+    {
+      "type": "SLOT_FOCUS",
+      "priority": "HIGH",
+      "action": "Maximize focus on GALI",
+      "reason": "Total profit: \u20b96055",
+      "weight_adjustment": "Double stake in GALI"
+    },
+    {
+      "type": "SLOT_FOCUS",
+      "priority": "HIGH",
+      "action": "Maximize focus on DSWR",
+      "reason": "Total profit: \u20b92725",
+      "weight_adjustment": "Double stake in DSWR"
+    }
+  ],
+  "optimal_configuration": {
+    "primary_source": "fusion",
+    "high_focus_slots": [
+      "FRBD",
+      "GALI",
+      "DSWR"
+    ],
+    "risk_adjustment": "AGGRESSIVE"
+  }
+}

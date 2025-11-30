@@ -1,0 +1,65 @@
+{
+  "timestamp": "2025-11-30T10:44:31.438433",
+  "confidence_scores": {
+    "FRBD": {
+      "confidence_score": 84.92857142857143,
+      "factors": {
+        "recent_profit": 88.57142857142857,
+        "pattern_alignment": 100,
+        "source_performance": 85,
+        "stake_recommendation": 50
+      },
+      "reasons": [
+        "strong_recent_profit",
+        "high_pattern_alignment",
+        "optimal_source_performance",
+        "very_high_confidence"
+      ]
+    },
+    "GZBD": {
+      "confidence_score": 48.02571428571429,
+      "factors": {
+        "recent_profit": 21.314285714285713,
+        "pattern_alignment": 100,
+        "source_performance": 35,
+        "stake_recommendation": 50
+      },
+      "reasons": [
+        "weak_recent_performance",
+        "high_pattern_alignment",
+        "suboptimal_source",
+        "medium_confidence"
+      ]
+    },
+    "GALI": {
+      "confidence_score": 52.26,
+      "factors": {
+        "recent_profit": 6.8999999999999995,
+        "pattern_alignment": 100,
+        "source_performance": 85,
+        "stake_recommendation": 50
+      },
+      "reasons": [
+        "weak_recent_performance",
+        "high_pattern_alignment",
+        "optimal_source_performance",
+        "medium_confidence"
+      ]
+    },
+    "DSWR": {
+      "confidence_score": 56.705714285714286,
+      "factors": {
+        "recent_profit": 18.014285714285712,
+        "pattern_alignment": 100,
+        "source_performance": 85,
+        "stake_recommendation": 50
+      },
+      "reasons": [
+        "weak_recent_performance",
+        "high_pattern_alignment",
+        "optimal_source_performance",
+        "medium_confidence"
+      ]
+    }
+  }
+}

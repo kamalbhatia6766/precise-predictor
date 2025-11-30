@@ -1,0 +1,11 @@
+{
+  "timestamp": "2025-11-30T10:44:28.943146",
+  "zone": "GREEN",
+  "current_zone": "GREEN",
+  "recommended_risk_mode": "AGGRESSIVE_BASE",
+  "rolling_roi": 800.0,
+  "last_7d_roi": 800.0,
+  "days_processed": 4,
+  "drawdown_flag": false,
+  "logic_version": "v1_simple_zone"
+}

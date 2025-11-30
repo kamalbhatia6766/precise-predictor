@@ -1,0 +1,296 @@
+{
+  "cross_patterns": {
+    "FRBD\u2192FRBD": {
+      "hits": 9,
+      "avg_rank": 1.6,
+      "script_count": 5,
+      "time_shift_distribution": {
+        "PREV_DAY": 9
+      },
+      "strength_score": 5.79
+    },
+    "GZBD\u2192GZBD": {
+      "hits": 17,
+      "avg_rank": 4.6,
+      "script_count": 6,
+      "time_shift_distribution": {
+        "PREV_DAY": 17
+      },
+      "strength_score": 3.66
+    },
+    "GZBD\u2192DSWR": {
+      "hits": 12,
+      "avg_rank": 4.2,
+      "script_count": 6,
+      "time_shift_distribution": {
+        "PREV_DAY": 12
+      },
+      "strength_score": 2.88
+    },
+    "DSWR\u2192DSWR": {
+      "hits": 11,
+      "avg_rank": 4.9,
+      "script_count": 4,
+      "time_shift_distribution": {
+        "PREV_DAY": 11
+      },
+      "strength_score": 2.24
+    },
+    "GALI\u2192GALI": {
+      "hits": 9,
+      "avg_rank": 5.6,
+      "script_count": 5,
+      "time_shift_distribution": {
+        "PREV_DAY": 9
+      },
+      "strength_score": 1.62
+    },
+    "DSWR\u2192GALI": {
+      "hits": 4,
+      "avg_rank": 4.0,
+      "script_count": 4,
+      "time_shift_distribution": {
+        "PREV_DAY": 4
+      },
+      "strength_score": 1.0
+    },
+    "GALI\u2192FRBD": {
+      "hits": 6,
+      "avg_rank": 7.5,
+      "script_count": 3,
+      "time_shift_distribution": {
+        "PREV_DAY": 6
+      },
+      "strength_score": 0.8
+    },
+    "GZBD\u2192FRBD": {
+      "hits": 4,
+      "avg_rank": 5.2,
+      "script_count": 2,
+      "time_shift_distribution": {
+        "PREV_DAY": 4
+      },
+      "strength_score": 0.76
+    },
+    "DSWR\u2192FRBD": {
+      "hits": 5,
+      "avg_rank": 8.8,
+      "script_count": 2,
+      "time_shift_distribution": {
+        "PREV_DAY": 5
+      },
+      "strength_score": 0.57
+    },
+    "GZBD\u2192GALI": {
+      "hits": 4,
+      "avg_rank": 7.2,
+      "script_count": 3,
+      "time_shift_distribution": {
+        "PREV_DAY": 4
+      },
+      "strength_score": 0.55
+    },
+    "FRBD\u2192GZBD": {
+      "hits": 3,
+      "avg_rank": 7.7,
+      "script_count": 2,
+      "time_shift_distribution": {
+        "PREV_DAY": 3
+      },
+      "strength_score": 0.39
+    },
+    "FRBD\u2192GALI": {
+      "hits": 4,
+      "avg_rank": 10.5,
+      "script_count": 2,
+      "time_shift_distribution": {
+        "PREV_DAY": 4
+      },
+      "strength_score": 0.38
+    },
+    "GALI\u2192GZBD": {
+      "hits": 3,
+      "avg_rank": 9.7,
+      "script_count": 2,
+      "time_shift_distribution": {
+        "PREV_DAY": 3
+      },
+      "strength_score": 0.31
+    },
+    "GALI\u2192DSWR": {
+      "hits": 3,
+      "avg_rank": 10.3,
+      "script_count": 2,
+      "time_shift_distribution": {
+        "PREV_DAY": 3
+      },
+      "strength_score": 0.29
+    },
+    "DSWR\u2192GZBD": {
+      "hits": 2,
+      "avg_rank": 10.0,
+      "script_count": 1,
+      "time_shift_distribution": {
+        "PREV_DAY": 2
+      },
+      "strength_score": 0.2
+    },
+    "FRBD\u2192DSWR": {
+      "hits": 2,
+      "avg_rank": 10.5,
+      "script_count": 1,
+      "time_shift_distribution": {
+        "PREV_DAY": 2
+      },
+      "strength_score": 0.19
+    }
+  },
+  "script_stats": {
+    "SCR1": {
+      "total_hits": 9,
+      "direct_hits": 0,
+      "cross_hits": 9,
+      "direct_effectiveness": 0.0,
+      "cross_effectiveness": 100.0,
+      "overall_effectiveness": 450.0,
+      "avg_rank": 3.0,
+      "performance_score": 150.0
+    },
+    "SCR6": {
+      "total_hits": 18,
+      "direct_hits": 0,
+      "cross_hits": 8,
+      "direct_effectiveness": 0.0,
+      "cross_effectiveness": 44.4,
+      "overall_effectiveness": 200.0,
+      "avg_rank": 2.5,
+      "performance_score": 80.0
+    },
+    "SCR5": {
+      "total_hits": 24,
+      "direct_hits": 0,
+      "cross_hits": 13,
+      "direct_effectiveness": 0.0,
+      "cross_effectiveness": 54.2,
+      "overall_effectiveness": 171.4,
+      "avg_rank": 2.7,
+      "performance_score": 64.29
+    },
+    "SCR7": {
+      "total_hits": 67,
+      "direct_hits": 0,
+      "cross_hits": 37,
+      "direct_effectiveness": 0.0,
+      "cross_effectiveness": 55.2,
+      "overall_effectiveness": 418.8,
+      "avg_rank": 7.8,
+      "performance_score": 53.85
+    },
+    "SCR9": {
+      "total_hits": 42,
+      "direct_hits": 3,
+      "cross_hits": 18,
+      "direct_effectiveness": 7.1,
+      "cross_effectiveness": 42.9,
+      "overall_effectiveness": 262.5,
+      "avg_rank": 5.1,
+      "performance_score": 51.28
+    },
+    "SCR8": {
+      "total_hits": 37,
+      "direct_hits": 0,
+      "cross_hits": 13,
+      "direct_effectiveness": 0.0,
+      "cross_effectiveness": 35.1,
+      "overall_effectiveness": 246.7,
+      "avg_rank": 6.3,
+      "performance_score": 39.0
+    },
+    "SCR3": {
+      "total_hits": 1,
+      "direct_hits": 0,
+      "cross_hits": 0,
+      "direct_effectiveness": 0.0,
+      "cross_effectiveness": 0.0,
+      "overall_effectiveness": 100.0,
+      "avg_rank": 4.0,
+      "performance_score": 25.0
+    }
+  },
+  "time_patterns": {
+    "FRBD": {
+      "best_day": "Wednesday",
+      "best_day_hits": 17,
+      "day_distribution": {
+        "Wednesday": 17,
+        "Tuesday": 10,
+        "Thursday": 10,
+        "Saturday": 5,
+        "Monday": 3,
+        "Friday": 2
+      },
+      "time_shift_distribution": {
+        "PREV_DAY": 24,
+        "SAME_DAY": 1
+      },
+      "total_hits": 47,
+      "hit_rate": 391.7
+    },
+    "GZBD": {
+      "best_day": "Wednesday",
+      "best_day_hits": 14,
+      "day_distribution": {
+        "Wednesday": 14,
+        "Saturday": 9,
+        "Monday": 7,
+        "Sunday": 6,
+        "Tuesday": 6,
+        "Friday": 3
+      },
+      "time_shift_distribution": {
+        "PREV_DAY": 25,
+        "SAME_DAY": 1
+      },
+      "total_hits": 45,
+      "hit_rate": 409.1
+    },
+    "GALI": {
+      "best_day": "Saturday",
+      "best_day_hits": 14,
+      "day_distribution": {
+        "Saturday": 14,
+        "Sunday": 13,
+        "Monday": 8,
+        "Tuesday": 6,
+        "Wednesday": 3,
+        "Thursday": 1,
+        "Friday": 1
+      },
+      "time_shift_distribution": {
+        "PREV_DAY": 21
+      },
+      "total_hits": 46,
+      "hit_rate": 383.3
+    },
+    "DSWR": {
+      "best_day": "Saturday",
+      "best_day_hits": 17,
+      "day_distribution": {
+        "Saturday": 17,
+        "Friday": 15,
+        "Sunday": 11,
+        "Monday": 8,
+        "Tuesday": 4,
+        "Thursday": 4,
+        "Wednesday": 1
+      },
+      "time_shift_distribution": {
+        "PREV_DAY": 28,
+        "SAME_DAY": 1
+      },
+      "total_hits": 60,
+      "hit_rate": 500.0
+    }
+  },
+  "timestamp": "2025-11-30T19:27:55.300159"
+}

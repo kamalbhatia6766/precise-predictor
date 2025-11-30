@@ -1,0 +1,23 @@
+{
+  "timestamp": "2025-11-30T15:26:24.232052",
+  "recommended_strategy": "STRAT_S40_BOOST",
+  "strategy": "STRAT_S40_BOOST",
+  "confidence_level": "HIGH",
+  "confidence": "HIGH",
+  "risk_mode": "DEFENSIVE",
+  "top_family": "S40",
+  "top_family_hit_rate": 52.02,
+  "source_files": [
+    "pattern_intelligence.json",
+    "quant_reality_pnl.json",
+    "reality_check_summary.json"
+  ],
+  "logic_version": "v2_reality_gated",
+  "reason": "S40 pattern strong with sufficient sample and positive base ROI",
+  "metrics": {
+    "s40_hit_rate": 0.5202020202020202,
+    "s40_hits": 103,
+    "base_roi": 5.545454545454546,
+    "overall_roi": 8.0
+  }
+}

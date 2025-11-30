@@ -1,0 +1,50 @@
+{
+  "timestamp": "2025-11-30T10:44:44.233600",
+  "backtest_window_days": 120,
+  "strategies_analyzed": 2,
+  "total_days_analyzed": 22,
+  "top_profit_days": [
+    {
+      "date": "2025-11-09",
+      "profit": 3200.0
+    },
+    {
+      "date": "2025-11-10",
+      "profit": 3200.0
+    },
+    {
+      "date": "2025-11-11",
+      "profit": 2930.0
+    },
+    {
+      "date": "2025-11-12",
+      "profit": 2930.0
+    },
+    {
+      "date": "2025-11-08",
+      "profit": -40.0
+    },
+    {
+      "date": "2025-11-14",
+      "profit": -40.0
+    },
+    {
+      "date": "2025-11-17",
+      "profit": -110.0
+    },
+    {
+      "date": "2025-11-13",
+      "profit": -130.0
+    },
+    {
+      "date": "2025-11-15",
+      "profit": -130.0
+    },
+    {
+      "date": "2025-11-16",
+      "profit": -130.0
+    }
+  ],
+  "best_strategy_by_roi": "DYNAMIC",
+  "best_strategy_by_profit": "BASE"
+}

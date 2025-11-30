@@ -1,0 +1,132 @@
+================================================================================
+           PREDICTION EXPLAINABILITY REPORT
+================================================================================
+
+Generated: 2025-11-23 23:33:13
+Source: ultimate_predictions_20251123_233308.xlsx
+
+
+FRBD PREDICTIONS:
+----------------------------------------
+
+#1: 03
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Good prediction history (72.2% inclusion rate) | Based on 317 historical records | Low range (0-33)
+
+#2: 64
+   Reasons: 🎯 Top-tier prediction (rank #2) | Good prediction history (61.1% inclusion rate) | High frequency (hot number) | Based on 317 historical records | Mid range (34-66)
+
+#3: 84
+   Reasons: 🎯 Top-tier prediction (rank #3) | Good prediction history (38.9% inclusion rate) | High frequency (hot number) | Based on 317 historical records | High range (67-99)
+
+#4: 44
+   Reasons: 🎯 Top-tier prediction (rank #4) | Recent hit on 2025-11-12 | Good prediction history (100.0% inclusion rate) | High frequency (hot number) | Based on 317 historical records | Mid range (34-66)
+
+#5: 37
+   Reasons: 🎯 Top-tier prediction (rank #5) | Good prediction history (61.1% inclusion rate) | Based on 317 historical records | Mid range (34-66)
+
+GZBD PREDICTIONS:
+----------------------------------------
+
+#1: 89
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Good prediction history (100.0% inclusion rate) | High frequency (hot number) | Based on 316 historical records | High range (67-99)
+
+#2: 05
+   Reasons: 🎯 Top-tier prediction (rank #2) | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#3: 67
+   Reasons: 🎯 Top-tier prediction (rank #3) | Good prediction history (100.0% inclusion rate) | High frequency (hot number) | Based on 316 historical records | High range (67-99)
+
+#4: 50
+   Reasons: 🎯 Top-tier prediction (rank #4) | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Opposite of 05 | Complementary number pairing | Mirror number strategy | Mid range (34-66)
+
+#5: 19
+   Reasons: 🎯 Top-tier prediction (rank #5) | Good prediction history (83.3% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#1: 19
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Good prediction history (83.3% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#2: 52
+   Reasons: 🎯 Top-tier prediction (rank #2) | Good prediction history (94.4% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#3: 89
+   Reasons: 🎯 Top-tier prediction (rank #3) | Good prediction history (100.0% inclusion rate) | High frequency (hot number) | Based on 316 historical records | High range (67-99)
+
+#4: 67
+   Reasons: 🎯 Top-tier prediction (rank #4) | Good prediction history (100.0% inclusion rate) | High frequency (hot number) | Based on 316 historical records | High range (67-99)
+
+#5: 50
+   Reasons: 🎯 Top-tier prediction (rank #5) | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+GALI PREDICTIONS:
+----------------------------------------
+
+#1: 54
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Good prediction history (72.2% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#2: 39
+   Reasons: 🎯 Top-tier prediction (rank #2) | Good prediction history (50.0% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#3: 05
+   Reasons: 🎯 Top-tier prediction (rank #3) | Recent hit on 2025-11-12 | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#4: 72
+   Reasons: 🎯 Top-tier prediction (rank #4) | Good prediction history (83.3% inclusion rate) | High frequency (hot number) | Based on 316 historical records | High range (67-99)
+
+#5: 32
+   Reasons: 🎯 Top-tier prediction (rank #5) | Recent hit on 2025-11-09 | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#1: 05
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Recent hit on 2025-11-12 | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#2: 54
+   Reasons: 🎯 Top-tier prediction (rank #2) | Good prediction history (72.2% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#3: 72
+   Reasons: 🎯 Top-tier prediction (rank #3) | Good prediction history (83.3% inclusion rate) | High frequency (hot number) | Based on 316 historical records | High range (67-99)
+
+#4: 39
+   Reasons: 🎯 Top-tier prediction (rank #4) | Good prediction history (50.0% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#5: 32
+   Reasons: 🎯 Top-tier prediction (rank #5) | Recent hit on 2025-11-09 | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+DSWR PREDICTIONS:
+----------------------------------------
+
+#1: 25
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#2: 54
+   Reasons: 🎯 Top-tier prediction (rank #2) | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#3: 32
+   Reasons: 🎯 Top-tier prediction (rank #3) | Good prediction history (16.7% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#4: 89
+   Reasons: 🎯 Top-tier prediction (rank #4) | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | High range (67-99)
+
+#5: 27
+   Reasons: 🎯 Top-tier prediction (rank #5) | Good prediction history (22.2% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#1: 25
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#2: 54
+   Reasons: 🎯 Top-tier prediction (rank #2) | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#3: 89
+   Reasons: 🎯 Top-tier prediction (rank #3) | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | High range (67-99)
+
+#4: 32
+   Reasons: 🎯 Top-tier prediction (rank #4) | Good prediction history (16.7% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#5: 27
+   Reasons: 🎯 Top-tier prediction (rank #5) | Good prediction history (22.2% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+================================================================================
+SUMMARY:
+----------------------------------------
+FRBD: 03, 64, 84, 44, 37 | Avg reasons: 4.7
+GZBD: 89, 05, 67, 50, 19 | Avg reasons: 4.8
+GALI: 54, 39, 05, 72, 32 | Avg reasons: 4.6
+DSWR: 25, 54, 32, 89, 27 | Avg reasons: 4.8

@@ -1,0 +1,35 @@
+{
+  "timestamp": "2025-11-30T15:26:32.057407",
+  "environment_score": 63,
+  "mode": "GO_LIVE_LIGHT",
+  "stake_multiplier": 0.5,
+  "recommended_real_total_stake": 110.0,
+  "base_final_total_stake": 220.0,
+  "window_days_reality": 10,
+  "window_days_strategy": 0,
+  "base_roi": 554.5454545454546,
+  "meta_strategy": "STRAT_S40_BOOST",
+  "reality_best_strategy_by_roi": "BASE",
+  "meta_confidence_level": "HIGH",
+  "meta_risk_mode": "DEFENSIVE",
+  "score_components": {
+    "baseline_from_roi": 75,
+    "bonus_meta": 0,
+    "bonus_confidence": 5,
+    "audit_adjust": -17,
+    "base_roi": 554.5454545454546,
+    "avg_confidence_score": 60.480000000000004,
+    "count_high_slots": 1,
+    "total_audited_dates": 16,
+    "missing_final_plan_days": 11,
+    "full_ok_days": 0,
+    "no_pnl_days": 5
+  },
+  "notes": [
+    "BASE ROI over last 10 days: 554.5%",
+    "Meta recommended strategy: STRAT_S40_BOOST",
+    "Reality best-by-ROI: BASE",
+    "Audit: 0 full OK days, 11 days missing final plan",
+    "Medium confidence environment - reduced stake recommended"
+  ]
+}

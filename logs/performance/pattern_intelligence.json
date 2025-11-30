@@ -1,0 +1,75 @@
+{
+  "pattern_stats": {
+    "S40": {
+      "hits": 103,
+      "opportunities": 198,
+      "hit_rate": 52.02020202020202
+    },
+    "PACK_164950": {
+      "hits": 65,
+      "opportunities": 198,
+      "hit_rate": 32.82828282828283
+    },
+    "PACK_00_19": {
+      "hits": 56,
+      "opportunities": 198,
+      "hit_rate": 28.28282828282828
+    },
+    "PACK_20_39": {
+      "hits": 59,
+      "opportunities": 198,
+      "hit_rate": 29.797979797979796
+    },
+    "PACK_40_59": {
+      "hits": 19,
+      "opportunities": 198,
+      "hit_rate": 9.595959595959595
+    },
+    "PACK_60_79": {
+      "hits": 58,
+      "opportunities": 198,
+      "hit_rate": 29.292929292929294
+    },
+    "PACK_80_99": {
+      "hits": 6,
+      "opportunities": 198,
+      "hit_rate": 3.0303030303030303
+    }
+  },
+  "pattern_weights": {
+    "S40": 1.5,
+    "PACK_164950": 1.5,
+    "PACK_00_19": 1.5,
+    "PACK_20_39": 1.5,
+    "PACK_40_59": 1.2,
+    "PACK_60_79": 1.5,
+    "PACK_80_99": 1.0
+  },
+  "timestamp": "2025-11-30T19:27:54.077220",
+  "pack_universe_stats": {
+    "k_packs": {
+      "2": 2025,
+      "3": 14400,
+      "4": 44100,
+      "5": 63504,
+      "6": 44100
+    },
+    "total_digit_packs": 168129,
+    "special_packs": {
+      "S40": 1,
+      "PACK_164950": 1
+    },
+    "total_entities": 168130,
+    "note": "PACK_164950 is one of the 6x6 packs but also tracked as special."
+  },
+  "core_families_analyzed": [
+    "S40",
+    "PACK_164950",
+    "PACK_00_19",
+    "PACK_20_39",
+    "PACK_40_59",
+    "PACK_60_79",
+    "PACK_80_99"
+  ],
+  "total_hits_processed": 366
+}

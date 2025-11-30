@@ -1,0 +1,114 @@
+{
+  "timestamp": "2025-11-30T19:27:55.300159",
+  "s40_enabled": true,
+  "digit_packs_enabled": true,
+  "memory_bonus_enabled": true,
+  "cross_slot_boost": {
+    "FRBD_FRBD": 0.28950000000000004,
+    "GZBD_GZBD": 0.18300000000000002,
+    "GZBD_DSWR": 0.144,
+    "DSWR_DSWR": 0.11200000000000002,
+    "GALI_GALI": 0.08100000000000002,
+    "DSWR_GALI": 0.05,
+    "GALI_FRBD": 0.04000000000000001,
+    "GZBD_FRBD": 0.038000000000000006,
+    "DSWR_FRBD": 0.028499999999999998,
+    "GZBD_GALI": 0.027500000000000004
+  },
+  "script_weights": {
+    "SCR1": 2.0,
+    "SCR6": 2.0,
+    "SCR5": 2.0,
+    "SCR7": 2.0,
+    "SCR9": 2.0
+  },
+  "time_awareness": {
+    "FRBD": {
+      "preferred_day": "Wednesday",
+      "boost_factor": 1.1,
+      "hit_rate": 391.7
+    },
+    "GZBD": {
+      "preferred_day": "Wednesday",
+      "boost_factor": 1.1,
+      "hit_rate": 409.1
+    },
+    "GALI": {
+      "preferred_day": "Saturday",
+      "boost_factor": 1.1,
+      "hit_rate": 383.3
+    },
+    "DSWR": {
+      "preferred_day": "Saturday",
+      "boost_factor": 1.1,
+      "hit_rate": 500.0
+    }
+  },
+  "digit_preferences": {},
+  "adaptive_packs_integrated": true,
+  "pattern_weights": {
+    "s40_bonus": 0.2,
+    "digit_pack_bonus": 0.05,
+    "max_pattern_bonus": 0.5,
+    "cross_slot_bonus": 0.15,
+    "golden_digit_boost": 0.08,
+    "hero_number_boost": 0.1,
+    "time_awareness_boost": 0.05
+  },
+  "adaptive_packs": {
+    "timestamp": "2025-11-30T19:27:55.300159",
+    "source": "PatternIntelligenceEnhanced + GoldenBlockAnalyzer",
+    "tens_core_base": [
+      9,
+      7,
+      4
+    ],
+    "ones_core_base": [
+      4,
+      2,
+      8
+    ],
+    "tens_core_golden": [
+      3,
+      6,
+      0
+    ],
+    "ones_core_golden": [
+      7,
+      2,
+      4
+    ],
+    "hero_numbers": [
+      32,
+      37,
+      67,
+      15,
+      64
+    ],
+    "cross_slot_pairs_top": [],
+    "boost_scripts": [
+      "SCR7",
+      "SCR8",
+      "SCR9"
+    ],
+    "time_boost_slots": {
+      "FRBD": {
+        "best_day": "Tuesday",
+        "boost_factor": 1.1
+      },
+      "GZBD": {
+        "best_day": "Wednesday",
+        "boost_factor": 1.1
+      },
+      "GALI": {
+        "best_day": "Sunday",
+        "boost_factor": 1.1
+      },
+      "DSWR": {
+        "best_day": "Sunday",
+        "boost_factor": 1.1
+      }
+    },
+    "notes": "Auto-generated adaptive pattern packs"
+  }
+}

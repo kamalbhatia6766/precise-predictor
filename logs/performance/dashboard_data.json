@@ -1,0 +1,59 @@
+{
+  "performance": {
+    "timestamp": "2025-11-30T19:27:59.377661",
+    "overall": {
+      "total_stake": 990.0,
+      "total_return": 6840.0,
+      "total_pnl": 5850.0,
+      "overall_roi": 590.9090909090909,
+      "days_processed": 5,
+      "date_range": {
+        "start": "2025-11-26",
+        "end": "2025-11-30"
+      }
+    },
+    "recent_7d": {
+      "stake": 990,
+      "return": 6840,
+      "roi": 590.9090909090909,
+      "winning_streak": 0
+    },
+    "best_slot": {
+      "slot": "GZBD",
+      "total_stake": 220.0,
+      "total_return": 3240.0,
+      "pnl": 3020.0,
+      "main_hit": 1,
+      "andar_hit": 1,
+      "bahar_hit": 0,
+      "roi_pct": 1372.73
+    },
+    "worst_slot": {
+      "slot": "GALI",
+      "total_stake": 275.0,
+      "total_return": 180.0,
+      "pnl": -95.0,
+      "main_hit": 0,
+      "andar_hit": 1,
+      "bahar_hit": 1,
+      "roi_pct": -34.55
+    },
+    "best_layer": {
+      "layer_type": "Main",
+      "stake": 630.0,
+      "return": 6300.0,
+      "pnl": 5670.0,
+      "hit": 2,
+      "roi_pct": 900.0
+    }
+  },
+  "insights": {
+    "timestamp": "2025-11-30T19:27:59.377661",
+    "recommendations": [],
+    "warnings": [
+      "System is currently unprofitable (0.0%)"
+    ],
+    "opportunities": []
+  },
+  "export_time": "2025-11-30T19:27:59.377661"
+}

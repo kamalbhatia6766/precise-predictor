@@ -1,0 +1,87 @@
+================================================================================
+           PREDICTION EXPLAINABILITY REPORT
+================================================================================
+
+Generated: 2025-11-23 17:30:49
+Source: ultimate_predictions_20251123_173047.xlsx
+
+
+FRBD PREDICTIONS:
+----------------------------------------
+
+#1: 32
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Good prediction history (38.9% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#2: 44
+   Reasons: 🎯 Top-tier prediction (rank #2) | Recent hit on 2025-11-12 | Good prediction history (100.0% inclusion rate) | High frequency (hot number) | Based on 316 historical records | Opposite of 44 | Complementary number pairing | Mirror number strategy | Mid range (34-66)
+
+#3: 76
+   Reasons: 🎯 Top-tier prediction (rank #3) | Good prediction history (27.8% inclusion rate) | Based on 316 historical records | High range (67-99)
+
+#4: 41
+   Reasons: 🎯 Top-tier prediction (rank #4) | Recent hit on 2025-11-20 | Good prediction history (33.3% inclusion rate) | Recently appeared | Based on 316 historical records | Mid range (34-66)
+
+#5: 11
+   Reasons: 🎯 Top-tier prediction (rank #5) | Good prediction history (44.4% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+GZBD PREDICTIONS:
+----------------------------------------
+
+#1: 20
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Recent hit on 2025-11-19 | Good prediction history (77.8% inclusion rate) | High frequency (hot number) | Recently appeared | Based on 316 historical records | Low range (0-33)
+
+#2: 50
+   Reasons: 🎯 Top-tier prediction (rank #2) | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#3: 67
+   Reasons: 🎯 Top-tier prediction (rank #3) | Good prediction history (100.0% inclusion rate) | High frequency (hot number) | Based on 316 historical records | High range (67-99)
+
+#4: 19
+   Reasons: 🎯 Top-tier prediction (rank #4) | Good prediction history (83.3% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+#5: 02
+   Reasons: 🎯 Top-tier prediction (rank #5) | Recent hit on 2025-11-17 | Good prediction history (100.0% inclusion rate) | Recently appeared | Based on 316 historical records | Opposite of 20 | Complementary number pairing | Mirror number strategy | Low range (0-33)
+
+GALI PREDICTIONS:
+----------------------------------------
+
+#1: 14
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Recent hit on 2025-11-19 | Good prediction history (27.8% inclusion rate) | Recently appeared | Based on 316 historical records | Low range (0-33)
+
+#2: 42
+   Reasons: 🎯 Top-tier prediction (rank #2) | Good prediction history (77.8% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#3: 72
+   Reasons: 🎯 Top-tier prediction (rank #3) | Good prediction history (83.3% inclusion rate) | High frequency (hot number) | Based on 316 historical records | High range (67-99)
+
+#4: 85
+   Reasons: 🎯 Top-tier prediction (rank #4) | Recent hit on 2025-11-18 | Good prediction history (27.8% inclusion rate) | Recently appeared | Based on 316 historical records | High range (67-99)
+
+#5: 32
+   Reasons: 🎯 Top-tier prediction (rank #5) | Recent hit on 2025-11-09 | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Low range (0-33)
+
+DSWR PREDICTIONS:
+----------------------------------------
+
+#1: 00
+   Reasons: 🏆 TOP PREDICTION - Highest ensemble score | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Opposite of 00 | Complementary number pairing | Mirror number strategy | Low range (0-33)
+
+#2: 37
+   Reasons: 🎯 Top-tier prediction (rank #2) | Recent hit on 2025-11-11 | Good prediction history (100.0% inclusion rate) | Based on 316 historical records | Mid range (34-66)
+
+#3: 68
+   Reasons: 🎯 Top-tier prediction (rank #3) | Recent hit on 2025-11-22 | Good prediction history (100.0% inclusion rate) | High frequency (hot number) | Recently appeared | Based on 316 historical records | High range (67-99)
+
+#4: 51
+   Reasons: 🎯 Top-tier prediction (rank #4) | Recent hit on 2025-11-15 | Good prediction history (55.6% inclusion rate) | Recently appeared | Based on 316 historical records | Mid range (34-66)
+
+#5: 96
+   Reasons: 🎯 Top-tier prediction (rank #5) | Good prediction history (83.3% inclusion rate) | High frequency (hot number) | Based on 316 historical records | High range (67-99)
+
+================================================================================
+SUMMARY:
+----------------------------------------
+FRBD: 32, 44, 76, 41, 11 | Avg reasons: 4.9
+GZBD: 20, 50, 67, 19, 02 | Avg reasons: 5.2
+GALI: 14, 42, 72, 85, 32 | Avg reasons: 5.4
+DSWR: 00, 37, 68, 51, 96 | Avg reasons: 5.0

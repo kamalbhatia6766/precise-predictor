@@ -1,0 +1,523 @@
+{
+  "timestamp": "2025-11-25T18:22:21.321898",
+  "date": "20251125",
+  "phase": "PHASE_3_QUANTUM_MODE",
+  "components": {
+    "strategy": {
+      "timestamp": "2025-11-25T18:22:19.989153",
+      "window_days": 10,
+      "strategies": {
+        "BASE": {
+          "total_stake": 2090.0,
+          "total_return": 13680.0,
+          "total_profit": 11590.0,
+          "roi_percent": 554.5454545454546
+        },
+        "DYNAMIC": {
+          "total_stake": 1980.0,
+          "total_return": 12312.0,
+          "total_profit": 10332.0,
+          "roi_percent": 521.8181818181818
+        },
+        "CONVICTION": {
+          "total_stake": 1980.0,
+          "total_return": 12312.0,
+          "total_profit": 10332.0,
+          "roi_percent": 521.8181818181818
+        }
+      },
+      "recommended_strategy": "BASE",
+      "confidence_level": "LOW",
+      "risk_mode": "AGGRESSIVE",
+      "reason": "BASE has the highest ROI and profit over the last 10 days",
+      "notes": [
+        "BASE achieved 554.5% ROI with \u20b9+11,590 profit",
+        "Total stake for BASE: \u20b92,090"
+      ]
+    },
+    "money_management": {
+      "timestamp": "2025-11-25T18:22:14.123828",
+      "kelly_stakes": {
+        "FRBD": {
+          "win_probability": 0.5454545454545454,
+          "avg_win": 545.0,
+          "avg_loss": -44.0,
+          "kelly_fraction": 0.33069224353628013,
+          "optimal_stake": 18,
+          "risk_level": "HIGH",
+          "risk_multiplier_applied": 1.3
+        },
+        "GZBD": {
+          "win_probability": 0.2727272727272727,
+          "avg_win": 35.0,
+          "avg_loss": -48.125,
+          "kelly_fraction": 0.0,
+          "optimal_stake": 0,
+          "risk_level": "LOW",
+          "risk_multiplier_applied": 1.3
+        },
+        "GALI": {
+          "win_probability": 0.2727272727272727,
+          "avg_win": 2165.0,
+          "avg_loss": -55.0,
+          "kelly_fraction": 0.1652634893974386,
+          "optimal_stake": 9,
+          "risk_level": "MEDIUM",
+          "risk_multiplier_applied": 1.3
+        },
+        "DSWR": {
+          "win_probability": 0.2727272727272727,
+          "avg_win": 1055.0,
+          "avg_loss": -55.0,
+          "kelly_fraction": 0.1526281775096941,
+          "optimal_stake": 8,
+          "risk_level": "MEDIUM",
+          "risk_multiplier_applied": 1.3
+        }
+      },
+      "bankroll_rules": {
+        "current_bankroll": 11550.0,
+        "recommended_daily_risk": 500,
+        "max_single_loss": 150,
+        "sharpe_ratio": 0.6465816482041525,
+        "max_drawdown": -1.0,
+        "risk_adjustment": "MODERATE",
+        "daily_caps": {
+          "total": 500,
+          "single": 150
+        },
+        "risk_mode": "AGGRESSIVE"
+      },
+      "recommendations": [
+        {
+          "type": "STAKE_OPTIMIZATION",
+          "priority": "HIGH",
+          "action": "Apply Kelly stake for FRBD: \u20b918",
+          "reason": "Win probability: 54.5%, Kelly fraction: 0.331",
+          "impact": "HIGH"
+        },
+        {
+          "type": "RISK_MANAGEMENT",
+          "priority": "HIGH",
+          "action": "Apply AGGRESSIVE risk mode: \u20b9500 daily cap, \u20b9150 single max",
+          "reason": "Strategy recommendation: AGGRESSIVE mode",
+          "impact": "HIGH"
+        }
+      ],
+      "daily_limits": {
+        "max_total_stake": 500,
+        "max_single_stake": 150,
+        "max_daily_loss": 200,
+        "target_daily_profit": 500
+      },
+      "risk_configuration": {
+        "risk_mode": "AGGRESSIVE",
+        "risk_multiplier": 1.3,
+        "daily_caps": {
+          "total": 500,
+          "single": 150
+        }
+      }
+    },
+    "dynamic_stakes": {
+      "timestamp": "2025-11-25T18:22:11.765602",
+      "stakes": {
+        "FRBD": 48,
+        "GZBD": 13,
+        "GALI": 100,
+        "DSWR": 48
+      },
+      "total_daily_stake": 209,
+      "max_single_stake": 100,
+      "risk_level": "MEDIUM-HIGH",
+      "zone": "YELLOW",
+      "multiplier_notes": [
+        "Recovery: YELLOW zone (CAUTION)",
+        "Risk mode: AGGRESSIVE",
+        "Recovery: YELLOW zone (Global x0.90)",
+        "Recovery: YELLOW zone (Global x0.90), GZBD x0.80"
+      ],
+      "stake_configuration": {
+        "base_tiers": [
+          10,
+          20,
+          30,
+          50,
+          100
+        ],
+        "applied_multipliers": true,
+        "recovery_zone_aware": true
+      }
+    },
+    "loss_recovery": {
+      "timestamp": "2025-11-25T18:22:18.859964",
+      "zone": "YELLOW",
+      "status": "CAUTION",
+      "global_multiplier": 0.9,
+      "slot_multipliers": {
+        "FRBD": 1.0,
+        "GZBD": 0.8,
+        "GALI": 1.0,
+        "DSWR": 1.0
+      },
+      "reason_summary": "System in YELLOW zone - applying moderate stake reductions",
+      "metrics": {
+        "days_analyzed": 10,
+        "last_profit": 11590.0,
+        "last_roi": 554.5454545454546,
+        "recent_3d_profit": -370.0,
+        "recent_loss_streak": 5,
+        "slot_performance": {
+          "FRBD": {
+            "profit": 3105.0,
+            "roi": 627.2727272727273,
+            "status": "PERFORMING"
+          },
+          "GZBD": {
+            "profit": -225.0,
+            "roi": -45.45454545454545,
+            "status": "UNDERPERFORMING"
+          },
+          "GALI": {
+            "profit": 6020.0,
+            "roi": 1094.5454545454545,
+            "status": "PERFORMING"
+          },
+          "DSWR": {
+            "profit": 2690.0,
+            "roi": 489.09090909090907,
+            "status": "PERFORMING"
+          }
+        },
+        "underperforming_slots": [
+          "GZBD"
+        ],
+        "zone_calculation": {
+          "base_zone": "GREEN",
+          "final_zone": "YELLOW",
+          "reason": "Profit: \u20b9+11,590, ROI: +554.5%, Streak: 5 days"
+        }
+      },
+      "recovery_actions": {
+        "reduce_total_stake_percent": 9,
+        "slot_stake_reduction_percent": {
+          "FRBD": 0,
+          "GZBD": 19,
+          "GALI": 0,
+          "DSWR": 0
+        },
+        "focus_on_base_only": false,
+        "disable_dynamic": false,
+        "disable_conviction": false,
+        "severity": "CAUTION"
+      }
+    },
+    "pattern_intelligence": {
+      "timestamp": "2025-11-25T18:22:09.403858",
+      "s40_enabled": true,
+      "digit_packs_enabled": true,
+      "memory_bonus_enabled": true,
+      "cross_slot_boost": {
+        "GZBD_GZBD": 0.044500000000000005,
+        "GZBD_DSWR": 0.031,
+        "DSWR_DSWR": 0.022500000000000003,
+        "FRBD_GALI": 0.0035000000000000005
+      },
+      "script_weights": {
+        "SCR6": 2.0,
+        "SCR5": 2.0,
+        "SCR9": 2.0,
+        "SCR7": 2.0,
+        "SCR8": 2.0
+      },
+      "time_awareness": {
+        "FRBD": {
+          "preferred_day": "Tuesday",
+          "boost_factor": 1.1,
+          "hit_rate": 314.3
+        },
+        "GZBD": {
+          "preferred_day": "Wednesday",
+          "boost_factor": 1.1,
+          "hit_rate": 328.6
+        },
+        "GALI": {
+          "preferred_day": "Sunday",
+          "boost_factor": 1.1,
+          "hit_rate": 371.4
+        },
+        "DSWR": {
+          "preferred_day": "Sunday",
+          "boost_factor": 1.1,
+          "hit_rate": 433.3
+        }
+      },
+      "digit_preferences": {},
+      "adaptive_packs_integrated": true,
+      "pattern_weights": {
+        "s40_bonus": 0.2,
+        "digit_pack_bonus": 0.05,
+        "max_pattern_bonus": 0.5,
+        "cross_slot_bonus": 0.15,
+        "golden_digit_boost": 0.08,
+        "hero_number_boost": 0.1,
+        "time_awareness_boost": 0.05
+      },
+      "adaptive_packs": {
+        "timestamp": "2025-11-25T18:22:09.403858",
+        "source": "PatternIntelligenceEnhanced + GoldenBlockAnalyzer",
+        "tens_core_base": [
+          9,
+          7,
+          4
+        ],
+        "ones_core_base": [
+          4,
+          2,
+          8
+        ],
+        "tens_core_golden": [
+          3,
+          6,
+          0
+        ],
+        "ones_core_golden": [
+          7,
+          2,
+          4
+        ],
+        "hero_numbers": [
+          32,
+          37,
+          67,
+          15,
+          64
+        ],
+        "cross_slot_pairs_top": [],
+        "boost_scripts": [
+          "SCR7",
+          "SCR8",
+          "SCR9"
+        ],
+        "time_boost_slots": {
+          "FRBD": {
+            "best_day": "Tuesday",
+            "boost_factor": 1.1
+          },
+          "GZBD": {
+            "best_day": "Wednesday",
+            "boost_factor": 1.1
+          },
+          "GALI": {
+            "best_day": "Sunday",
+            "boost_factor": 1.1
+          },
+          "DSWR": {
+            "best_day": "Sunday",
+            "boost_factor": 1.1
+          }
+        },
+        "notes": "Auto-generated adaptive pattern packs"
+      }
+    },
+    "adaptive_packs": {
+      "timestamp": "2025-11-25T18:22:09.403858",
+      "source": "PatternIntelligenceEnhanced + GoldenBlockAnalyzer",
+      "tens_core_base": [
+        9,
+        7,
+        4
+      ],
+      "ones_core_base": [
+        4,
+        2,
+        8
+      ],
+      "tens_core_golden": [
+        3,
+        6,
+        0
+      ],
+      "ones_core_golden": [
+        7,
+        2,
+        4
+      ],
+      "hero_numbers": [
+        32,
+        37,
+        67,
+        15,
+        64
+      ],
+      "cross_slot_pairs_top": [],
+      "boost_scripts": [
+        "SCR7",
+        "SCR8",
+        "SCR9"
+      ],
+      "time_boost_slots": {
+        "FRBD": {
+          "best_day": "Tuesday",
+          "boost_factor": 1.1
+        },
+        "GZBD": {
+          "best_day": "Wednesday",
+          "boost_factor": 1.1
+        },
+        "GALI": {
+          "best_day": "Sunday",
+          "boost_factor": 1.1
+        },
+        "DSWR": {
+          "best_day": "Sunday",
+          "boost_factor": 1.1
+        }
+      },
+      "notes": "Auto-generated adaptive pattern packs"
+    },
+    "golden_insights": {
+      "timestamp": "2025-11-25T18:22:08.180896",
+      "window_days": 30,
+      "golden_days": [
+        {
+          "date": "2025-11-09",
+          "profit": 3200.0
+        },
+        {
+          "date": "2025-11-10",
+          "profit": 3200.0
+        },
+        {
+          "date": "2025-11-11",
+          "profit": 2930.0
+        },
+        {
+          "date": "2025-11-12",
+          "profit": 2930.0
+        },
+        {
+          "date": "2025-11-08",
+          "profit": -40.0
+        }
+      ],
+      "scripts": {
+        "SCR5": {
+          "direct_hits": 0,
+          "cross_hits": 0,
+          "total_hits": 8,
+          "golden_score": 3.17,
+          "effectiveness": 160.0
+        },
+        "SCR6": {
+          "direct_hits": 0,
+          "cross_hits": 0,
+          "total_hits": 7,
+          "golden_score": 3.17,
+          "effectiveness": 140.0
+        },
+        "SCR7": {
+          "direct_hits": 0,
+          "cross_hits": 0,
+          "total_hits": 21,
+          "golden_score": 6.67,
+          "effectiveness": 420.0
+        },
+        "SCR8": {
+          "direct_hits": 0,
+          "cross_hits": 0,
+          "total_hits": 12,
+          "golden_score": 4.28,
+          "effectiveness": 240.0
+        },
+        "SCR9": {
+          "direct_hits": 0,
+          "cross_hits": 0,
+          "total_hits": 13,
+          "golden_score": 3.96,
+          "effectiveness": 260.0
+        }
+      },
+      "cross_slot_pairs": {},
+      "digits": {
+        "tens": [
+          3,
+          6,
+          0,
+          1,
+          5
+        ],
+        "ones": [
+          7,
+          2,
+          4,
+          5,
+          8
+        ],
+        "hero_numbers": [
+          32,
+          37,
+          67,
+          15,
+          64,
+          8,
+          44,
+          2,
+          54,
+          5
+        ],
+        "total_unique_numbers": 12,
+        "most_frequent_number": [
+          32,
+          11
+        ]
+      },
+      "day_of_week": {
+        "FRBD": {
+          "best_day": "Tuesday",
+          "hits": 8,
+          "all_days": {
+            "Tuesday": 8,
+            "Wednesday": 3,
+            "Monday": 2
+          }
+        },
+        "GZBD": {
+          "best_day": "Wednesday",
+          "hits": 7,
+          "all_days": {
+            "Wednesday": 7,
+            "Monday": 2
+          }
+        },
+        "GALI": {
+          "best_day": "Sunday",
+          "hits": 11,
+          "all_days": {
+            "Sunday": 11,
+            "Monday": 7,
+            "Wednesday": 2,
+            "Tuesday": 1
+          }
+        },
+        "DSWR": {
+          "best_day": "Sunday",
+          "hits": 8,
+          "all_days": {
+            "Sunday": 8,
+            "Saturday": 5,
+            "Tuesday": 4,
+            "Wednesday": 1
+          }
+        }
+      },
+      "summary": {
+        "total_golden_days": 5,
+        "total_profits": 12220.0,
+        "avg_profit_per_golden_day": 2444.0,
+        "top_script": "SCR7",
+        "top_cross_pattern": "NONE"
+      }
+    }
+  }
+}

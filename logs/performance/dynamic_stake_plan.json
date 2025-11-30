@@ -1,0 +1,27 @@
+{
+  "timestamp": "2025-11-29T15:00:41.970948",
+  "target_date": "2025-11-29",
+  "base_slot_stakes": {
+    "FRBD": 55.0,
+    "GZBD": 55.0,
+    "GALI": 55.0,
+    "DSWR": 55.0
+  },
+  "slot_stakes": {
+    "FRBD": 55,
+    "GZBD": 55,
+    "GALI": 55,
+    "DSWR": 55
+  },
+  "total_daily_stake": 220,
+  "overall_roi": 0,
+  "slot_rois": {
+    "NO_DATA": NaN,
+    "FRBD": 0,
+    "GZBD": 0,
+    "GALI": 0,
+    "DSWR": 0
+  },
+  "logic_version": "v1_reality_simple",
+  "central_pnl_source": "quant_reality_pnl.json"
+}
