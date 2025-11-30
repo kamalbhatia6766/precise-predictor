@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import json
 from collections import Counter, defaultdict
+from utils_2digit import is_valid_2d_number, to_2d_str
 import warnings
 warnings.filterwarnings('ignore')
 
