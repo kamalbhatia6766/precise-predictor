@@ -166,7 +166,19 @@ def print_script_section(script_summaries):
         direct = row.get("direct", 0)
         share_pct = (row.get("share_ratio", 0) or 0) * 100
         weight = row.get("weight", 1.0)
-        print(f"  {row['script']}: hits={row['hits']} | CROSS={cross} | DIRECT={direct} | share={share_pct:.1f}% | weight={weight:.2f}")
+        hits = row.get("hits", 0)
+        if hits == 0 or share_pct == 0:
+            status = "DORMANT"
+        elif weight < 0.8:
+            status = "LOW-CONFIDENCE"
+        elif weight > 1.4:
+            status = "HIGH-CONFIDENCE"
+        else:
+            status = "MID-CONFIDENCE"
+
+        print(
+            f"  {row['script']}: hits={hits} | CROSS={cross} | DIRECT={direct} | share={share_pct:.1f}% | weight={weight:.2f} | status={status}"
+        )
     return True
 
 
@@ -242,6 +254,7 @@ def main():
     pattern_file = BASE_DIR / "logs" / "performance" / "pattern_intelligence.json"
     script_hit_file = BASE_DIR / "logs" / "performance" / "script_hit_memory.xlsx"
     script_weight_file = BASE_DIR / "logs" / "performance" / "script_performance_summary.json"
+    script_weight_file_alias = BASE_DIR / "logs" / "performance" / "script_weights.json"
 
     top_patterns = load_pattern_stats(pattern_file)
     if top_patterns is None:
@@ -254,6 +267,8 @@ def main():
     script_summaries = summarize_script_hits(script_df)
 
     write_script_weights_json(script_summaries, script_weight_file)
+    # Also write a friendly alias expected by downstream ensemble engines
+    write_script_weights_json(script_summaries, script_weight_file_alias)
 
     print_pattern_section(top_patterns)
     print_script_section(script_summaries)

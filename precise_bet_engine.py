@@ -22,6 +22,13 @@ class PreciseBetEngine:
     def __init__(self):
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
         self.base_unit = 10
+        self.risk_context = {
+            "zone": "UNKNOWN",
+            "risk_mode": "BASE",
+            "multiplier": 1.0,
+            "pre_risk_total": 0,
+            "final_total": 0,
+        }
         
         # ULTRA v5 constants
         self.N_DAYS = 30
@@ -77,25 +84,56 @@ class PreciseBetEngine:
             return extract_slots(data)
         return {}
 
-    def load_loss_recovery_multiplier(self):
+    def load_loss_recovery_context(self):
         plan_path = Path(__file__).resolve().parent / "logs" / "performance" / "loss_recovery_plan.json"
+        context = {
+            "zone": "UNKNOWN",
+            "risk_mode": "BASE",
+            "multiplier": 1.0,
+        }
+
         if not plan_path.exists():
-            return 1.0
+            return context
+
         try:
             with open(plan_path, "r") as f:
                 data = json.load(f)
-            zone = (data.get("zone") or data.get("current_zone") or "").upper()
         except Exception:
-            return 1.0
+            return context
 
-        mapping = {"GREEN": 1.0, "YELLOW": 0.8, "RED": 0.6}
-        return mapping.get(zone, 1.0)
+        zone_val = (data.get("zone") or data.get("current_zone") or "UNKNOWN").upper()
+        risk_mode = (data.get("risk_mode") or data.get("current_mode") or "BASE").upper()
+        multiplier = data.get("stake_multiplier") or data.get("multiplier")
+
+        if multiplier is None:
+            zone_map = {"GREEN": 1.0, "YELLOW": 0.8, "RED": 0.6}
+            multiplier = zone_map.get(zone_val, 1.0)
+
+        try:
+            multiplier = float(multiplier)
+        except Exception:
+            multiplier = 1.0
+
+        context.update({"zone": zone_val, "risk_mode": risk_mode, "multiplier": multiplier})
+        return context
 
     def apply_stake_overlays(self, bets_df, summary_df, target_date):
         dynamic_targets = self.load_dynamic_stake_plan(target_date)
-        loss_recovery_mult = self.load_loss_recovery_multiplier()
+        risk_context = self.load_loss_recovery_context()
+
+        self.risk_context.update(
+            {
+                "zone": risk_context.get("zone", "UNKNOWN"),
+                "risk_mode": risk_context.get("risk_mode", "BASE"),
+                "multiplier": float(risk_context.get("multiplier", 1.0)),
+                "pre_risk_total": sum(float(v) for v in dynamic_targets.values()) if dynamic_targets else summary_df['total_stake'].sum(),
+            }
+        )
+
+        loss_recovery_mult = self.risk_context["multiplier"]
 
         if not dynamic_targets and loss_recovery_mult == 1.0:
+            self.risk_context["final_total"] = summary_df['total_stake'].sum()
             return bets_df, summary_df
 
         adjusted_bets = bets_df.copy()
@@ -135,6 +173,7 @@ class PreciseBetEngine:
             adjusted_summary.loc[slot_summary_mask, 'total_stake'] = main_total + andar_total + bahar_total
             adjusted_summary.loc[slot_summary_mask, 'max_total_return'] = max_total_return
 
+        self.risk_context["final_total"] = adjusted_summary['total_stake'].sum()
         return adjusted_bets, adjusted_summary
 
     # ✅ ROCKET MODE: CRYSTAL CLEAR DATE MAPPING
@@ -189,9 +228,22 @@ class PreciseBetEngine:
                 print(f"     📊 ANDAR: {andar_digit}(₹{andar_stake}), BAHAR: {bahar_digit}(₹{bahar_stake})")
                 print(f"     💰 Total: ₹{slot_total}")
                 print()
-        
+
         print(f"💵 GRAND TOTAL: ₹{grand_total}")
         print(f"🚀 ULTRA v5 QUANTUM SELF-LEARNING: ACTIVE")
+
+        risk_zone = self.risk_context.get("zone", "UNKNOWN")
+        risk_mode = self.risk_context.get("risk_mode", "BASE")
+        risk_mult = self.risk_context.get("multiplier", 1.0)
+        pre_risk = self.risk_context.get("pre_risk_total", grand_total)
+        final_total = self.risk_context.get("final_total", grand_total)
+
+        print("\nRISK LINK:")
+        print(f"   Zone: {risk_zone}")
+        print(f"   Risk Mode: {risk_mode}")
+        print(f"   Loss-Recovery Multiplier: {risk_mult:.2f}x")
+        print(f"   Dynamic Stake Total (pre-risk): ₹{pre_risk:.0f}")
+        print(f"   Final Applied Stake Total: ₹{final_total:.0f}")
 
     # ✅ ALL WORKING METHODS FROM YOUR CURRENT VERSION
     def find_latest_predictions_file(self, source='scr9'):
