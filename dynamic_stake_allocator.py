@@ -21,18 +21,23 @@ class DynamicStakeAllocator:
         """Load the latest bet plan to get base stakes"""
         latest_bet_plan = quant_paths.find_latest_bet_plan_master()
         target_date = quant_paths.parse_date_from_filename(latest_bet_plan.stem) if latest_bet_plan else None
-        
+
         if not latest_bet_plan:
             print("❌ No bet plan files found")
-            return None, None
-        
+            return None, None, None
+
         try:
             bets_df = pd.read_excel(latest_bet_plan, sheet_name='bets')
+            summary_df = None
+            try:
+                summary_df = pd.read_excel(latest_bet_plan, sheet_name='summary')
+            except Exception:
+                summary_df = None
             print(f"✅ Loaded base bet plan: {latest_bet_plan.name}")
-            return bets_df, target_date
+            return bets_df, summary_df, target_date
         except Exception as e:
             print(f"❌ Error loading bet plan: {e}")
-            return None, None
+            return None, None, None
     
     def calculate_base_stakes(self, bets_df):
         """Calculate base stakes from bet plan"""
@@ -48,6 +53,75 @@ class DynamicStakeAllocator:
         
         base_daily_stake = sum(base_slot_stakes.values())
         return base_slot_stakes, base_daily_stake
+
+    def _scale_bet_plan(self, bets_df, summary_df, final_slot_stakes, base_slot_stakes):
+        """Apply slot-wise scaling to bets and summary dataframes"""
+        if bets_df is None:
+            return None, None
+
+        scaled_bets = bets_df.copy()
+        scaled_summary = summary_df.copy() if summary_df is not None else None
+
+        for slot in self.slots:
+            base_total = float(base_slot_stakes.get(slot, 0) or 0)
+            final_total = float(final_slot_stakes.get(slot, base_total) or 0)
+
+            if base_total <= 0:
+                continue
+
+            factor = final_total / base_total if base_total else 1.0
+            if factor == 1.0:
+                continue
+
+            slot_mask = scaled_bets['slot'] == slot
+            stake_numeric = pd.to_numeric(scaled_bets.loc[slot_mask, 'stake'], errors='coerce')
+            numeric_mask = stake_numeric.notna()
+            scaled_values = (stake_numeric[numeric_mask] * factor).round(1)
+            scaled_bets.loc[slot_mask, 'stake'] = scaled_values.combine_first(scaled_bets.loc[slot_mask, 'stake'])
+
+            if 'potential_return' in scaled_bets.columns:
+                scaled_returns = pd.to_numeric(scaled_bets.loc[slot_mask, 'stake'], errors='coerce') * 90
+                scaled_bets.loc[slot_mask, 'potential_return'] = scaled_returns.round(1).combine_first(
+                    scaled_bets.loc[slot_mask, 'potential_return']
+                )
+
+            if scaled_summary is not None and 'slot' in scaled_summary.columns:
+                summary_mask = scaled_summary['slot'] == slot
+                slot_rows = scaled_bets[slot_mask]
+                main_total = pd.to_numeric(
+                    slot_rows[slot_rows['layer_type'] == 'Main']['stake'], errors='coerce'
+                ).sum()
+                andar_total = pd.to_numeric(
+                    slot_rows[slot_rows['layer_type'] == 'ANDAR']['stake'], errors='coerce'
+                ).sum()
+                bahar_total = pd.to_numeric(
+                    slot_rows[slot_rows['layer_type'] == 'BAHAR']['stake'], errors='coerce'
+                ).sum()
+                max_total_return = pd.to_numeric(slot_rows['potential_return'], errors='coerce').sum()
+
+                scaled_summary.loc[summary_mask, 'main_stake'] = main_total
+                scaled_summary.loc[summary_mask, 'andar_stake'] = andar_total
+                scaled_summary.loc[summary_mask, 'bahar_stake'] = bahar_total
+                scaled_summary.loc[summary_mask, 'total_stake'] = main_total + andar_total + bahar_total
+                scaled_summary.loc[summary_mask, 'max_total_return'] = max_total_return
+
+        return scaled_bets, scaled_summary
+
+    def save_final_bet_plan(self, bets_df, summary_df, target_date, total_final_stake):
+        if bets_df is None or target_date is None:
+            return None
+
+        date_str = target_date.strftime("%Y-%m-%d")
+        output_path = quant_paths.get_final_bet_plan_path(date_str)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            bets_df.to_excel(writer, sheet_name='bets', index=False)
+            if summary_df is not None:
+                summary_df.to_excel(writer, sheet_name='summary', index=False)
+
+        print(f"💾 Final bet plan saved: {output_path} (Total stake=₹{total_final_stake})")
+        return output_path
     
     def load_reality_performance(self):
         """Load reality performance data from quant_reality_pnl.json"""
@@ -199,7 +273,7 @@ class DynamicStakeAllocator:
         print("="*50)
         
         # Step 1: Load base bet plan
-        bets_df, target_date = self.load_base_bet_plan()
+        bets_df, summary_df, target_date = self.load_base_bet_plan()
         if bets_df is None:
             return False
         
@@ -219,10 +293,14 @@ class DynamicStakeAllocator:
         
         # Step 6: Save stake plan
         self.save_stake_plan(stake_plan)
-        
-        # Step 7: Print summary
+
+        # Step 7: Apply overlay to bet plan and save final plan
+        scaled_bets, scaled_summary = self._scale_bet_plan(bets_df, summary_df, final_slot_stakes, base_slot_stakes)
+        self.save_final_bet_plan(scaled_bets, scaled_summary, target_date, stake_plan['total_daily_stake'])
+
+        # Step 8: Print summary
         self.print_console_summary(stake_plan)
-        
+
         print("✅ Dynamic stake allocation completed!")
         return True
 

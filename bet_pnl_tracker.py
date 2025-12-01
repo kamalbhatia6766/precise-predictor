@@ -334,6 +334,11 @@ class BetPnLTracker:
         # Normalize real results date column once
         real_results_df = real_results_df.copy()
         real_results_df['DATE_ONLY'] = pd.to_datetime(real_results_df['DATE'], errors='coerce').dt.date
+        max_real_date = None
+        if 'DATE_ONLY' in real_results_df.columns:
+            valid_dates = real_results_df['DATE_ONLY'].dropna()
+            if not valid_dates.empty:
+                max_real_date = valid_dates.max()
 
         def _normalize_bet_plan_date(date_value):
             if isinstance(date_value, datetime):
@@ -356,16 +361,6 @@ class BetPnLTracker:
                     return None
             return date_value if hasattr(date_value, 'year') and hasattr(date_value, 'month') and hasattr(date_value, 'day') else None
 
-        def _find_matching_results(date_obj):
-            tried_dates = []
-            candidates = [date_obj, date_obj - timedelta(days=1), date_obj + timedelta(days=1)]
-            for cand in candidates:
-                tried_dates.append(cand)
-                subset = real_results_df[real_results_df['DATE_ONLY'] == cand]
-                if not subset.empty:
-                    return subset, tried_dates, cand
-            return None, tried_dates, None
-
         matched_dates_data = []
         for date in dates:
             date_obj = _normalize_bet_plan_date(date)
@@ -373,13 +368,14 @@ class BetPnLTracker:
                 print(f"⚠️  Invalid date format: {date}, skipping")
                 continue
 
-            date_results, tried_dates, matched_date = _find_matching_results(date_obj)
-            if date_results is None:
-                print(f"⚠️  No real results found for bet plan date {date_obj}; tried dates: {[d.isoformat() for d in tried_dates]}")
+            if max_real_date and date_obj > max_real_date:
+                print(f"ℹ️  Skipping bet plan date {date_obj}: no real result available yet (max real date: {max_real_date})")
                 continue
 
-            if matched_date != date_obj:
-                print(f"ℹ️  Using real results from {matched_date} for bet plan date {date_obj}")
+            date_results = real_results_df[real_results_df['DATE_ONLY'] == date_obj]
+            if date_results.empty:
+                print(f"⚠️  No real results found for bet plan date {date_obj}; skipping")
+                continue
 
             matched_dates_data.append({
                 'date_obj': date_obj,
