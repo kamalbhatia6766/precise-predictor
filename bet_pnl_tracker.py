@@ -46,7 +46,9 @@ class BetPnLTracker:
                     bet_plans[date_from_file] = file
                     print(f"   ✅ {date_from_file}: {file.name}")
                 else:
-                    print(f"   ⚠️  Could not parse date from: {file.name}")
+                    print(
+                        f"   ℹ️  Skipping non-standard file (intra run): {file.name} – date not parsed (expected for experimental files)."
+                    )
             except Exception as e:
                 print(f"   ❌ Error processing {file.name}: {e}")
                 continue

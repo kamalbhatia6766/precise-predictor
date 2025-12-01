@@ -25,6 +25,8 @@ class UltimatePredictionEngine:
         self.speed_mode = speed_mode  # 'full' or 'fast'
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.script_weights = self.load_script_weights()
+        # Cache to avoid rerunning heavy scripts (e.g., SCR6) for the same date/mode within a run
+        self.script_prediction_cache = {}
         self.setup_directories()
 
     def setup_directories(self):
@@ -205,16 +207,31 @@ class UltimatePredictionEngine:
         else:
             return (n % 10) * 10 + (n // 10)
     
-    def run_child_script(self, script_name):
-        """Run a child script and parse its predictions"""
+    def run_child_script(self, script_name, target_date=None, mode=None):
+        """Run a child script and parse its predictions with optional caching"""
         try:
+            cache_key = None
+            timeout_seconds = 300
+
+            if script_name.lower() == 'deepseek_scr6.py':
+                # Heavier model ensemble – cache per target_date + mode within the same run
+                cache_key = (script_name, str(target_date) if target_date else None, mode or 'default')
+                if cache_key in self.script_prediction_cache:
+                    print(
+                        f"   ♻️  Reusing cached output for {script_name}"
+                        f" (date={cache_key[1]}, mode={cache_key[2]})"
+                    )
+                    cached_preds = self.script_prediction_cache[cache_key]
+                    return {slot: list(nums) for slot, nums in cached_preds.items()}
+                timeout_seconds = 600  # Extended timeout for SCR6 only
+
             print(f"   🔄 Running {script_name}...")
-            
+
             result = subprocess.run(
-                ['py', '-3.12', script_name], 
-                capture_output=True, 
-                text=True, 
-                timeout=300
+                ['py', '-3.12', script_name],
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds
             )
             
             predictions = {"FRBD": [], "GZBD": [], "GALI": [], "DSWR": []}
@@ -252,16 +269,21 @@ class UltimatePredictionEngine:
                         except:
                             continue
             
+            if cache_key:
+                # Store a shallow copy to protect cache from accidental mutation
+                cached_copy = {slot: list(nums) for slot, nums in predictions.items()}
+                self.script_prediction_cache[cache_key] = cached_copy
+
             return predictions
-            
+
         except subprocess.TimeoutExpired:
-            print(f"   ⚠️  {script_name} timed out after 300 seconds")
+            print(f"   ⚠️  {script_name} timed out after {timeout_seconds} seconds")
             return {"FRBD": [], "GZBD": [], "GALI": [], "DSWR": []}
         except Exception as e:
             print(f"   ⚠️  {script_name} failed: {e}")
             return {"FRBD": [], "GZBD": [], "GALI": [], "DSWR": []}
-    
-    def collect_all_script_predictions(self):
+
+    def collect_all_script_predictions(self, target_date=None, mode=None):
         """Collect predictions from all available scripts - OPTIMIZED FOR SPEED MODE"""
         print("🎯 Collecting predictions from scripts...")
         
@@ -287,7 +309,7 @@ class UltimatePredictionEngine:
         for script in scripts:
             if os.path.exists(script):
                 start_time = time.time()
-                preds = self.run_child_script(script)
+                preds = self.run_child_script(script, target_date=target_date, mode=mode)
                 end_time = time.time()
                 script_times[script] = end_time - start_time
                 all_predictions[script] = preds
@@ -354,7 +376,7 @@ class UltimatePredictionEngine:
         print(f"   🎯 Predicting for {target_date}...")
         
         # Collect predictions from all scripts
-        all_script_preds = self.collect_all_script_predictions()
+        all_script_preds = self.collect_all_script_predictions(target_date=target_date, mode='predict_for_date')
         
         # Reorganize by slot
         slot_predictions = {}
@@ -552,7 +574,7 @@ class UltimatePredictionEngine:
                 numbers = slot_data['number'].tolist()
 
                 # Use ensemble prediction
-                all_script_preds = self.collect_all_script_predictions()
+                all_script_preds = self.collect_all_script_predictions(target_date=latest_date, mode='today_empty')
                 slot_preds = {}
                 for script_name, preds in all_script_preds.items():
                     slot_preds[script_name] = preds[slot_name]
