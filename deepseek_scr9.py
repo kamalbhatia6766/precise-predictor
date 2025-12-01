@@ -218,12 +218,12 @@ class UltimatePredictionEngine:
                 cache_key = (script_name, str(target_date) if target_date else None, mode or 'default')
                 if cache_key in self.script_prediction_cache:
                     print(
-                        f"   ♻️  Reusing cached output for {script_name}"
-                        f" (date={cache_key[1]}, mode={cache_key[2]})"
+                        "   🔁 Using cached predictions for deepseek_scr6.py "
+                        f"({cache_key[1]}, mode={cache_key[2]})"
                     )
                     cached_preds = self.script_prediction_cache[cache_key]
                     return {slot: list(nums) for slot, nums in cached_preds.items()}
-                timeout_seconds = 600  # Extended timeout for SCR6 only
+                timeout_seconds = 900  # Extended timeout for SCR6 only
 
             print(f"   🔄 Running {script_name}...")
 
