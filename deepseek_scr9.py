@@ -53,19 +53,39 @@ class UltimatePredictionEngine:
 
     def load_script_weights(self):
         """Load performance-based script weights (defaults to 1.0)."""
-        weight_path = os.path.join(self.base_dir, "logs", "performance", "script_performance_summary.json")
+        weight_files = [
+            os.path.join(self.base_dir, "logs", "performance", "script_weights.json"),
+            os.path.join(self.base_dir, "logs", "performance", "script_performance_summary.json"),
+        ]
         weights = {}
-        try:
-            with open(weight_path, "r") as f:
-                data = json.load(f)
-            for row in data.get("scripts", []):
-                name = str(row.get("name", "")).upper()
-                weight_val = row.get("weight", 1.0)
-                if not weight_val:
-                    weight_val = 1.0
-                weights[name] = weight_val
-        except Exception:
-            weights = {}
+        loaded = False
+
+        for path in weight_files:
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r") as f:
+                    data = json.load(f)
+                script_rows = data.get("scripts") if isinstance(data, dict) else None
+                if isinstance(data, dict) and not script_rows:
+                    # Allow direct mapping of name → weight
+                    weights.update({str(k).upper(): float(v) for k, v in data.items() if v is not None})
+                    loaded = True
+                    break
+                for row in script_rows or []:
+                    name = str(row.get("name", "")).upper()
+                    weight_val = row.get("weight", 1.0)
+                    if not weight_val:
+                        weight_val = 1.0
+                    weights[name] = weight_val
+                if weights:
+                    loaded = True
+                    break
+            except Exception:
+                continue
+
+        if not loaded:
+            print("⚠️  Script weight file missing; using uniform weights.")
         return weights
 
     def _script_key(self, script_name: str) -> str:
@@ -669,7 +689,15 @@ class UltimatePredictionEngine:
                         f.write(f"  {slot}: {row[slot]}\n")
                         if f'{slot}_OPP' in row:
                             f.write(f"       Opp: {row[f'{slot}_OPP']}\n")
-        
+
+            # Script weights used
+            f.write("\nSCRIPT WEIGHTS USED:\n")
+            f.write("-" * 50 + "\n")
+            for idx in range(1, 10):
+                key = f"SCR{idx}"
+                weight_val = self.script_weights.get(key, 1.0)
+                f.write(f"  {key}: {weight_val:.2f}\n")
+
         # Return file paths for console display
         return wide_df, pred_file, detail_file, diag_file, analysis_file
     

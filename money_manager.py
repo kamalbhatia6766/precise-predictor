@@ -8,6 +8,7 @@ class MoneyManager:
     def __init__(self):
         self.base_dir = Path(__file__).resolve().parent
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
+        self.reference_bankroll = self.load_reference_bankroll()
 
     def load_reference_bankroll(self):
         """Load reference bankroll from latest daily_meta_config, fallback to default constant."""
@@ -176,7 +177,7 @@ class MoneyManager:
         if 'strategy' in data:
             daily_caps = self.get_daily_caps(data['strategy'])
 
-        reference_bankroll = self.load_reference_bankroll()
+        reference_bankroll = self.reference_bankroll
         realized_bankroll = reference_bankroll
 
         quant_block = data.get('quant_pnl', {})
@@ -203,6 +204,7 @@ class MoneyManager:
             'risk_mode': data.get('strategy', {}).get('risk_mode', 'NORMAL'),  # ✅ PHASE 2: Include risk mode
             'reference_bankroll': reference_bankroll,
             'realized_bankroll': realized_bankroll,
+            'realized_pnl': total_pnl if total_pnl is not None else 0,
             'bankroll_mode': 'PNL_LINKED'
         }
 
@@ -320,6 +322,8 @@ class MoneyManager:
         print(f"   Current Bankroll: ₹{bankroll_rules['current_bankroll']:.0f}")
         print(f"   Reference Bankroll: ₹{bankroll_rules.get('reference_bankroll', bankroll_rules['current_bankroll']):.0f} | Realized Bankroll: ₹{bankroll_rules.get('realized_bankroll', bankroll_rules['current_bankroll']):.0f}")
         print(f"   Bankroll mode: {bankroll_rules.get('bankroll_mode', 'STATIC_REFERENCE')}")
+        print(f"   Effective Bankroll (PNL_LINKED): ₹{bankroll_rules.get('realized_bankroll', bankroll_rules['current_bankroll']):.0f}")
+        print(f"   Total Realized P&L (window): ₹{bankroll_rules.get('realized_pnl', 0):.0f}")
         print(f"   Recommended Daily Risk: ₹{bankroll_rules['recommended_daily_risk']:.0f}")
         print(f"   Daily Caps: ₹{daily_caps['total']} total, ₹{daily_caps['single']} single")
         print("   Note: Daily caps and stake multipliers are advisory. Core staking engine may choose higher stakes based on strategy and user preferences.")
