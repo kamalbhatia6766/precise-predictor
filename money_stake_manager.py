@@ -114,6 +114,13 @@ class MoneyStakeManager:
             flag = self.step_status.get(key, False)
             self._log(f"   {'✅' if flag else '❌'} {label}")
         self._log("-" * 70)
+
+        # Clarify ROI terminology without altering any calculations
+        self._log("ROI METRICS LEGEND:")
+        self._log(" - BASE ROI (model-only): pre-overlay ROI from base bet plans before dynamic stake adjustments.")
+        self._log(" - Overall ROI (realized): execution-level ROI that bet_pnl_tracker and roi_summary report.")
+        self._log(" - Rolling/7d ROI: short-window snapshots of the realized ROI trajectory.")
+
         self._log("✅ ALL DONE" if ok_all else "⚠️ Completed with issues")
         return ok_all
 

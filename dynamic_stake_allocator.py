@@ -363,6 +363,38 @@ class DynamicStakeAllocator:
             return float(pd.to_numeric(df[df['slot'].isin(self.slots)][stake_col], errors='coerce').sum())
 
         return float(pd.to_numeric(df[stake_col], errors='coerce').sum())
+
+    def _load_existing_final_slot_stakes(self, file_path):
+        """Load slot-wise final stakes from an existing final bet plan (idempotence helper)."""
+        try:
+            df = pd.read_excel(file_path, sheet_name='final_slot_plan')
+        except Exception:
+            try:
+                df = pd.read_excel(file_path, sheet_name=0)
+            except Exception:
+                return None
+
+        stake_col = self._detect_stake_column(df)
+        if not stake_col:
+            return None
+
+        slot_stakes = {}
+        for slot in self.slots:
+            try:
+                slot_value = float(
+                    pd.to_numeric(
+                        df[(df.get('slot') == slot) | (df.get('slot') == str(slot))][stake_col],
+                        errors='coerce'
+                    ).sum()
+                )
+                slot_stakes[slot] = slot_value
+            except Exception:
+                slot_stakes[slot] = 0.0
+
+        if not any(slot_stakes.values()):
+            return None
+
+        return slot_stakes
     
     def generate_stake_plan(self, base_slot_stakes, final_slot_stakes, target_date, overall_roi, slot_rois):
         """Generate the dynamic stake plan JSON"""
@@ -436,10 +468,12 @@ class DynamicStakeAllocator:
         base_slot_stakes, base_daily_stake = self.calculate_base_stakes(bets_df)
 
         existing_final_total = None
+        existing_final_slot_stakes = None
         if target_date is not None:
             candidate_final = quant_paths.get_final_bet_plan_path(target_date.strftime("%Y-%m-%d"))
             if candidate_final.exists():
                 existing_final_total = self._read_final_plan_total(candidate_final)
+                existing_final_slot_stakes = self._load_existing_final_slot_stakes(candidate_final)
                 if existing_final_total is not None:
                     print(
                         f"ℹ️ Existing final plan detected ({candidate_final.name}): "
@@ -457,32 +491,37 @@ class DynamicStakeAllocator:
         # Step 5: Generate stake plan
         stake_plan = self.generate_stake_plan(base_slot_stakes, final_slot_stakes, target_date, overall_roi, slot_rois)
 
-        # Step 6: Save stake plan
-        self.save_stake_plan(stake_plan)
-
-        # Step 7: Apply overlay to bet plan and save final plan
+        # Step 6: Apply overlay to bet plan and save final plan
         desired_total = stake_plan['total_daily_stake']
         already_aligned = False
 
-        if desired_total > 0 and abs(base_daily_stake - desired_total) / desired_total <= 0.01:
+        if existing_final_total is not None and desired_total > 0:
+            diff_ratio = abs(desired_total - existing_final_total) / max(desired_total, 1)
+            if diff_ratio <= 0.01 and existing_final_slot_stakes:
+                already_aligned = True
+                final_slot_stakes = existing_final_slot_stakes
+                desired_total = sum(final_slot_stakes.values())
+                stake_plan['slot_stakes'] = final_slot_stakes
+                stake_plan['total_daily_stake'] = desired_total
+                print(
+                    f"ℹ️ Base bet plan already aligned; reusing existing final stakes (idempotent). "
+                    f"Total ≈ ₹{existing_final_total:.1f}"
+                )
+
+        if not already_aligned and desired_total > 0 and abs(base_daily_stake - desired_total) / desired_total <= 0.01:
             already_aligned = True
             print(
                 f"ℹ️ Base bet plan already aligned with dynamic final stakes (total ≈ ₹{base_daily_stake:.1f}). "
                 "No additional scaling applied."
             )
-        elif existing_final_total is not None and desired_total > 0:
-            diff_ratio = abs(base_daily_stake - existing_final_total) / max(existing_final_total, 1)
-            if diff_ratio <= 0.01:
-                already_aligned = True
-                print(
-                    f"ℹ️ Base bet plan already aligned with existing final plan (total ≈ ₹{base_daily_stake:.1f}). "
-                    "No additional scaling applied."
-                )
 
         if already_aligned:
             scaled_bets, scaled_summary = bets_df, summary_df
         else:
             scaled_bets, scaled_summary = self._scale_bet_plan(bets_df, summary_df, final_slot_stakes, base_slot_stakes)
+
+        # Step 7: Persist stake plan (after any idempotent overrides)
+        self.save_stake_plan(stake_plan)
 
         self.save_final_bet_plan(
             scaled_bets,

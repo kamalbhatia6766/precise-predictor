@@ -338,7 +338,7 @@ class PredictionHitMemory:
         hits_df = pd.DataFrame(hits_data)
         
         if hits_df.empty:
-            print("❌ No hits data to save")
+            print("ℹ️ No hits data to save (normal if predictions missed real results)")
             return output_file
         
         # If file exists, append (avoiding duplicates)
@@ -367,7 +367,7 @@ class PredictionHitMemory:
     def print_summary(self, hits_data):
         """Print summary of hits with time-shift analysis."""
         if not hits_data:
-            print("❌ No hits found")
+            print("ℹ️ No hits found for this target date (normal when predictions don't match) – nothing to append.")
             return
         
         # Group by hit family
@@ -399,7 +399,7 @@ class PredictionHitMemory:
 def main():
     try:
         print("=== PREDICTION HIT MEMORY - FULL PACK UNIVERSE ===")
-        print("📊 Loading real results with complete 837-pack tracking...")
+        print("📊 Loading real results with full central pack registry (168,129 packs, legacy 837-pack subset included)...")
         
         memory = PredictionHitMemory()
         
@@ -420,7 +420,7 @@ def main():
         # Step 5: Print enhanced summary
         memory.print_summary(hits_data)
         
-        print(f"\n✅ Enhanced hit memory analysis completed! (Full 837-pack universe enabled)")
+        print(f"\n✅ Enhanced hit memory analysis completed! (Central pack registry: 168,129 packs; legacy 837-pack subset included)")
         
     except Exception as e:
         print(f"❌ Error: {e}")

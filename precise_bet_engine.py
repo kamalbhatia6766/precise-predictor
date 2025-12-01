@@ -227,10 +227,10 @@ class PreciseBetEngine:
                 print(f"   {slot}:")
                 print(f"     🔢 Main: {', '.join(main_numbers)}")
                 print(f"     📊 ANDAR: {andar_digit}(₹{andar_stake}), BAHAR: {bahar_digit}(₹{bahar_stake})")
-                print(f"     💰 Total: ₹{slot_total}")
+                print(f"     💰 Total: ₹{slot_total:.2f}")
                 print()
 
-        print(f"💵 GRAND TOTAL: ₹{grand_total}")
+        print(f"💵 GRAND TOTAL: ₹{grand_total:.2f}")
         print(f"🚀 ULTRA v5 QUANTUM SELF-LEARNING: ACTIVE")
 
         risk_zone = self.risk_context.get("zone", "UNKNOWN")
@@ -243,8 +243,8 @@ class PreciseBetEngine:
         print(f"   Zone: {risk_zone}")
         print(f"   Risk Mode: {risk_mode}")
         print(f"   Loss-Recovery Multiplier: {risk_mult:.2f}x")
-        print(f"   Dynamic Stake Total (pre-risk): ₹{pre_risk:.0f}")
-        print(f"   Final Applied Stake Total: ₹{final_total:.0f}")
+        print(f"   Dynamic Stake Total (pre-risk): ₹{pre_risk:.2f}")
+        print(f"   Final Applied Stake Total: ₹{final_total:.2f}")
 
     # ✅ ALL WORKING METHODS FROM YOUR CURRENT VERSION
     def find_latest_predictions_file(self, source='scr9'):
@@ -1161,7 +1161,7 @@ class PreciseBetEngine:
             
             print(f"   Main: {len(shortlist)} numbers, ₹{main_stake_total} stake")
             print(f"   ANDAR: {andar_digit}, BAHAR: {bahar_digit}")
-            print(f"   Total stake: ₹{total_stake}, Max return: ₹{max_total_return}")
+            print(f"   Total stake: ₹{total_stake:.2f}, Max return: ₹{max_total_return:.2f}")
         
         bets_df = pd.DataFrame(bets_data)
         summary_df = pd.DataFrame(summary_data)
