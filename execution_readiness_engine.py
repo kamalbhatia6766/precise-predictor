@@ -429,7 +429,8 @@ class ExecutionReadinessEngine:
             "meta_confidence_level": self.decision_data.get('meta_confidence_level', 'LOW'),
             "meta_risk_mode": self.decision_data.get('meta_risk_mode', 'DEFENSIVE'),
             "score_components": self.score_components,
-            "notes": self.decision_data.get('notes', [])
+            "notes": self.decision_data.get('notes', []),
+            "advisory_only": True
         }
         
         with open(json_file, 'w') as f:
@@ -482,11 +483,12 @@ class ExecutionReadinessEngine:
         multiplier = self.decision_data.get('stake_multiplier', 0.0)
         base_stake = self.decision_data.get('base_final_total_stake', 0)
         recommended_stake = self.decision_data.get('recommended_real_total_stake', 0)
-        
+
         print(f"Environment score : {env_score} / 100")
         print(f"Mode              : {mode}")
         print(f"Stake multiplier  : {multiplier:.1f}x")
         print(f"Final plan stake  : ₹{base_stake:.0f} → Recommended real stake: ₹{recommended_stake:.0f}")
+        print("Note: Multiplier is advisory. Core staking engine may adjust stakes based on master strategy.")
         print()
         
         window_reality = self.decision_data.get('window_days_reality', 0)
