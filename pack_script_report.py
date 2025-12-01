@@ -1,6 +1,6 @@
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -20,11 +20,16 @@ def load_pattern_stats(path: Path):
         return None
 
     pattern_stats = data.get("pattern_stats", {})
+    pattern_weights = data.get("pattern_weights", {})
     rows = []
     for name, stats in pattern_stats.items():
         hits = stats.get("hits", 0)
         opps = stats.get("opportunities", 0)
-        weight = stats.get("weight", stats.get("score", 0))
+        weight = stats.get("weight")
+        if weight is None:
+            weight = pattern_weights.get(name, stats.get("score", 1.0))
+        if weight == 0:
+            weight = 1.0  # Avoid zero weights unless explicitly set
         hit_rate = (hits / opps * 100) if opps else 0
         rows.append({
             "name": name,
@@ -74,10 +79,11 @@ def summarize_script_hits(df: pd.DataFrame):
     number_col = pick_number_column(df)
 
     summaries = []
+    script_stats = {}
     if script_col:
         for script, group in df.groupby(script_col):
             hits = len(group)
-            share = (hits / total_hits * 100) if total_hits else 0
+            share_ratio = (hits / total_hits) if total_hits else 0
             cross_hits = group[hit_family_col].str.contains("cross", case=False, na=False).sum() if hit_family_col else 0
             direct_hits = group[hit_family_col].str.contains("direct", case=False, na=False).sum() if hit_family_col else 0
 
@@ -89,15 +95,42 @@ def summarize_script_hits(df: pd.DataFrame):
                 s40_hits = sum(1 for n in nums if is_s40(n))
                 non_s40_hits = hits - s40_hits
 
-            summaries.append({
-                "script": script,
+            script_stats[str(script).upper()] = {
+                "script": str(script).upper(),
                 "hits": hits,
-                "share": share,
+                "share_ratio": share_ratio,
                 "cross": cross_hits,
                 "direct": direct_hits,
                 "s40": s40_hits,
                 "non_s40": non_s40_hits,
-            })
+            }
+
+    for idx in range(1, 10):
+        key = f"SCR{idx}"
+        if key not in script_stats:
+            script_stats[key] = {
+                "script": key,
+                "hits": 0,
+                "share_ratio": 0,
+                "cross": 0,
+                "direct": 0,
+                "s40": None,
+                "non_s40": None,
+            }
+
+    scores = {name: stats.get("direct", 0) * 2.0 + stats.get("cross", 0) for name, stats in script_stats.items()}
+    max_score = max(scores.values()) if scores else 0
+    for name, stats in script_stats.items():
+        score_val = scores.get(name, 0)
+        if max_score == 0:
+            weight = 1.0
+        else:
+            base = score_val / max_score
+            weight = 0.5 + 1.5 * base
+        stats["score"] = score_val
+        stats["weight"] = weight
+
+    summaries = list(script_stats.values())
 
     return summaries
 
@@ -130,8 +163,9 @@ def print_script_section(script_summaries):
     for row in sorted(script_summaries, key=lambda r: r.get("script")):
         cross = row.get("cross", 0)
         direct = row.get("direct", 0)
-        share = row.get("share", 0)
-        print(f"  {row['script']}: hits={row['hits']} | CROSS={cross} | DIRECT={direct} | share={share:.1f}%")
+        share_pct = (row.get("share_ratio", 0) or 0) * 100
+        weight = row.get("weight", 1.0)
+        print(f"  {row['script']}: hits={row['hits']} | CROSS={cross} | DIRECT={direct} | share={share_pct:.1f}% | weight={weight:.2f}")
     return True
 
 
@@ -144,14 +178,39 @@ def print_pack_overlap(script_summaries):
         s40 = row.get("s40")
         non_s40 = row.get("non_s40")
         if s40 is None or non_s40 is None:
-            print(f"  {row['script']}: hits={row['hits']} (pack split unavailable)")
+            print(f"  {row['script']}: hits={row['hits']} (pack split unavailable – TODO for per-script pack split)")
         else:
             print(f"  {row['script']}: hits={row['hits']}, S40≈{s40}, NON≈{non_s40}")
+
+
+def write_script_weights_json(script_summaries, output_path: Path):
+    if not script_summaries:
+        return
+
+    payload = {
+        "scripts": [
+            {
+                "name": row.get("script"),
+                "hits": row.get("hits", 0),
+                "cross": row.get("cross", 0),
+                "direct": row.get("direct", 0),
+                "share": row.get("share_ratio", 0),
+                "score": row.get("score", 0),
+                "weight": row.get("weight", 1.0),
+            }
+            for row in sorted(script_summaries, key=lambda r: r.get("script"))
+        ]
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 def main():
     pattern_file = BASE_DIR / "logs" / "performance" / "pattern_intelligence.json"
     script_hit_file = BASE_DIR / "logs" / "performance" / "script_hit_memory.xlsx"
+    script_weight_file = BASE_DIR / "logs" / "performance" / "script_performance_summary.json"
 
     top_patterns = load_pattern_stats(pattern_file)
     if top_patterns is None:
@@ -162,6 +221,8 @@ def main():
         return 0
 
     script_summaries = summarize_script_hits(script_df)
+
+    write_script_weights_json(script_summaries, script_weight_file)
 
     print_pattern_section(top_patterns)
     print_script_section(script_summaries)
