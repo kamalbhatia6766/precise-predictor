@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 import warnings
 import argparse
 import json
+import quant_data_core
 from utils_2digit import is_valid_2d_number, to_2d_str
 warnings.filterwarnings('ignore')
 
@@ -818,70 +819,39 @@ class PreciseBetEngine:
     # ✅ FIXED: Near-miss bug resolved - proper date comparison
     def load_real_numbers_history(self, days=30, target_date=None):
         try:
-            real_file = Path(__file__).resolve().parent / "number prediction learn.xlsx"
-            real_df = self.load_real_results(real_file)
-            if real_df.empty:
+            results_df = quant_data_core.load_results_dataframe()
+            if results_df.empty:
                 print("   No real results data found")
                 return []
-            
-            # ✅ FIX: Ensure date column is datetime64[ns]
-            real_df['date'] = pd.to_datetime(real_df['date'])
-            
-            if target_date is None:
-                target_date = real_df['date'].max()
-            else:
-                # ✅ FIX: Convert target_date to same type as real_df['date']
-                target_date = pd.to_datetime(target_date)
-            
-            start_date = target_date - timedelta(days=days)
-            
-            # ✅ FIX: Now both are same type - comparison will work
-            filtered_df = real_df[(real_df['date'] >= start_date) & (real_df['date'] <= target_date)]
-            real_numbers = filtered_df['number'].tolist()
-            print(f"   Loaded {len(real_numbers)} real numbers from last {days} calendar days")
+
+            results_df['DATE'] = pd.to_datetime(results_df['DATE'], errors='coerce')
+            results_df = results_df.dropna(subset=['DATE'])
+            results_df['DATE_ONLY'] = results_df['DATE'].dt.date
+
+            latest_real_date = quant_data_core.get_latest_result_date(results_df)
+            if not latest_real_date:
+                print("   No real results data found")
+                return []
+
+            start_date = latest_real_date - timedelta(days=days - 1)
+            filtered_df = results_df[(results_df['DATE_ONLY'] >= start_date) & (results_df['DATE_ONLY'] <= latest_real_date)]
+
+            if filtered_df.empty:
+                print("   No real results data found")
+                return []
+
+            real_numbers = []
+            for slot in self.slots:
+                if slot not in filtered_df.columns:
+                    continue
+                slot_numbers = pd.to_numeric(filtered_df[slot], errors='coerce').dropna().astype(int).tolist()
+                real_numbers.extend(slot_numbers)
+
+            print(f"   Loaded {len(real_numbers)} real numbers for near-miss analysis")
             return real_numbers
         except Exception as e:
             print(f"⚠️  Error loading real numbers history: {e}")
             return []
-
-    def load_real_results(self, file_path):
-        try:
-            df_raw = pd.read_excel(file_path, sheet_name='Sheet1', header=None)
-            all_data = []
-            current_year = 2025
-            current_month = 1
-            for idx, row in df_raw.iterrows():
-                if pd.notna(row[0]) and '2025' in str(row[0]):
-                    try:
-                        date_str = str(row[0]).strip()
-                        if '2025' in date_str:
-                            date_parts = date_str.split('-')
-                            if len(date_parts) >= 2:
-                                current_month = int(date_parts[1])
-                    except:
-                        current_month += 1
-                    continue
-                if pd.notna(row[0]) and str(row[0]).strip().isdigit():
-                    day_num = int(row[0])
-                    for slot_idx, slot_name in enumerate(self.slots, 1):
-                        if (pd.notna(row[slot_idx]) and 
-                            str(row[slot_idx]).strip() not in ['XX', ''] and
-                            str(row[slot_idx]).strip().isdigit()):
-                            try:
-                                date_obj = datetime(current_year, current_month, day_num)
-                                number = int(str(row[slot_idx]).strip())
-                                all_data.append({
-                                    'date': date_obj,
-                                    'slot': slot_name,
-                                    'number': number
-                                })
-                            except:
-                                continue
-            real_df = pd.DataFrame(all_data)
-            return real_df
-        except Exception as e:
-            print(f"⚠️  Error loading real results: {e}")
-            return pd.DataFrame()
 
     # ✅ NEW METHOD: Intraday scoring with family multipliers
     def calculate_enhanced_scores_intraday(self, numbers_list, slot, history, target_date, family_multipliers):
@@ -990,11 +960,10 @@ class PreciseBetEngine:
         quantum_debug_data = []
         ultra_debug_data = []
         explainability_data = []
-        
+
         self.history = history
         print("🔍 Loading real numbers history for near-miss learning...")
         self.real_numbers_history = self.load_real_numbers_history(30, target_date)
-        print(f"   Loaded {len(self.real_numbers_history)} real numbers for near-miss analysis")
         
         long_df = self.convert_wide_to_long_format(df, target_rows)
         target_df = long_df.copy()
