@@ -46,10 +46,96 @@ class PreciseBetEngine:
         self.SOFT_CAP = 15
         self.MIN_BINS = 3
         self.MAX_PER_BIN = 6
-        
+
         self.pattern_config = self.load_enhanced_pattern_intelligence()
         self.adaptive_packs = self.load_adaptive_pattern_packs()
         self.golden_insights = self.load_golden_insights()
+
+    def load_dynamic_stake_plan(self, target_date):
+        plan_path = Path(__file__).resolve().parent / "logs" / "performance" / "dynamic_stake_plan.json"
+        if not plan_path.exists():
+            return {}
+        try:
+            with open(plan_path, "r") as f:
+                data = json.load(f)
+        except Exception:
+            return {}
+
+        target_str = target_date.strftime("%Y-%m-%d") if target_date else None
+
+        def extract_slots(plan_obj):
+            slots = plan_obj.get("slot_stakes") or plan_obj.get("final_slot_stakes") or plan_obj.get("slot_allocations") or {}
+            return {str(k).upper(): float(v) for k, v in slots.items() if v is not None}
+
+        if isinstance(data, list):
+            for plan_obj in data:
+                if plan_obj.get("target_date") == target_str:
+                    return extract_slots(plan_obj)
+        if isinstance(data, dict):
+            if data.get("target_date") and target_str and data.get("target_date") != target_str:
+                return {}
+            return extract_slots(data)
+        return {}
+
+    def load_loss_recovery_multiplier(self):
+        plan_path = Path(__file__).resolve().parent / "logs" / "performance" / "loss_recovery_plan.json"
+        if not plan_path.exists():
+            return 1.0
+        try:
+            with open(plan_path, "r") as f:
+                data = json.load(f)
+            zone = (data.get("zone") or data.get("current_zone") or "").upper()
+        except Exception:
+            return 1.0
+
+        mapping = {"GREEN": 1.0, "YELLOW": 0.8, "RED": 0.6}
+        return mapping.get(zone, 1.0)
+
+    def apply_stake_overlays(self, bets_df, summary_df, target_date):
+        dynamic_targets = self.load_dynamic_stake_plan(target_date)
+        loss_recovery_mult = self.load_loss_recovery_multiplier()
+
+        if not dynamic_targets and loss_recovery_mult == 1.0:
+            return bets_df, summary_df
+
+        adjusted_bets = bets_df.copy()
+        adjusted_summary = summary_df.copy()
+
+        for slot in self.slots:
+            slot_mask = adjusted_bets['slot'] == slot
+            slot_summary_mask = adjusted_summary['slot'] == slot
+            base_total = adjusted_summary.loc[slot_summary_mask, 'total_stake'].sum()
+            factor = loss_recovery_mult
+            if dynamic_targets and slot in dynamic_targets and base_total > 0:
+                factor *= float(dynamic_targets[slot]) / base_total
+
+            if factor == 1.0:
+                continue
+
+            stake_numeric = pd.to_numeric(adjusted_bets['stake'], errors='coerce')
+            numeric_mask = slot_mask & stake_numeric.notna()
+            adjusted_bets.loc[numeric_mask, 'stake'] = (stake_numeric.loc[numeric_mask] * factor).round(1)
+
+            try:
+                numeric_potential = pd.to_numeric(adjusted_bets.loc[numeric_mask, 'potential_return'], errors='coerce')
+                updated_returns = adjusted_bets.loc[numeric_mask, 'stake'] * 90
+                adjusted_bets.loc[numeric_mask, 'potential_return'] = updated_returns.round(1).where(~numeric_potential.isna(), adjusted_bets.loc[numeric_mask, 'potential_return'])
+            except Exception:
+                pass
+
+            slot_rows = adjusted_bets[slot_mask]
+            main_total = slot_rows[slot_rows['layer_type'] == 'Main']['stake'].sum()
+            andar_total = slot_rows[slot_rows['layer_type'] == 'ANDAR']['stake'].sum()
+            bahar_total = slot_rows[slot_rows['layer_type'] == 'BAHAR']['stake'].sum()
+            max_total_return = pd.to_numeric(slot_rows['potential_return'], errors='coerce').sum()
+
+            adjusted_summary.loc[slot_summary_mask, 'main_stake'] = main_total
+            adjusted_summary.loc[slot_summary_mask, 'andar_stake'] = andar_total
+            adjusted_summary.loc[slot_summary_mask, 'bahar_stake'] = bahar_total
+            adjusted_summary.loc[slot_summary_mask, 'total_stake'] = main_total + andar_total + bahar_total
+            adjusted_summary.loc[slot_summary_mask, 'max_total_return'] = max_total_return
+
+        return adjusted_bets, adjusted_summary
 
     # ✅ ROCKET MODE: CRYSTAL CLEAR DATE MAPPING
     def print_rocket_summary(self, bets_df, summary_df, target_date, source_file, target_mode):
@@ -1121,14 +1207,16 @@ def main():
         print("🧠 Loading script hit memory...")
         memory_df = engine.load_script_hit_memory(target_date)
         history = engine.build_history_table(memory_df)
-        
+
         print("🎲 Generating ULTRA bet plan...")
         bets_df, summary_df, diagnostic_df, quantum_debug_df, ultra_debug_df, explainability_df = engine.generate_enhanced_bet_plan(df, target_rows, target_date, history)
-        
+
         if bets_df.empty:
             print("❌ No bets generated")
             return 1
-        
+
+        bets_df, summary_df = engine.apply_stake_overlays(bets_df, summary_df, target_date)
+
         output_path = engine.save_bet_plan(bets_df, summary_df, diagnostic_df, quantum_debug_df, ultra_debug_df, explainability_df, target_date)
         print(f"💾 Bet plan saved: {output_path}")
         

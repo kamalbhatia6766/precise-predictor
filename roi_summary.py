@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 import re
@@ -15,21 +16,18 @@ def fail(message):
     sys.exit(0)
 
 
-def load_pnl_data():
+def load_quant_reality_pnl():
+    """Load quant_reality_pnl.json as the single source of truth."""
     perf_dir = BASE_DIR / "logs" / "performance"
-    pnl_file = None
-    for ext in ("xlsx", "csv"):
-        candidate = perf_dir / f"quant_pnl_summary.{ext}"
-        if candidate.exists():
-            pnl_file = candidate
-            break
-    if not pnl_file:
-        fail("quant_pnl_summary not found, cannot compute ROI summary.")
-    if pnl_file.suffix == ".csv":
-        df = pd.read_csv(pnl_file)
-    else:
-        df = pd.read_excel(pnl_file)
-    return df
+    pnl_file = perf_dir / "quant_reality_pnl.json"
+    if not pnl_file.exists():
+        fail("quant_reality_pnl.json not found, cannot compute ROI summary.")
+    try:
+        with open(pnl_file, "r") as f:
+            data = json.load(f)
+    except Exception as exc:
+        fail(f"Failed to read quant_reality_pnl.json: {exc}")
+    return data
 
 
 def pick_date_column(df):
@@ -39,53 +37,82 @@ def pick_date_column(df):
     return None
 
 
-def build_stake_return(df):
-    stake_cols = [c for c in df.columns if "stake" in str(c).lower()]
-    return_cols = [c for c in df.columns if "return" in str(c).lower()]
-    stake_series = df[stake_cols].apply(pd.to_numeric, errors="coerce").sum(axis=1) if stake_cols else pd.Series([0] * len(df))
-    return_series = df[return_cols].apply(pd.to_numeric, errors="coerce").sum(axis=1) if return_cols else pd.Series([0] * len(df))
-    return stake_series, return_series
+def build_daily_df(data):
+    """Return a DataFrame with DATE, STAKE, RETURN, PNL from quant_reality_pnl data."""
+    daily_entries = data.get("daily") or []
+    records = data.get("records") or []
+
+    rows = []
+    if daily_entries:
+        for entry in daily_entries:
+            date_val = pd.to_datetime(entry.get("date") or entry.get("DATE"), errors="coerce")
+            if pd.isna(date_val):
+                continue
+            stake = float(entry.get("total_stake", entry.get("stake", 0)) or 0)
+            ret = float(entry.get("total_return", entry.get("return", 0)) or 0)
+            pnl = float(entry.get("pnl", ret - stake))
+            rows.append({"DATE": date_val, "STAKE": stake, "RETURN": ret, "PNL": pnl})
+    elif records:
+        for rec in records:
+            date_val = pd.to_datetime(rec.get("date") or rec.get("DATE"), errors="coerce")
+            if pd.isna(date_val):
+                continue
+            stake = float(rec.get("total_stake", rec.get("stake", rec.get("bet_stake", 0)) or 0))
+            ret = float(rec.get("total_return", rec.get("return", rec.get("payout", 0)) or 0))
+            pnl = float(rec.get("pnl", ret - stake))
+            rows.append({"DATE": date_val, "STAKE": stake, "RETURN": ret, "PNL": pnl})
+
+    daily_df = pd.DataFrame(rows)
+    if not daily_df.empty:
+        daily_df = daily_df.groupby("DATE")[["STAKE", "RETURN", "PNL"]].sum().reset_index()
+    return daily_df
 
 
-def summarize_windows(daily):
-    max_date = daily["DATE"].max()
-    min_date = daily["DATE"].min()
+def summarize_windows(daily_df):
+    max_date = daily_df["DATE"].max()
+    min_date = daily_df["DATE"].min()
     total_days = (max_date - min_date).days + 1
 
     def window_stats(days):
         if days is None:
-            window_df = daily
+            window_df = daily_df
         else:
-            if daily["DATE"].nunique() < days:
-                window_df = daily
-            else:
-                start_date = max_date - timedelta(days=days - 1)
-                window_df = daily[daily["DATE"] >= start_date]
+            start_date = max_date - timedelta(days=days - 1)
+            window_df = daily_df[daily_df["DATE"] >= start_date]
         stake = window_df["STAKE"].sum()
         ret = window_df["RETURN"].sum()
         pnl = ret - stake
-        roi = (ret / stake - 1) * 100 if stake > 0 else 0
-        return pnl, roi
+        roi = (pnl / stake * 100) if stake > 0 else 0
+        unique_days = window_df["DATE"].nunique()
+        return pnl, roi, unique_days
 
-    overall = window_stats(None)
+    overall_pnl = daily_df["RETURN"].sum() - daily_df["STAKE"].sum()
+    overall_roi = (overall_pnl / daily_df["STAKE"].sum() * 100) if daily_df["STAKE"].sum() > 0 else 0
+    overall = (overall_pnl, overall_roi, daily_df["DATE"].nunique())
     last7 = window_stats(7)
     last30 = window_stats(30)
     return (min_date, max_date, total_days), overall, last7, last30
 
 
-def slot_roi(df, date_col):
-    slot_col = None
-    for col in df.columns:
-        if "slot" == str(col).lower():
-            slot_col = col
-            break
-    if slot_col is None:
+def compute_drawdown(daily_df):
+    daily_pnl = daily_df.groupby("DATE")["PNL"].sum().reset_index().sort_values("DATE")
+    cumulative = daily_pnl["PNL"].cumsum()
+    peak = cumulative.iloc[0] if not cumulative.empty else 0
+    worst_dd = 0
+    for val in cumulative:
+        peak = max(peak, val)
+        drawdown = val - peak
+        worst_dd = min(worst_dd, drawdown)
+    peak_base = peak if peak != 0 else max(cumulative.max(), 1)
+    dd_pct = abs(worst_dd) / peak_base * 100 if peak_base else 0
+    return worst_dd, dd_pct
+
+
+def slot_roi_from_quant(data):
+    slot_rows = data.get("by_slot") or []
+    if not slot_rows:
         return None
-    stakes, returns = build_stake_return(df)
-    temp = pd.DataFrame({"slot": df[slot_col].astype(str).str.upper(), "stake": stakes, "return": returns, "date": pd.to_datetime(df[date_col], errors="coerce")})
-    temp = temp[temp["date"].notna()]
-    summary = temp.groupby("slot").agg({"stake": "sum", "return": "sum"}).reset_index()
-    return summary
+    return {row.get("slot", "").upper(): row for row in slot_rows}
 
 
 def parse_filename_date(stem):
@@ -217,43 +244,50 @@ def format_currency(value):
 
 
 def main():
-    pnl_df = load_pnl_data()
-    date_col = pick_date_column(pnl_df)
-    if not date_col:
-        fail("DATE column missing in P&L data, cannot compute ROI summary.")
-    pnl_df["DATE"] = pd.to_datetime(pnl_df[date_col], errors="coerce")
-    pnl_df = pnl_df[pnl_df["DATE"].notna()]
-    stakes, returns = build_stake_return(pnl_df)
-    daily = pd.DataFrame({"DATE": pnl_df["DATE"], "STAKE": stakes, "RETURN": returns}).groupby("DATE").sum().reset_index()
+    quant_data = load_quant_reality_pnl()
+    daily = build_daily_df(quant_data)
     if daily.empty:
         fail("No valid P&L data to summarize.")
+
     window_info, overall, last7, last30 = summarize_windows(daily)
+
+    overall_block = quant_data.get("summary") or quant_data.get("overall") or {}
+    overall_stake = overall_block.get("total_stake", daily["STAKE"].sum())
+    overall_return = overall_block.get("total_return", daily["RETURN"].sum())
+    overall_pnl = overall_block.get("total_pnl", overall_return - overall_stake)
+    overall_roi = overall_block.get("overall_roi", (overall_pnl / overall_stake * 100) if overall_stake else 0)
 
     print("=== ROI SUMMARY ===")
     print(f"Window: {window_info[0].date()} → {window_info[1].date()} ({window_info[2]} days)")
     print("")
     print("1) P&L SNAPSHOT")
-    print(f"   Overall      : P&L {format_currency(overall[0])} (ROI {overall[1]:.1f}%)")
-    print(f"   Last 7 days  : P&L {format_currency(last7[0])} (ROI {last7[1]:.1f}%)")
-    print(f"   Last 30 days : P&L {format_currency(last30[0])} (ROI {last30[1]:.1f}%)")
+    print(f"   Overall      : P&L {format_currency(overall_pnl)} (ROI {overall_roi:.1f}%)")
+    print(f"   Last 7 days  : P&L {format_currency(last7[0])} (ROI {last7[1]:.1f}%, days={last7[2]}/7)")
+    print(f"   Last 30 days : P&L {format_currency(last30[0])} (ROI {last30[1]:.1f}%, days={last30[2]}/30)")
 
-    slot_summary = slot_roi(pnl_df, "DATE")
+    worst_dd, dd_pct = compute_drawdown(daily)
+    print("\n2) RISK STATS (full window)")
+    print(f"   Worst drawdown : {format_currency(worst_dd)} ({dd_pct:.1f}%)")
+
+    slot_summary = slot_roi_from_quant(quant_data)
     if slot_summary is not None:
-        print("\n2) SLOT-WISE ROI (full window)")
+        print("\n3) SLOT-WISE ROI (full window)")
         for slot in SLOTS:
-            row = slot_summary[slot_summary["slot"] == slot]
-            if row.empty:
+            row = slot_summary.get(slot, {})
+            if not row:
                 continue
-            stake_val = row["stake"].values[0]
-            ret_val = row["return"].values[0]
-            roi_val = (ret_val / stake_val - 1) * 100 if stake_val > 0 else 0
+            stake_val = row.get("total_stake", 0)
+            ret_val = row.get("total_return", 0)
+            roi_val = row.get("roi_pct")
+            if roi_val is None:
+                roi_val = (ret_val / stake_val - 1) * 100 if stake_val > 0 else 0
             print(f"   {slot}: stake {format_currency(stake_val)}, return {format_currency(ret_val)}, ROI {roi_val:.1f}%")
 
     results_df = load_real_results()
     bets_df = collect_bets()
     perf = s40_performance(results_df, bets_df)
     if perf:
-        print("\n3) S40 vs NON-S40 (2-digit bets only, full window)")
+        print("\n4) S40 vs NON-S40 (2-digit bets only, full window)")
         s40 = perf.get("S40", {})
         non = perf.get("NON", {})
         print(f"   S40     : hits {s40.get('hits',0)}, stake {format_currency(s40.get('stake',0))}, return {format_currency(s40.get('return',0))}, ROI {s40.get('roi',0):.1f}%")
@@ -261,7 +295,7 @@ def main():
 
     hits = script_hits()
     if hits:
-        print("\n4) SCRIPT PERFORMANCE (from hit memory)")
+        print("\n5) SCRIPT PERFORMANCE (from hit memory)")
         for name, total, cross, direct in hits:
             if cross is None:
                 print(f"   {name}: {total} hits")

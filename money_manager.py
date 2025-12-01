@@ -8,6 +8,33 @@ class MoneyManager:
     def __init__(self):
         self.base_dir = Path(__file__).resolve().parent
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
+
+    def load_reference_bankroll(self):
+        """Load reference bankroll from latest daily_meta_config, fallback to default constant."""
+        default_bankroll = 11550
+        config_dir = self.base_dir / "logs" / "performance"
+        candidates = sorted(config_dir.glob("daily_meta_config*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in candidates:
+            try:
+                with open(path, "r") as f:
+                    data = json.load(f)
+                ref_val = data.get("current_bankroll") or data.get("reference_bankroll")
+                if ref_val is not None:
+                    return float(ref_val)
+            except Exception:
+                continue
+        return default_bankroll
+
+    def load_quant_pnl(self):
+        """Load quant_reality_pnl.json for realized P&L linkage."""
+        pnl_path = self.base_dir / "logs" / "performance" / "quant_reality_pnl.json"
+        if not pnl_path.exists():
+            return None
+        try:
+            with open(pnl_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return None
         
     def load_financial_data(self):
         """Load all financial data including risk configuration"""
@@ -18,6 +45,10 @@ class MoneyManager:
         if pnl_file.exists():
             data['pnl'] = pd.read_excel(pnl_file, sheet_name='day_level')
             data['pnl']['date'] = pd.to_datetime(data['pnl']['date']).dt.date
+
+        quant_pnl = self.load_quant_pnl()
+        if quant_pnl:
+            data['quant_pnl'] = quant_pnl
         
         # Load dynamic stake plan
         stake_file = self.base_dir / "logs" / "performance" / "dynamic_stake_plan.json"
@@ -130,35 +161,51 @@ class MoneyManager:
         """Calculate bankroll management rules with risk-aware caps"""
         if 'pnl' not in data:
             return {}
-            
+
         pnl_df = data['pnl']
         total_profit = float(pnl_df['profit_total'].sum())
         total_stake = float(pnl_df['stake_total'].sum())
-        
+
         # Calculate risk metrics
         daily_returns = pnl_df['profit_total'] / pnl_df['stake_total']
         sharpe_ratio = float(daily_returns.mean() / daily_returns.std()) if daily_returns.std() > 0 else 0
         max_drawdown = float(daily_returns.min())
-        
+
         # ✅ PHASE 2: Get risk-aware daily caps
         daily_caps = {'total': 300, 'single': 100}  # defaults
         if 'strategy' in data:
             daily_caps = self.get_daily_caps(data['strategy'])
-        
+
+        reference_bankroll = self.load_reference_bankroll()
+        realized_bankroll = reference_bankroll
+
+        quant_block = data.get('quant_pnl', {})
+        quant_summary = quant_block.get('summary') or quant_block.get('overall') or {}
+        total_pnl = quant_summary.get('total_pnl')
+        if total_pnl is None:
+            daily_entries = quant_block.get('daily') or []
+            try:
+                total_pnl = sum((entry.get('total_return', entry.get('return', 0)) or 0) - (entry.get('total_stake', entry.get('stake', 0)) or 0) for entry in daily_entries)
+            except Exception:
+                total_pnl = None
+
+        if total_pnl is not None:
+            realized_bankroll = reference_bankroll + float(total_pnl)
+
         bankroll_rules = {
-            'current_bankroll': total_profit,
-            'recommended_daily_risk': min(daily_caps['total'], total_profit * 0.1),  # 10% or cap max
+            'current_bankroll': realized_bankroll,
+            'recommended_daily_risk': min(daily_caps['total'], realized_bankroll * 0.1),  # 10% or cap max
             'max_single_loss': daily_caps['single'],
             'sharpe_ratio': sharpe_ratio,
             'max_drawdown': max_drawdown,
             'risk_adjustment': 'AGGRESSIVE' if sharpe_ratio > 1.0 else 'MODERATE' if sharpe_ratio > 0.5 else 'CONSERVATIVE',
             'daily_caps': daily_caps,  # ✅ PHASE 2: Include caps
             'risk_mode': data.get('strategy', {}).get('risk_mode', 'NORMAL'),  # ✅ PHASE 2: Include risk mode
-            'reference_bankroll': total_profit,
-            'realized_bankroll': total_profit,
+            'reference_bankroll': reference_bankroll,
+            'realized_bankroll': realized_bankroll,
             'bankroll_mode': 'PNL_LINKED'
         }
-        
+
         return bankroll_rules
     
     def generate_money_recommendations(self, kelly_stakes, bankroll_rules):
@@ -275,7 +322,7 @@ class MoneyManager:
         print(f"   Bankroll mode: {bankroll_rules.get('bankroll_mode', 'STATIC_REFERENCE')}")
         print(f"   Recommended Daily Risk: ₹{bankroll_rules['recommended_daily_risk']:.0f}")
         print(f"   Daily Caps: ₹{daily_caps['total']} total, ₹{daily_caps['single']} single")
-        print("   Note: Above limits are advisory, not hard caps. Core engine may override based on strategy.")
+        print("   Note: Daily caps and stake multipliers are advisory. Core staking engine may choose higher stakes based on strategy and user preferences.")
         print(f"   Sharpe Ratio: {bankroll_rules['sharpe_ratio']:.2f}")
         print(f"   Risk Adjustment: {bankroll_rules['risk_adjustment']}")
         

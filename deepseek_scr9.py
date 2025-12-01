@@ -9,6 +9,7 @@ import glob
 import subprocess
 import re
 import time
+import json
 import quant_data_core
 warnings.filterwarnings('ignore')
 
@@ -22,11 +23,13 @@ class UltimatePredictionEngine:
     def __init__(self, speed_mode='full'):
         self.slot_names = {1: "FRBD", 2: "GZBD", 3: "GALI", 4: "DSWR"}
         self.speed_mode = speed_mode  # 'full' or 'fast'
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.script_weights = self.load_script_weights()
         self.setup_directories()
-        
+
     def setup_directories(self):
         """Create output folders"""
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = self.base_dir
         folders = [
             'outputs/predictions', 
             'outputs/analysis', 
@@ -45,8 +48,31 @@ class UltimatePredictionEngine:
         for folder in folders:
             full_path = os.path.join(base_dir, folder)
             os.makedirs(full_path, exist_ok=True)
-        
+
         self.move_old_files_to_logs()
+
+    def load_script_weights(self):
+        """Load performance-based script weights (defaults to 1.0)."""
+        weight_path = os.path.join(self.base_dir, "logs", "performance", "script_performance_summary.json")
+        weights = {}
+        try:
+            with open(weight_path, "r") as f:
+                data = json.load(f)
+            for row in data.get("scripts", []):
+                name = str(row.get("name", "")).upper()
+                weight_val = row.get("weight", 1.0)
+                if not weight_val:
+                    weight_val = 1.0
+                weights[name] = weight_val
+        except Exception:
+            weights = {}
+        return weights
+
+    def _script_key(self, script_name: str) -> str:
+        match = re.search(r"scr(\d+)", script_name, re.IGNORECASE)
+        if match:
+            return f"SCR{int(match.group(1))}"
+        return script_name.upper()
     
     def move_old_files_to_logs(self):
         """Move old prediction files to organized folders"""
@@ -260,21 +286,10 @@ class UltimatePredictionEngine:
         """Build ensemble scores for a slot - OPTIMIZED"""
         scores = Counter()
         
-        script_weights = {
-            'deepseek_scr1.py': 1.0,
-            'deepseek_scr2.py': 1.0,
-            'deepseek_scr3.py': 1.0,
-            'deepseek_scr4.py': 1.0,
-            'deepseek_scr5.py': 1.0,
-            'deepseek_scr6.py': 1.5,
-            'deepseek_scr7.py': 1.5,
-            'deepseek_scr8.py': 1.5,
-        }
-        
         # Process each script's predictions
         for script_name, predictions in all_preds_for_slot.items():
-            weight = script_weights.get(script_name, 1.0)
-            
+            weight = self.script_weights.get(self._script_key(script_name), 1.0)
+
             for rank, number in enumerate(predictions, 1):
                 if rank == 1:
                     rank_weight = 5
