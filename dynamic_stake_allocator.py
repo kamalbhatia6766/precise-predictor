@@ -107,21 +107,144 @@ class DynamicStakeAllocator:
 
         return scaled_bets, scaled_summary
 
-    def save_final_bet_plan(self, bets_df, summary_df, target_date, total_final_stake):
+    def save_final_bet_plan(
+        self,
+        bets_df,
+        summary_df,
+        target_date,
+        total_final_stake,
+        base_slot_stakes,
+        final_slot_stakes,
+    ):
         if bets_df is None or target_date is None:
             return None
 
         date_str = target_date.strftime("%Y-%m-%d")
+        date_str_clean = target_date.strftime("%Y%m%d")
         output_path = quant_paths.get_final_bet_plan_path(date_str)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        final_slot_plan_df = self._prepare_final_slot_plan(
+            date_str,
+            date_str_clean,
+            bets_df,
+            summary_df,
+            base_slot_stakes,
+            final_slot_stakes,
+        )
+
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            final_slot_plan_df.to_excel(writer, sheet_name='final_slot_plan', index=False)
             bets_df.to_excel(writer, sheet_name='bets', index=False)
             if summary_df is not None:
                 summary_df.to_excel(writer, sheet_name='summary', index=False)
 
         print(f"💾 Final bet plan saved: {output_path} (Total stake=₹{total_final_stake})")
         return output_path
+
+    def _load_template_final_plan(self, target_date_clean):
+        bet_dir = quant_paths.get_bet_engine_dir()
+        latest_file = None
+        latest_date = ""
+
+        for file in bet_dir.glob("final_bet_plan_*.xlsx"):
+            date_str = file.stem.split('_')[-1]
+            if date_str.isdigit() and len(date_str) == 8 and date_str != target_date_clean:
+                if date_str > latest_date:
+                    latest_date = date_str
+                    latest_file = file
+
+        if not latest_file:
+            return None, None
+
+        try:
+            df = pd.read_excel(latest_file, sheet_name='final_slot_plan')
+            return df, latest_file
+        except Exception:
+            try:
+                df = pd.read_excel(latest_file, sheet_name=0)
+                return df, latest_file
+            except Exception:
+                return None, latest_file
+
+    def _prepare_final_slot_plan(
+        self,
+        date_str,
+        date_str_clean,
+        bets_df,
+        summary_df,
+        base_slot_stakes,
+        final_slot_stakes,
+    ):
+        template_df, template_file = self._load_template_final_plan(date_str_clean)
+
+        if template_df is not None and not template_df.empty:
+            print(f"ℹ️ Using template final plan structure from {template_file.name}")
+            columns = list(template_df.columns)
+        else:
+            columns = [
+                'date', 'slot', 'meta_strategy', 'numeric_strategy', 'meta_confidence_level',
+                'risk_mode', 'zone', 'base_slot_stake', 'dynamic_slot_stake',
+                'conviction_slot_stake', 'final_slot_stake'
+            ]
+
+        template_lookup = {}
+        if template_df is not None and 'slot' in template_df.columns:
+            template_lookup = {
+                str(row['slot']): row.to_dict()
+                for _, row in template_df.iterrows()
+                if pd.notna(row.get('slot', ''))
+            }
+
+        rows = []
+        for slot in self.slots:
+            base_row = {col: '' for col in columns}
+            if slot in template_lookup:
+                for col in columns:
+                    base_row[col] = template_lookup[slot].get(col, base_row[col])
+
+            if 'slot' in columns:
+                base_row['slot'] = slot
+            if 'date' in columns:
+                base_row['date'] = date_str
+            if 'base_slot_stake' in columns:
+                base_row['base_slot_stake'] = float(base_slot_stakes.get(slot, 0))
+            if 'dynamic_slot_stake' in columns:
+                base_row['dynamic_slot_stake'] = float(final_slot_stakes.get(slot, base_slot_stakes.get(slot, 0)))
+            if 'conviction_slot_stake' in columns:
+                base_row['conviction_slot_stake'] = float(base_row.get('conviction_slot_stake', 0) or base_slot_stakes.get(slot, 0))
+            if 'final_slot_stake' in columns:
+                base_row['final_slot_stake'] = float(final_slot_stakes.get(slot, 0))
+
+            rows.append(base_row)
+
+        total_row = {col: '' for col in columns}
+        if 'date' in columns:
+            total_row['date'] = 'TOTAL'
+        if 'slot' in columns:
+            total_row['slot'] = ''
+        if 'base_slot_stake' in columns:
+            total_row['base_slot_stake'] = sum(base_slot_stakes.values())
+        if 'dynamic_slot_stake' in columns:
+            total_row['dynamic_slot_stake'] = sum(final_slot_stakes.values())
+        if 'conviction_slot_stake' in columns:
+            total_row['conviction_slot_stake'] = sum(
+                float(base_row.get('conviction_slot_stake', 0) or 0) for base_row in rows
+            )
+        if 'final_slot_stake' in columns:
+            total_row['final_slot_stake'] = sum(final_slot_stakes.values())
+
+        rows.append(total_row)
+
+        # Fill defaults for meta columns if missing
+        for row in rows:
+            row.setdefault('meta_strategy', 'DYNAMIC_STAKE_PLAN')
+            row.setdefault('numeric_strategy', 'DYNAMIC')
+            row.setdefault('meta_confidence_level', 'AUTO')
+            row.setdefault('risk_mode', 'ADAPTIVE')
+            row.setdefault('zone', 'UNKNOWN')
+
+        return pd.DataFrame(rows, columns=columns)
     
     def load_reality_performance(self):
         """Load reality performance data from quant_reality_pnl.json"""
@@ -208,6 +331,38 @@ class DynamicStakeAllocator:
             final_slot_stakes[slot] = final_stake
         
         return final_slot_stakes, overall_roi, slot_rois
+
+    def _detect_stake_column(self, df):
+        for cand in ['final_slot_stake', 'stake', 'final_stake', 'amount']:
+            if cand in df.columns:
+                return cand
+        return None
+
+    def _read_final_plan_total(self, file_path):
+        try:
+            df = pd.read_excel(file_path, sheet_name='final_slot_plan')
+            source = 'final_slot_plan'
+        except Exception:
+            try:
+                df = pd.read_excel(file_path, sheet_name=0)
+                source = 'first_sheet'
+                print(f"⚠️ final_slot_plan sheet not found in {file_path.name}, using first sheet for totals")
+            except Exception:
+                return None
+
+        stake_col = self._detect_stake_column(df)
+        if not stake_col:
+            return None
+
+        if 'date' in df.columns:
+            total_row = df[df['date'] == 'TOTAL']
+            if not total_row.empty:
+                return float(pd.to_numeric(total_row[stake_col], errors='coerce').iloc[0])
+
+        if 'slot' in df.columns:
+            return float(pd.to_numeric(df[df['slot'].isin(self.slots)][stake_col], errors='coerce').sum())
+
+        return float(pd.to_numeric(df[stake_col], errors='coerce').sum())
     
     def generate_stake_plan(self, base_slot_stakes, final_slot_stakes, target_date, overall_roi, slot_rois):
         """Generate the dynamic stake plan JSON"""
@@ -276,10 +431,21 @@ class DynamicStakeAllocator:
         bets_df, summary_df, target_date = self.load_base_bet_plan()
         if bets_df is None:
             return False
-        
+
         # Step 2: Calculate base stakes
         base_slot_stakes, base_daily_stake = self.calculate_base_stakes(bets_df)
-        
+
+        existing_final_total = None
+        if target_date is not None:
+            candidate_final = quant_paths.get_final_bet_plan_path(target_date.strftime("%Y-%m-%d"))
+            if candidate_final.exists():
+                existing_final_total = self._read_final_plan_total(candidate_final)
+                if existing_final_total is not None:
+                    print(
+                        f"ℹ️ Existing final plan detected ({candidate_final.name}): "
+                        f"total stake=₹{existing_final_total:.1f}"
+                    )
+
         # Step 3: Load reality performance
         performance_data = self.load_reality_performance()
         if performance_data is None:
@@ -290,13 +456,42 @@ class DynamicStakeAllocator:
         
         # Step 5: Generate stake plan
         stake_plan = self.generate_stake_plan(base_slot_stakes, final_slot_stakes, target_date, overall_roi, slot_rois)
-        
+
         # Step 6: Save stake plan
         self.save_stake_plan(stake_plan)
 
         # Step 7: Apply overlay to bet plan and save final plan
-        scaled_bets, scaled_summary = self._scale_bet_plan(bets_df, summary_df, final_slot_stakes, base_slot_stakes)
-        self.save_final_bet_plan(scaled_bets, scaled_summary, target_date, stake_plan['total_daily_stake'])
+        desired_total = stake_plan['total_daily_stake']
+        already_aligned = False
+
+        if desired_total > 0 and abs(base_daily_stake - desired_total) / desired_total <= 0.01:
+            already_aligned = True
+            print(
+                f"ℹ️ Base bet plan already aligned with dynamic final stakes (total ≈ ₹{base_daily_stake:.1f}). "
+                "No additional scaling applied."
+            )
+        elif existing_final_total is not None and desired_total > 0:
+            diff_ratio = abs(base_daily_stake - existing_final_total) / max(existing_final_total, 1)
+            if diff_ratio <= 0.01:
+                already_aligned = True
+                print(
+                    f"ℹ️ Base bet plan already aligned with existing final plan (total ≈ ₹{base_daily_stake:.1f}). "
+                    "No additional scaling applied."
+                )
+
+        if already_aligned:
+            scaled_bets, scaled_summary = bets_df, summary_df
+        else:
+            scaled_bets, scaled_summary = self._scale_bet_plan(bets_df, summary_df, final_slot_stakes, base_slot_stakes)
+
+        self.save_final_bet_plan(
+            scaled_bets,
+            scaled_summary,
+            target_date,
+            desired_total,
+            base_slot_stakes,
+            final_slot_stakes,
+        )
 
         # Step 8: Print summary
         self.print_console_summary(stake_plan)

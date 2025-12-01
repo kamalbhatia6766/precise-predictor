@@ -238,25 +238,44 @@ class ExecutionReadinessEngine:
         if not latest_file:
             print("⚠️ Could not find valid final bet plan")
             return 0
-        
+
         try:
             df = pd.read_excel(latest_file, sheet_name='final_slot_plan')
-            
-            # Look for TOTAL row
+            source_sheet = 'final_slot_plan'
+        except Exception as e_first:
+            print(f"⚠️ final_slot_plan sheet not found in {latest_file.name}, falling back to first sheet ({e_first})")
+            try:
+                df = pd.read_excel(latest_file, sheet_name=0)
+                source_sheet = 'first_sheet'
+            except Exception as e_second:
+                print(f"⚠️ Could not read any valid sheet from final bet plan: {e_second}")
+                return 0
+
+        stake_col = None
+        for cand in ['final_slot_stake', 'stake', 'final_stake', 'amount']:
+            if cand in df.columns:
+                stake_col = cand
+                break
+
+        if stake_col is None:
+            print("⚠️ No recognizable stake column in final bet plan")
+            return 0
+
+        if 'date' in df.columns:
             total_row = df[df['date'] == 'TOTAL']
             if not total_row.empty:
-                total_stake = float(total_row['final_slot_stake'].iloc[0])
+                total_stake = float(pd.to_numeric(total_row[stake_col], errors='coerce').iloc[0])
             else:
-                # Sum non-empty slots
-                slot_rows = df[df['slot'].isin(['FRBD', 'GZBD', 'GALI', 'DSWR'])]
-                total_stake = float(slot_rows['final_slot_stake'].sum())
-            
-            print(f"✅ Loaded final bet plan: {latest_file.name}, total stake=₹{total_stake:.0f}")
-            return total_stake
-            
-        except Exception as e:
-            print(f"⚠️ Error reading final bet plan: {e}")
-            return 0
+                slot_rows = df[df['slot'].isin(['FRBD', 'GZBD', 'GALI', 'DSWR'])] if 'slot' in df.columns else df
+                total_stake = float(pd.to_numeric(slot_rows[stake_col], errors='coerce').sum())
+        elif 'slot' in df.columns:
+            slot_rows = df[df['slot'].isin(['FRBD', 'GZBD', 'GALI', 'DSWR'])]
+            total_stake = float(pd.to_numeric(slot_rows[stake_col], errors='coerce').sum())
+        else:
+            total_stake = float(pd.to_numeric(df[stake_col], errors='coerce').sum())
+
+        print(f"✅ Loaded final bet plan ({source_sheet}): {latest_file.name}, total stake=₹{total_stake:.0f}")
+        return total_stake
     
     def compute_environment_score(self, reality_summary, strategy_reco, conf_summary, audit_summary):
         """Compute environment score (0-100)"""
