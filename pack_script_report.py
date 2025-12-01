@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -183,6 +184,35 @@ def print_pack_overlap(script_summaries):
             print(f"  {row['script']}: hits={row['hits']}, S40≈{s40}, NON≈{non_s40}")
 
 
+def _to_json_safe(obj):
+    """
+    Recursively convert numpy / pandas scalar types into
+    plain Python int/float/bool so json.dump doesn't choke.
+    """
+    import numpy as np
+
+    # Scalars
+    if isinstance(obj, (np.integer, )):
+        return int(obj)
+    if isinstance(obj, (np.floating, )):
+        return float(obj)
+    if isinstance(obj, (np.bool_, )):
+        return bool(obj)
+
+    # ndarrays -> lists
+    if isinstance(obj, np.ndarray):
+        return [_to_json_safe(x) for x in obj.tolist()]
+
+    # Containers
+    if isinstance(obj, dict):
+        return {k: _to_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_json_safe(v) for v in obj]
+
+    # Everything else unchanged
+    return obj
+
+
 def write_script_weights_json(script_summaries, output_path: Path):
     if not script_summaries:
         return
@@ -203,8 +233,9 @@ def write_script_weights_json(script_summaries, output_path: Path):
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(payload, f, indent=2)
+    safe_payload = _to_json_safe(payload)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(safe_payload, f, indent=2, ensure_ascii=False)
 
 
 def main():
