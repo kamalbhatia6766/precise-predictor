@@ -153,7 +153,10 @@ class MoneyManager:
             'max_drawdown': max_drawdown,
             'risk_adjustment': 'AGGRESSIVE' if sharpe_ratio > 1.0 else 'MODERATE' if sharpe_ratio > 0.5 else 'CONSERVATIVE',
             'daily_caps': daily_caps,  # ✅ PHASE 2: Include caps
-            'risk_mode': data.get('strategy', {}).get('risk_mode', 'NORMAL')  # ✅ PHASE 2: Include risk mode
+            'risk_mode': data.get('strategy', {}).get('risk_mode', 'NORMAL'),  # ✅ PHASE 2: Include risk mode
+            'reference_bankroll': total_profit,
+            'realized_bankroll': total_profit,
+            'bankroll_mode': 'PNL_LINKED'
         }
         
         return bankroll_rules
@@ -268,8 +271,11 @@ class MoneyManager:
         print(f"\n📊 BANKROLL MANAGEMENT - {risk_mode} MODE:")
         print("-" * 45)
         print(f"   Current Bankroll: ₹{bankroll_rules['current_bankroll']:.0f}")
+        print(f"   Reference Bankroll: ₹{bankroll_rules.get('reference_bankroll', bankroll_rules['current_bankroll']):.0f} | Realized Bankroll: ₹{bankroll_rules.get('realized_bankroll', bankroll_rules['current_bankroll']):.0f}")
+        print(f"   Bankroll mode: {bankroll_rules.get('bankroll_mode', 'STATIC_REFERENCE')}")
         print(f"   Recommended Daily Risk: ₹{bankroll_rules['recommended_daily_risk']:.0f}")
         print(f"   Daily Caps: ₹{daily_caps['total']} total, ₹{daily_caps['single']} single")
+        print("   Note: Above limits are advisory, not hard caps. Core engine may override based on strategy.")
         print(f"   Sharpe Ratio: {bankroll_rules['sharpe_ratio']:.2f}")
         print(f"   Risk Adjustment: {bankroll_rules['risk_adjustment']}")
         

@@ -612,6 +612,42 @@ class BetPnLTracker:
             'daily': daily_summary.to_dict('records')
         }
 
+    def export_quant_pnl_summary(self, slot_pnl_df: pd.DataFrame) -> None:
+        """Export per-day, per-slot stake/return summary for ROI analysis"""
+        if slot_pnl_df.empty:
+            return
+
+        daily_records = []
+        slot_df = slot_pnl_df[slot_pnl_df['slot'] != 'DAY_TOTAL']
+
+        for date_val, group in slot_df.groupby('date'):
+            record = {'DATE': date_val}
+            total_stake = 0
+            total_return = 0
+
+            for slot in self.slots:
+                slot_rows = group[group['slot'] == slot]
+                stake_val = float(slot_rows['total_stake'].sum()) if not slot_rows.empty else 0.0
+                return_val = float(slot_rows['total_return'].sum()) if not slot_rows.empty else 0.0
+                record[f"{slot}_stake"] = stake_val
+                record[f"{slot}_return"] = return_val
+                total_stake += stake_val
+                total_return += return_val
+
+            record['TOTAL_STAKE'] = total_stake
+            record['TOTAL_RETURN'] = total_return
+            daily_records.append(record)
+
+        if not daily_records:
+            return
+
+        df_summary = pd.DataFrame(daily_records)
+        df_summary = df_summary.sort_values('DATE')
+
+        output_path = self.base_dir / "logs" / "performance" / "quant_pnl_summary.xlsx"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        df_summary.to_excel(output_path, index=False)
+
     def save_pnl_master_file(self, slot_pnl_df: pd.DataFrame, layer_pnl_df: pd.DataFrame, summary_data: Dict):
         """Save master P&L file with all details"""
         output_file = quant_paths.get_performance_logs_dir() / "quant_reality_pnl.xlsx"
@@ -744,9 +780,12 @@ class BetPnLTracker:
         
         # Step 5: Build summaries
         summary_data = self.build_summary_tables(slot_pnl_df, layer_pnl_df)
-        
+
         # Step 6: Save master file
         self.save_pnl_master_file(slot_pnl_df, layer_pnl_df, summary_data)
+
+        # Step 6b: Export compact quant P&L summary for ROI consumers
+        self.export_quant_pnl_summary(slot_pnl_df)
         
         # Step 7: Print console summary
         self.print_console_summary(summary_data)
