@@ -12,6 +12,11 @@ import quant_data_core
 from utils_2digit import is_valid_2d_number, to_2d_str
 warnings.filterwarnings('ignore')
 
+
+def fmt_rupees(value: float) -> str:
+    """Cosmetic helper to keep rupee values tidy in logs."""
+    return f"₹{float(value):.2f}"
+
 try:
     import pattern_packs
     PATTERN_PACKS_AVAILABLE = True
@@ -193,7 +198,7 @@ class PreciseBetEngine:
         print(f"   📊 Mode: {target_mode.upper()}")
         print(f"   📁 Source: {source_file.name}")
         
-        print(f"💰 Base Unit: ₹{self.base_unit}")
+        print(f"💰 Base Unit: {fmt_rupees(self.base_unit)}")
         
         print("\n📊 SLOT BREAKDOWN (MAIN + ANDAR/BAHAR):")
         print("-" * 80)
@@ -212,7 +217,7 @@ class PreciseBetEngine:
                     number = bet['number_or_digit']
                     tier = bet['tier']
                     stake = bet['stake']
-                    main_numbers.append(f"{number}({tier} ₹{stake})")
+                    main_numbers.append(f"{number}({tier} {fmt_rupees(stake)})")
                     main_total += stake
                 
                 # ANDAR/BAHAR digits
@@ -226,11 +231,14 @@ class PreciseBetEngine:
                 
                 print(f"   {slot}:")
                 print(f"     🔢 Main: {', '.join(main_numbers)}")
-                print(f"     📊 ANDAR: {andar_digit}(₹{andar_stake}), BAHAR: {bahar_digit}(₹{bahar_stake})")
-                print(f"     💰 Total: ₹{slot_total:.2f}")
+                print(
+                    f"     📊 ANDAR: {andar_digit}({fmt_rupees(andar_stake)}), "
+                    f"BAHAR: {bahar_digit}({fmt_rupees(bahar_stake)})"
+                )
+                print(f"     💰 Total: {fmt_rupees(slot_total)}")
                 print()
 
-        print(f"💵 GRAND TOTAL: ₹{grand_total:.2f}")
+        print(f"💵 GRAND TOTAL: {fmt_rupees(grand_total)}")
         print(f"🚀 ULTRA v5 QUANTUM SELF-LEARNING: ACTIVE")
 
         risk_zone = self.risk_context.get("zone", "UNKNOWN")
@@ -243,8 +251,8 @@ class PreciseBetEngine:
         print(f"   Zone: {risk_zone}")
         print(f"   Risk Mode: {risk_mode}")
         print(f"   Loss-Recovery Multiplier: {risk_mult:.2f}x")
-        print(f"   Dynamic Stake Total (pre-risk): ₹{pre_risk:.2f}")
-        print(f"   Final Applied Stake Total: ₹{final_total:.2f}")
+        print(f"   Dynamic Stake Total (pre-risk): {fmt_rupees(pre_risk)}")
+        print(f"   Final Applied Stake Total: {fmt_rupees(final_total)}")
 
     # ✅ ALL WORKING METHODS FROM YOUR CURRENT VERSION
     def find_latest_predictions_file(self, source='scr9'):
@@ -1159,9 +1167,11 @@ class PreciseBetEngine:
                 'dynamic_top_n': True
             })
             
-            print(f"   Main: {len(shortlist)} numbers, ₹{main_stake_total} stake")
+            print(f"   Main: {len(shortlist)} numbers, {fmt_rupees(main_stake_total)} stake")
             print(f"   ANDAR: {andar_digit}, BAHAR: {bahar_digit}")
-            print(f"   Total stake: ₹{total_stake:.2f}, Max return: ₹{max_total_return:.2f}")
+            print(
+                f"   Total stake: {fmt_rupees(total_stake)}, Max return: {fmt_rupees(max_total_return)}"
+            )
         
         bets_df = pd.DataFrame(bets_data)
         summary_df = pd.DataFrame(summary_data)

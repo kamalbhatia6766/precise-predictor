@@ -12,19 +12,29 @@ warnings.filterwarnings('ignore')
 import quant_paths
 import quant_data_core
 
+
+def fmt_rupees(value: float) -> str:
+    """Format rupee amounts with 2 decimal places for cleaner console output."""
+    return f"₹{float(value):.2f}"
+
 class DynamicStakeAllocator:
     def __init__(self):
         self.base_dir = quant_paths.get_project_root()
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
         
     def load_base_bet_plan(self):
-        """Load the latest bet plan to get base stakes"""
+        """Load the latest bet plan to get base stakes (always from master file)."""
         latest_bet_plan = quant_paths.find_latest_bet_plan_master()
         target_date = quant_paths.parse_date_from_filename(latest_bet_plan.stem) if latest_bet_plan else None
 
+        if target_date:
+            canonical_master = quant_paths.get_bet_plan_master_path(target_date.strftime("%Y-%m-%d"))
+            if canonical_master.exists():
+                latest_bet_plan = canonical_master
+
         if not latest_bet_plan:
             print("❌ No bet plan files found")
-            return None, None, None
+            return None, None, None, None
 
         try:
             bets_df = pd.read_excel(latest_bet_plan, sheet_name='bets')
@@ -34,10 +44,10 @@ class DynamicStakeAllocator:
             except Exception:
                 summary_df = None
             print(f"✅ Loaded base bet plan: {latest_bet_plan.name}")
-            return bets_df, summary_df, target_date
+            return bets_df, summary_df, target_date, latest_bet_plan
         except Exception as e:
             print(f"❌ Error loading bet plan: {e}")
-            return None, None, None
+            return None, None, None, None
     
     def calculate_base_stakes(self, bets_df):
         """Calculate base stakes from bet plan"""
@@ -139,7 +149,7 @@ class DynamicStakeAllocator:
             if summary_df is not None:
                 summary_df.to_excel(writer, sheet_name='summary', index=False)
 
-        print(f"💾 Final bet plan saved: {output_path} (Total stake=₹{total_final_stake})")
+        print(f"💾 Final bet plan saved: {output_path} (Total stake={fmt_rupees(total_final_stake)})")
         return output_path
 
     def _load_template_final_plan(self, target_date_clean):
@@ -430,17 +440,23 @@ class DynamicStakeAllocator:
         print("\n" + "="*60)
         print("💰 DYNAMIC STAKE ALLOCATOR – REALITY LINKED")
         print("="*60)
-        
+
         base_stakes = stake_plan['base_slot_stakes']
         final_stakes = stake_plan['slot_stakes']
         overall_roi = stake_plan['overall_roi']
-        
+
         base_total = sum(base_stakes.values())
         final_total = stake_plan['total_daily_stake']
-        
+
         print(f"📅 Target Date: {stake_plan['target_date']}")
-        print(f"📊 Base Stakes: {', '.join(f'{slot}=₹{amt}' for slot, amt in base_stakes.items())} (Total=₹{base_total})")
-        print(f"🎯 Final Stakes: {', '.join(f'{slot}=₹{amt}' for slot, amt in final_stakes.items())} (Total=₹{final_total})")
+        print(
+            f"📊 Base Stakes: {', '.join(f'{slot}={fmt_rupees(amt)}' for slot, amt in base_stakes.items())} "
+            f"(Total={fmt_rupees(base_total)})"
+        )
+        print(
+            f"🎯 Final Stakes: {', '.join(f'{slot}={fmt_rupees(amt)}' for slot, amt in final_stakes.items())} "
+            f"(Total={fmt_rupees(final_total)})"
+        )
         print(f"📈 Overall ROI (window): {overall_roi:+.1f}%")
         
         # Show slot ROI breakdown
@@ -450,7 +466,10 @@ class DynamicStakeAllocator:
             final = final_stakes[slot]
             change_pct = ((final - base) / base * 100) if base > 0 else 0
             trend = "🟢" if change_pct > 0 else "🔴" if change_pct < 0 else "🟡"
-            print(f"   {trend} {slot}: ROI={roi:+.1f}% → Stake: ₹{base}→₹{final} ({change_pct:+.1f}%)")
+            print(
+                f"   {trend} {slot}: ROI={roi:+.1f}% → Stake: {fmt_rupees(base)}→{fmt_rupees(final)} "
+                f"({change_pct:+.1f}%)"
+            )
         
         print("="*60)
     
@@ -460,7 +479,7 @@ class DynamicStakeAllocator:
         print("="*50)
         
         # Step 1: Load base bet plan
-        bets_df, summary_df, target_date = self.load_base_bet_plan()
+        bets_df, summary_df, target_date, _ = self.load_base_bet_plan()
         if bets_df is None:
             return False
 
@@ -469,6 +488,7 @@ class DynamicStakeAllocator:
 
         existing_final_total = None
         existing_final_slot_stakes = None
+        candidate_final = None
         if target_date is not None:
             candidate_final = quant_paths.get_final_bet_plan_path(target_date.strftime("%Y-%m-%d"))
             if candidate_final.exists():
@@ -477,7 +497,7 @@ class DynamicStakeAllocator:
                 if existing_final_total is not None:
                     print(
                         f"ℹ️ Existing final plan detected ({candidate_final.name}): "
-                        f"total stake=₹{existing_final_total:.1f}"
+                        f"total stake={fmt_rupees(existing_final_total)}"
                     )
 
         # Step 3: Load reality performance
@@ -494,25 +514,32 @@ class DynamicStakeAllocator:
         # Step 6: Apply overlay to bet plan and save final plan
         desired_total = stake_plan['total_daily_stake']
         already_aligned = False
+        write_final_plan = True
 
         if existing_final_total is not None and desired_total > 0:
-            diff_ratio = abs(desired_total - existing_final_total) / max(desired_total, 1)
-            if diff_ratio <= 0.01 and existing_final_slot_stakes:
+            total_diff = abs(desired_total - existing_final_total)
+            if total_diff < 0.1 and existing_final_slot_stakes:
                 already_aligned = True
+                write_final_plan = False
                 final_slot_stakes = existing_final_slot_stakes
                 desired_total = sum(final_slot_stakes.values())
                 stake_plan['slot_stakes'] = final_slot_stakes
                 stake_plan['total_daily_stake'] = desired_total
                 print(
-                    f"ℹ️ Base bet plan already aligned; reusing existing final stakes (idempotent). "
-                    f"Total ≈ ₹{existing_final_total:.1f}"
+                    "ℹ️ Base bet plan already aligned; reusing existing final stakes (idempotent). "
+                    f"Total ≈ {fmt_rupees(existing_final_total)}"
+                )
+            elif total_diff >= 0.1:
+                print(
+                    f"⚠️ Final bet plan updated: previous total={fmt_rupees(existing_final_total)}, "
+                    f"new total={fmt_rupees(desired_total)} (config/ROI change)"
                 )
 
-        if not already_aligned and desired_total > 0 and abs(base_daily_stake - desired_total) / desired_total <= 0.01:
+        if not already_aligned and desired_total > 0 and abs(base_daily_stake - desired_total) / max(desired_total, 1) <= 0.01:
             already_aligned = True
             print(
-                f"ℹ️ Base bet plan already aligned with dynamic final stakes (total ≈ ₹{base_daily_stake:.1f}). "
-                "No additional scaling applied."
+                "ℹ️ Base bet plan already aligned with dynamic final stakes "
+                f"(total ≈ {fmt_rupees(base_daily_stake)}). No additional scaling applied."
             )
 
         if already_aligned:
@@ -523,14 +550,17 @@ class DynamicStakeAllocator:
         # Step 7: Persist stake plan (after any idempotent overrides)
         self.save_stake_plan(stake_plan)
 
-        self.save_final_bet_plan(
-            scaled_bets,
-            scaled_summary,
-            target_date,
-            desired_total,
-            base_slot_stakes,
-            final_slot_stakes,
-        )
+        if write_final_plan:
+            self.save_final_bet_plan(
+                scaled_bets,
+                scaled_summary,
+                target_date,
+                desired_total,
+                base_slot_stakes,
+                final_slot_stakes,
+            )
+        elif candidate_final:
+            print(f"ℹ️ Skipped rewriting existing final plan ({candidate_final.name}) to keep stakes stable.")
 
         # Step 8: Print summary
         self.print_console_summary(stake_plan)
