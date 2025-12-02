@@ -116,13 +116,20 @@ class AnalyticsSlotOverlay:
             try:
                 with open(dynamic_file, 'r') as f:
                     data = json.load(f)
-                
-                # EXACT JSON STRUCTURE: data["stakes"][slot]
-                stakes_obj = data.get("stakes", {})
+
+                stakes_obj = (
+                    data.get("stakes")
+                    or data.get("slot_stakes")
+                    or data.get("base_slot_stakes")
+                    or {}
+                )
                 analytics_data['dynamic_stakes'] = {
-                    slot: float(stakes_obj.get(slot, 0)) for slot in self.slots
+                    slot: float(stakes_obj.get(slot, 0) or 0) for slot in self.slots
                 }
-                analytics_data['dynamic_total'] = float(data.get("total_daily_stake", 0))
+                derived_total = sum(analytics_data['dynamic_stakes'].values())
+                analytics_data['dynamic_total'] = float(
+                    data.get("total_daily_stake", derived_total) or derived_total
+                )
                 print(f"✅ Loaded dynamic stakes (from JSON): {analytics_data['dynamic_stakes']}")
             except Exception as e:
                 print(f"⚠️ Error loading dynamic_stake_plan: {e}")
@@ -376,24 +383,27 @@ class AnalyticsSlotOverlay:
         
         # Step 1: Discover latest date
         if not self.discover_latest_date():
-            return False
+            print("⚠️ No bet plan detected – skipping overlay.")
+            return True
             
         # Step 2: Load analytics data
         analytics_data = self.load_analytics_data()
         if not analytics_data or not analytics_data.get('dynamic_stakes'):
-            print("❌ No analytics data available, skipping overlay")
-            return False
+            print("⚠️ No analytics data available, skipping overlay")
+            return True
             
         # Step 3: Calculate safe stakes
         result = self.calculate_safe_stakes(analytics_data)
         if not result:
-            return False
+            print("⚠️ Unable to compute safe stakes – skipping overlay.")
+            return True
             
         self.final_stakes, self.final_total = result
         
         # Step 4: Update final bet plan
         if not self.update_final_bet_plan(self.final_stakes):
-            return False
+            print("⚠️ Unable to update final bet plan – overlay completed with warnings.")
+            return True
             
         # Step 5: Update execution readiness
         self.update_execution_readiness(self.final_total)
