@@ -15,7 +15,14 @@ warnings.filterwarnings('ignore')
 
 def fmt_rupees(value: float) -> str:
     """Cosmetic helper to keep rupee values tidy in logs."""
-    return f"₹{float(value):.2f}"
+    try:
+        amt = float(value)
+    except (TypeError, ValueError):
+        return "₹0"
+
+    if abs(amt - round(amt)) < 0.01:
+        return f"₹{int(round(amt))}"
+    return f"₹{amt:.2f}"
 
 try:
     import pattern_packs

@@ -5,6 +5,8 @@ import warnings
 from collections import Counter, defaultdict
 import os
 import math
+import json
+import hashlib
 from quant_excel_loader import load_results_excel
 
 # ========== AGGRESSIVE TENSORFLOW SUPPRESSION ==========
@@ -55,6 +57,9 @@ class UltimatePredictorPro:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_dir = os.path.join(script_dir, "predictions", "deepseek_scr6")
         os.makedirs(self.output_dir, exist_ok=True)
+        self.cache_file = os.path.join(self.output_dir, "scr6_cache.json")
+        self.cache_wide_file = os.path.join(self.output_dir, "scr6_predictions_latest.xlsx")
+        self.cache_detailed_file = os.path.join(self.output_dir, "scr6_predictions_latest_detailed.xlsx")
         print(f"📁 Output directory: {self.output_dir}")
     
     def initialize_cross_script_tracking(self):
@@ -167,6 +172,62 @@ class UltimatePredictorPro:
         except Exception as e:
             print(f"❌ SCR6: Error loading data from {file_path}: {e}")
             return None
+
+    def compute_data_signature(self, df):
+        """Compute a lightweight signature of the dataset to drive disk caching."""
+        if df is None or len(df) == 0:
+            return {}
+
+        if not pd.api.types.is_datetime64_any_dtype(df.get("date")):
+            df["date"] = pd.to_datetime(df["date"])
+
+        last_date = df["date"].max().strftime("%Y-%m-%d")
+        slot_counts = {str(k): int(v) for k, v in df["slot"].value_counts().to_dict().items()}
+        checksum_basis = "".join(df["date"].dt.strftime("%Y-%m-%d"))
+        checksum = hashlib.sha256(checksum_basis.encode()).hexdigest()[:16]
+
+        return {
+            "last_date": last_date,
+            "rows": int(len(df)),
+            "slot_counts": slot_counts,
+            "date_checksum": checksum,
+        }
+
+    def load_cache_meta(self):
+        if not os.path.exists(self.cache_file):
+            return None
+        try:
+            with open(self.cache_file, "r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def is_cache_hit(self, signature, meta):
+        return (
+            bool(signature)
+            and bool(meta)
+            and meta.get("signature") == signature
+            and os.path.exists(self.cache_wide_file)
+            and os.path.exists(self.cache_detailed_file)
+        )
+
+    def persist_cache(self, signature, predictions_df, wide_df):
+        try:
+            predictions_df.to_excel(self.cache_detailed_file, index=False)
+            wide_df.to_excel(self.cache_wide_file, index=False)
+            cache_payload = {
+                "signature": signature,
+                "wide_file": self.cache_wide_file,
+                "detailed_file": self.cache_detailed_file,
+                "saved_at": datetime.now().isoformat(),
+            }
+            with open(self.cache_file, "w") as f:
+                json.dump(cache_payload, f, indent=2)
+            print(
+                f"💾 SCR6 cache rebuilt for current dataset – signature {signature.get('last_date', '?')} / {signature.get('rows', 0)} rows."
+            )
+        except Exception as e:
+            print(f"⚠️ SCR6: Failed to persist cache due to {e}")
 
     def clean_number(self, x):
         """Convert to 2-digit number"""
@@ -1437,23 +1498,42 @@ def main():
     df = predictor.load_updated_data(file_path)
     
     if df is not None and len(df) > 0:
+        df['date'] = pd.to_datetime(df['date'])
+        signature = predictor.compute_data_signature(df)
+        cache_meta = predictor.load_cache_meta()
+
         # Show data summary
         print(f"\n📊 DATA SUMMARY:")
         for slot in [1, 2, 3, 4]:
             slot_data = df[df['slot'] == slot]
-            latest_slot_date = slot_data['date'].max().strftime('%Y-%m-%d')
+            latest_slot_date = slot_data['date'].max().strftime('%Y-%m-%d') if len(slot_data) else 'N/A'
             print(f"   {predictor.slot_names[slot]}: {len(slot_data)} records")
-        
+
         # Show performance history
         predictor.get_performance_stats()
-        
-        # Generate predictions
-        print("\n🎯 Generating ultimate predictions with cross-script intelligence...")
-        predictions = predictor.generate_predictions(df, days=3, top_k=5)
-        
-        # Create output files
-        wide_predictions = predictor.create_output_files(predictions, df)
-        
+
+        predictions = None
+        wide_predictions = None
+
+        if predictor.is_cache_hit(signature, cache_meta):
+            print(
+                f"ℹ️ SCR6 cache hit – reused predictions for data signature last_date={signature.get('last_date')} "
+                f"rows={signature.get('rows')}"
+            )
+            try:
+                predictions = pd.read_excel(predictor.cache_detailed_file)
+            except Exception:
+                predictions = None
+
+        if predictions is None:
+            print("\n🎯 Generating ultimate predictions with cross-script intelligence...")
+            predictions = predictor.generate_predictions(df, days=3, top_k=5)
+            wide_predictions = predictor.create_output_files(predictions, df)
+            predictor.persist_cache(signature, predictions, wide_predictions)
+        else:
+            wide_predictions = predictor.create_output_files(predictions, df)
+            print("✅ SCR6 cache reused successfully (no retraining needed).")
+
         print("✅ Ultimate predictions generated successfully!")
         print("💾 Files saved to organized folders:")
         print(f"   - {predictor.output_dir}/ultimate_predictions_YYYYMMDD_HHMMSS.xlsx")
@@ -1461,7 +1541,7 @@ def main():
         print(f"   - {predictor.output_dir}/ultimate_analysis_YYYYMMDD_HHMMSS.txt")
         print(f"   - {predictor.output_dir}/pattern_analysis_YYYYMMDD_HHMMSS.xlsx")
         print(f"   - {predictor.output_dir}/cross_script_analysis_YYYYMMDD_HHMMSS.xlsx")
-        
+
         # Display predictions
         if len(wide_predictions) > 0:
             # Show today's predictions first
@@ -1473,7 +1553,7 @@ def main():
                 for slot_name in ['FRBD', 'GZBD', 'GALI', 'DSWR']:
                     if slot_name in today_row and pd.notna(today_row[slot_name]):
                         print(f"   {slot_name}: {today_row[slot_name]}")
-            
+
             # Show tomorrow's predictions
             tomorrow_date = (df['date'].max().date() + timedelta(days=1)).strftime('%Y-%m-%d')
             tomorrow_pred = wide_predictions[wide_predictions['date'] == tomorrow_date]
