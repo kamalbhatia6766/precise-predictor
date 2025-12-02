@@ -47,11 +47,12 @@ class GoldenBlockAnalyzer:
         if not memory_file.exists():
             print("❌ No script_hit_memory.xlsx found")
             return None
-        
+
         try:
             df = pd.read_excel(memory_file)
+            df.columns = [str(col).strip().lower() for col in df.columns]
             print(f"📊 Loaded enhanced hit memory: {len(df)} records")
-            
+
             # Convert date columns
             df['date'] = pd.to_datetime(df['date']).dt.date
             if 'prediction_date' in df.columns:
@@ -67,9 +68,14 @@ class GoldenBlockAnalyzer:
         if pnl_df.empty or 'profit_total' not in pnl_df.columns:
             print("❌ No profit data available")
             return []
-            
+
+        positive_df = pnl_df[pnl_df['profit_total'] > 0]
+        if positive_df.empty:
+            print("❌ No profitable days found to label as golden")
+            return []
+
         # Get top profit days
-        top_days = pnl_df.nlargest(top_n, 'profit_total')[['date', 'profit_total']]
+        top_days = positive_df.nlargest(top_n, 'profit_total')[['date', 'profit_total']]
         
         golden_days = []
         for _, row in top_days.iterrows():
@@ -87,29 +93,36 @@ class GoldenBlockAnalyzer:
     def analyze_script_contributions(self, hit_memory_df, golden_days):
         """Analyze script contributions on golden days"""
         script_analysis = {}
-        
+
+        golden_dates = [day['date'] for day in golden_days]
+        hit_type_col = 'hit_type' if 'hit_type' in hit_memory_df.columns else 'hit_family'
+
         for script in self.scripts:
             script_hits = hit_memory_df[hit_memory_df['script'] == script]
-            
+
             # Filter for golden days
-            golden_dates = [day['date'] for day in golden_days]
             golden_hits = script_hits[script_hits['date'].astype(str).isin(golden_dates)]
-            
+
             if not golden_hits.empty:
-                direct_hits = len(golden_hits[golden_hits['hit_family'] == 'DIRECT'])
-                cross_hits = len(golden_hits[golden_hits['hit_family'].isin(['CROSS_SAME_DAY', 'CROSS_NEXT_DAY', 'CROSS_PREV_DAY'])])
+                if hit_type_col in golden_hits.columns:
+                    direct_hits = len(golden_hits[golden_hits[hit_type_col].str.upper() == 'SAME_DAY'])
+                    cross_hits = len(golden_hits[golden_hits[hit_type_col].str.upper().str.startswith('CROSS_')])
+                else:
+                    direct_hits = len(golden_hits[golden_hits['hit_family'] == 'DIRECT'])
+                    cross_hits = len(golden_hits[golden_hits['hit_family'].isin(['CROSS_SAME_DAY', 'CROSS_NEXT_DAY', 'CROSS_PREV_DAY'])])
                 total_hits = len(golden_hits)
-                
+
                 # Calculate golden score (weighted by hit type and rank)
                 golden_score = 0
                 for _, hit in golden_hits.iterrows():
                     rank_weight = 1.0 / hit['rank']
-                    if hit['hit_family'] == 'DIRECT':
+                    hit_label = hit[hit_type_col].upper() if hit_type_col in hit else hit.get('hit_family', 'DIRECT').upper()
+                    if hit_label == 'SAME_DAY' or hit.get('hit_family') == 'DIRECT':
                         hit_weight = 1.0
                     else:
                         hit_weight = 0.7  # Cross hits get slightly lower weight
                     golden_score += rank_weight * hit_weight
-                
+
                 script_analysis[script] = {
                     'direct_hits': direct_hits,
                     'cross_hits': cross_hits,
@@ -117,18 +130,27 @@ class GoldenBlockAnalyzer:
                     'golden_score': round(golden_score, 2),
                     'effectiveness': round((total_hits / len(golden_days)) * 100, 1) if golden_days else 0
                 }
-        
+            else:
+                script_analysis[script] = {
+                    'direct_hits': 0,
+                    'cross_hits': 0,
+                    'total_hits': 0,
+                    'golden_score': 0,
+                    'effectiveness': 0
+                }
+
         return script_analysis
 
     def analyze_cross_slot_patterns(self, hit_memory_df, golden_days):
         """Analyze cross-slot patterns on golden days"""
         cross_patterns = {}
-        
+        hit_type_col = 'hit_type' if 'hit_type' in hit_memory_df.columns else 'hit_family'
+
         # Filter for cross-slot hits on golden days
         golden_dates = [day['date'] for day in golden_days]
         cross_hits = hit_memory_df[
-            hit_memory_df['date'].astype(str).isin(golden_dates) & 
-            hit_memory_df['hit_family'].isin(['CROSS_SAME_DAY', 'CROSS_NEXT_DAY', 'CROSS_PREV_DAY'])
+            hit_memory_df['date'].astype(str).isin(golden_dates) &
+            hit_memory_df[hit_type_col].astype(str).str.upper().str.startswith('CROSS_')
         ]
         
         # Count cross-slot pairs
@@ -261,7 +283,11 @@ class GoldenBlockAnalyzer:
                 "total_golden_days": len(golden_days),
                 "total_profits": sum(day['profit'] for day in golden_days),
                 "avg_profit_per_golden_day": sum(day['profit'] for day in golden_days) / len(golden_days),
-                "top_script": max(script_analysis.items(), key=lambda x: x[1]['golden_score'])[0] if script_analysis else "NONE",
+                "top_script": max(
+                    {k: v for k, v in script_analysis.items() if v.get('golden_score', 0) > 0}.items(),
+                    key=lambda x: x[1]['golden_score'],
+                    default=("NONE", {})
+                )[0],
                 "top_cross_pattern": list(cross_patterns.keys())[0] if cross_patterns else "NONE"
             }
         }
@@ -320,8 +346,8 @@ class GoldenBlockAnalyzer:
         print(f"💰 Total Profit: ₹{insights['summary']['total_profits']:+,.0f}")
         print(f"📈 Average Profit: ₹{insights['summary']['avg_profit_per_golden_day']:+,.0f}")
         
-        if insights['scripts']:
-            top_script = insights['summary']['top_script']
+        top_script = insights['summary']['top_script']
+        if top_script != "NONE" and top_script in insights['scripts']:
             print(f"\n🏆 Top Script: {top_script}")
             print(f"   Golden Score: {insights['scripts'][top_script]['golden_score']}")
             print(f"   Direct Hits: {insights['scripts'][top_script]['direct_hits']}")
