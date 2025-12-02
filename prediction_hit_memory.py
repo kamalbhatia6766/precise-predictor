@@ -301,6 +301,16 @@ class PredictionHitMemory:
                         digit_tags = pattern_packs.get_digit_pack_tags(real_num)
                         digit_tags_str = ",".join(digit_tags)
                         
+                        hit_type = "SAME_DAY"
+                        if days_delta == 0 and pred_slot != real_slot:
+                            hit_type = "CROSS_SAME_DAY"
+                        elif days_delta == 1:
+                            hit_type = "CROSS_NEXT_DAY"
+                        elif days_delta == -1:
+                            hit_type = "CROSS_PREV_DAY"
+
+                        slot_shift_detail = f"{pred_slot}→{real_slot}" if pred_slot != real_slot else "SAME_SLOT"
+
                         hit_data = {
                             'date': real_date,
                             'real_slot': real_slot,
@@ -310,13 +320,13 @@ class PredictionHitMemory:
                             'prediction_date': pred_date,
                             'rank': rank,
                             'list_size': list_size,
-                            'hit_type': "DIRECT" if pred_slot == real_slot and days_delta == 0 else "CROSS_SLOT",
+                            'HIT_TYPE': hit_type,
                             'is_s40': is_s40,
                             'digit_pack_tags': digit_tags_str,
                             'source_file': file_path.name,
                             # ✅ PHASE 3: NEW TIME-SHIFT FIELDS
                             'time_shift': time_shift,
-                            'slot_shift': slot_shift,
+                            'slot_shift': slot_shift_detail,
                             'hit_family': hit_family,
                             'days_delta': days_delta,
                             'source_strategy': 'BASE'  # Default, can be enhanced later
@@ -358,6 +368,18 @@ class PredictionHitMemory:
         else:
             combined_df = hits_df
         
+        # Ensure required columns exist and ordered for downstream consumers
+        required_cols = [
+            'date', 'real_slot', 'real_number', 'script', 'predicted_slot', 'rank',
+            'prediction_date', 'time_shift', 'slot_shift', 'hit_family',
+            'days_delta', 'source_strategy', 'HIT_TYPE'
+        ]
+        for col in required_cols:
+            if col not in combined_df.columns:
+                combined_df[col] = pd.NA
+
+        combined_df = combined_df[required_cols + [c for c in combined_df.columns if c not in required_cols]]
+
         # Save to Excel
         combined_df.to_excel(output_file, index=False)
         print(f"💾 Saved {len(combined_df)} hits to {output_file} (with time-shift tracking)")

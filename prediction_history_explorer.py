@@ -17,6 +17,7 @@ def main():
         return
 
     df = pd.read_excel(MEMORY_FILE)
+    df.columns = [str(col).upper() for col in df.columns]
     if df.empty:
         print("⚠️ Hit memory file is empty")
         return
