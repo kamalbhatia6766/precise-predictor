@@ -8,6 +8,57 @@ from collections import Counter, defaultdict
 import warnings
 warnings.filterwarnings('ignore')
 
+
+def normalize_hit_type(df: pd.DataFrame):
+    """
+    Ensure we have a single, clean HIT_TYPE column as an upper-case string Series.
+    Returns (df, hit_type_col_name or None).
+    """
+    if df is None or df.empty:
+        return df, None
+
+    # Drop duplicate columns by name
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    # Normalise column names to upper-case, stripped
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    hit_type_col = None
+    # Prefer HIT_TYPE if present
+    if "HIT_TYPE" in df.columns:
+        hit_type_col = "HIT_TYPE"
+    elif "HIT_KIND" in df.columns:
+        hit_type_col = "HIT_KIND"
+    elif "HITCATEGORY" in df.columns:
+        hit_type_col = "HITCATEGORY"
+    elif "HIT_FAMILY" in df.columns:
+        hit_type_col = "HIT_FAMILY"
+
+    if hit_type_col is None:
+        # No hit-type info; caller must handle None
+        return df, None
+
+    # Extract column and reduce to Series if it is accidentally a DataFrame
+    col_obj = df[hit_type_col]
+    if isinstance(col_obj, pd.DataFrame):
+        # Take first underlying column if duplicated
+        first_col = col_obj.columns[0]
+        col_series = col_obj[first_col]
+    else:
+        col_series = col_obj
+
+    # Force to clean upper-case strings
+    col_series = (
+        col_series
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    # Push back into df
+    df[hit_type_col] = col_series
+
+    return df, hit_type_col
+
 class GoldenBlockAnalyzer:
     def __init__(self):
         self.base_dir = Path(__file__).resolve().parent
@@ -50,13 +101,16 @@ class GoldenBlockAnalyzer:
 
         try:
             df = pd.read_excel(memory_file)
-            df.columns = [str(col).strip().lower() for col in df.columns]
             print(f"📊 Loaded enhanced hit memory: {len(df)} records")
 
             # Convert date columns
-            df['date'] = pd.to_datetime(df['date']).dt.date
-            if 'prediction_date' in df.columns:
-                df['prediction_date'] = pd.to_datetime(df['prediction_date']).dt.date
+            columns_lower = {str(col).strip().lower(): col for col in df.columns}
+            if 'date' in columns_lower:
+                date_col = columns_lower['date']
+                df[date_col] = pd.to_datetime(df[date_col]).dt.date
+            if 'prediction_date' in columns_lower:
+                pred_col = columns_lower['prediction_date']
+                df[pred_col] = pd.to_datetime(df[pred_col]).dt.date
             
             return df
         except Exception as e:
@@ -87,40 +141,64 @@ class GoldenBlockAnalyzer:
         print(f"🎯 Identified {len(golden_days)} golden days:")
         for day in golden_days:
             print(f"   {day['date']}: Profit ₹{day['profit']:+,.0f}")
-        
+
         return golden_days
 
-    def analyze_script_contributions(self, hit_memory_df, golden_days):
+    @staticmethod
+    def _classify_direct_and_cross(golden_hits: pd.DataFrame, hit_type_col: str | None):
+        """
+        Returns (direct_mask, cross_mask) for the subset golden_hits.
+        Both are boolean Series aligned with golden_hits.index.
+        """
+        if hit_type_col is None or hit_type_col not in golden_hits.columns:
+            all_false = pd.Series(False, index=golden_hits.index)
+            all_true = pd.Series(True, index=golden_hits.index)
+            return all_false, all_true
+
+        col_obj = golden_hits[hit_type_col]
+        if isinstance(col_obj, pd.DataFrame):
+            col_obj = col_obj.iloc[:, 0]
+
+        ht = (
+            col_obj
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+
+        direct_labels = {"DIRECT", "SAME_DAY"}
+        cross_mask = ht.str.startswith("CROSS", na=False)
+        direct_mask = ht.isin(direct_labels)
+
+        return direct_mask, cross_mask
+
+    def analyze_script_contributions(self, hit_memory_df, golden_days, hit_type_col: str | None):
         """Analyze script contributions on golden days"""
         script_analysis = {}
 
         golden_dates = [day['date'] for day in golden_days]
-        hit_type_col = 'hit_type' if 'hit_type' in hit_memory_df.columns else 'hit_family'
 
         for script in self.scripts:
-            script_hits = hit_memory_df[hit_memory_df['script'] == script]
+            script_hits = hit_memory_df[hit_memory_df['SCRIPT'] == script]
 
             # Filter for golden days
-            golden_hits = script_hits[script_hits['date'].astype(str).isin(golden_dates)]
+            golden_hits = script_hits[script_hits['DATE'].astype(str).isin(golden_dates)]
 
             if not golden_hits.empty:
-                if hit_type_col in golden_hits.columns:
-                    direct_hits = len(golden_hits[golden_hits[hit_type_col].str.upper() == 'SAME_DAY'])
-                    cross_hits = len(golden_hits[golden_hits[hit_type_col].str.upper().str.startswith('CROSS_')])
-                else:
-                    direct_hits = len(golden_hits[golden_hits['hit_family'] == 'DIRECT'])
-                    cross_hits = len(golden_hits[golden_hits['hit_family'].isin(['CROSS_SAME_DAY', 'CROSS_NEXT_DAY', 'CROSS_PREV_DAY'])])
+                direct_mask, cross_mask = self._classify_direct_and_cross(golden_hits, hit_type_col)
+                direct_hits = int(direct_mask.sum())
+                cross_hits = int(cross_mask.sum())
                 total_hits = len(golden_hits)
 
                 # Calculate golden score (weighted by hit type and rank)
                 golden_score = 0
                 for _, hit in golden_hits.iterrows():
-                    rank_weight = 1.0 / hit['rank']
-                    hit_label = hit[hit_type_col].upper() if hit_type_col in hit else hit.get('hit_family', 'DIRECT').upper()
-                    if hit_label == 'SAME_DAY' or hit.get('hit_family') == 'DIRECT':
-                        hit_weight = 1.0
+                    rank_weight = 1.0 / hit['RANK']
+                    if hit_type_col and hit_type_col in hit:
+                        hit_label = str(hit[hit_type_col]).strip().upper()
                     else:
-                        hit_weight = 0.7  # Cross hits get slightly lower weight
+                        hit_label = "CROSS"
+                    hit_weight = 1.0 if hit_label in {"DIRECT", "SAME_DAY"} else 0.7
                     golden_score += rank_weight * hit_weight
 
                 script_analysis[script] = {
@@ -141,21 +219,19 @@ class GoldenBlockAnalyzer:
 
         return script_analysis
 
-    def analyze_cross_slot_patterns(self, hit_memory_df, golden_days):
+    def analyze_cross_slot_patterns(self, hit_memory_df, golden_days, hit_type_col: str | None):
         """Analyze cross-slot patterns on golden days"""
         cross_patterns = {}
-        hit_type_col = 'hit_type' if 'hit_type' in hit_memory_df.columns else 'hit_family'
 
         # Filter for cross-slot hits on golden days
         golden_dates = [day['date'] for day in golden_days]
-        cross_hits = hit_memory_df[
-            hit_memory_df['date'].astype(str).isin(golden_dates) &
-            hit_memory_df[hit_type_col].astype(str).str.upper().str.startswith('CROSS_')
-        ]
-        
+        golden_hits = hit_memory_df[hit_memory_df['DATE'].astype(str).isin(golden_dates)]
+        direct_mask, cross_mask = self._classify_direct_and_cross(golden_hits, hit_type_col)
+        cross_hits = golden_hits[cross_mask]
+
         # Count cross-slot pairs
         for _, hit in cross_hits.iterrows():
-            pair_key = f"{hit['predicted_slot']}→{hit['real_slot']}"
+            pair_key = f"{hit['PREDICTED_SLOT']}→{hit['REAL_SLOT']}"
             if pair_key not in cross_patterns:
                 cross_patterns[pair_key] = {
                     'hits': 0,
@@ -164,8 +240,8 @@ class GoldenBlockAnalyzer:
                 }
             
             cross_patterns[pair_key]['hits'] += 1
-            cross_patterns[pair_key]['total_rank'] += hit['rank']
-            cross_patterns[pair_key]['days'].add(hit['date'])
+            cross_patterns[pair_key]['total_rank'] += hit['RANK']
+            cross_patterns[pair_key]['days'].add(hit['DATE'])
         
         # Calculate averages and format results
         formatted_patterns = {}
@@ -183,10 +259,10 @@ class GoldenBlockAnalyzer:
     def analyze_digit_patterns(self, hit_memory_df, golden_days):
         """Analyze digit patterns on golden days"""
         golden_dates = [day['date'] for day in golden_days]
-        golden_hits = hit_memory_df[hit_memory_df['date'].astype(str).isin(golden_dates)]
-        
+        golden_hits = hit_memory_df[hit_memory_df['DATE'].astype(str).isin(golden_dates)]
+
         # Extract all numbers from golden hits
-        all_numbers = golden_hits['real_number'].tolist()
+        all_numbers = golden_hits['REAL_NUMBER'].tolist()
         
         # Analyze tens and ones digits
         tens_digits = [num // 10 for num in all_numbers]
@@ -214,16 +290,16 @@ class GoldenBlockAnalyzer:
     def analyze_time_patterns(self, hit_memory_df, golden_days):
         """Analyze time/day patterns on golden days"""
         time_patterns = {}
-        
+
         golden_dates = [day['date'] for day in golden_days]
-        golden_hits = hit_memory_df[hit_memory_df['date'].astype(str).isin(golden_dates)]
+        golden_hits = hit_memory_df[hit_memory_df['DATE'].astype(str).isin(golden_dates)]
         
         # Convert dates to day of week
-        golden_hits['day_of_week'] = pd.to_datetime(golden_hits['date']).dt.day_name()
+        golden_hits['day_of_week'] = pd.to_datetime(golden_hits['DATE']).dt.day_name()
         
         # Analyze by slot
         for slot in self.slots:
-            slot_hits = golden_hits[golden_hits['real_slot'] == slot]
+            slot_hits = golden_hits[golden_hits['REAL_SLOT'] == slot]
             if not slot_hits.empty:
                 day_counts = slot_hits['day_of_week'].value_counts()
                 best_day = day_counts.index[0] if not day_counts.empty else "Unknown"
@@ -250,19 +326,23 @@ class GoldenBlockAnalyzer:
         hit_memory_df = self.load_hit_memory()
         if hit_memory_df is None:
             return False
-        
+
+        hit_memory_df, hit_type_col = normalize_hit_type(hit_memory_df)
+        if hit_type_col is None:
+            print("⚠️ HIT_TYPE column missing in hit memory; golden script analysis will ignore direct/cross split.")
+
         # Step 2: Identify golden days
         golden_days = self.identify_golden_days(pnl_df)
         if not golden_days:
             print("❌ No golden days identified")
             return False
-        
+
         # Step 3: Analyze various aspects
         print("\n📊 Analyzing script contributions...")
-        script_analysis = self.analyze_script_contributions(hit_memory_df, golden_days)
-        
+        script_analysis = self.analyze_script_contributions(hit_memory_df, golden_days, hit_type_col)
+
         print("📊 Analyzing cross-slot patterns...")
-        cross_patterns = self.analyze_cross_slot_patterns(hit_memory_df, golden_days)
+        cross_patterns = self.analyze_cross_slot_patterns(hit_memory_df, golden_days, hit_type_col)
         
         print("📊 Analyzing digit patterns...")
         digit_analysis = self.analyze_digit_patterns(hit_memory_df, golden_days)
