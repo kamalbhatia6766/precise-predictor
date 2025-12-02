@@ -417,6 +417,25 @@ class PreciseBetEngine:
             return None
         try:
             df = pd.read_excel(memory_file)
+            df.columns = [str(c).strip() for c in df.columns]
+
+            possible_hit_type_cols = ['hit_type', 'HIT_TYPE', 'HitType', 'hitType', 'HIT TYPE']
+            normalized_map = {re.sub(r"[\s_]+", "", str(col)).lower(): col for col in df.columns}
+            resolved_col = None
+            for col in possible_hit_type_cols:
+                normalized = re.sub(r"[\s_]+", "", col).lower()
+                if normalized in normalized_map:
+                    resolved_col = normalized_map[normalized]
+                    break
+
+            if resolved_col is None:
+                print("⚠️  Warning: No hit_type/HIT_TYPE column found in script_hit_memory; skipping hit-type-based weighting.")
+                df['hit_type'] = 'UNKNOWN'
+                resolved_col = 'hit_type'
+            elif resolved_col != 'hit_type':
+                df['hit_type'] = df[resolved_col]
+
+            print(f"✅ Using hit type column: {resolved_col} → exposed as 'hit_type'")
             df['date'] = pd.to_datetime(df['date']).dt.date
             cutoff_date = target_date - timedelta(days=self.N_DAYS)
             filtered_df = df[df['date'] >= cutoff_date]
