@@ -22,32 +22,47 @@ def extract_golden_overlay(golden_data):
         return [], None
 
     hero_numbers = []
+
+    raw_heroes = (
+        golden_data.get("hero_numbers")
+        or golden_data.get("HERO_NUMBERS")
+        or (golden_data.get("digits") or {}).get("hero_numbers")
+        or (golden_data.get("summary") or {}).get("hero_numbers")
+    )
+
+    if isinstance(raw_heroes, str):
+        parts = [p.strip() for p in raw_heroes.replace(";", ",").split(",") if p.strip()]
+        hero_numbers = [p.zfill(2) for p in parts if p.replace(" ", "").isdigit()]
+    elif isinstance(raw_heroes, list):
+        hero_numbers = [str(x).strip().zfill(2) for x in raw_heroes]
+
     top_cross = None
+    summary = golden_data.get("summary") if isinstance(golden_data.get("summary"), dict) else {}
+    cross_patterns = golden_data.get("cross_slot_pairs") if isinstance(golden_data.get("cross_slot_pairs"), dict) else {}
+    pattern_key = summary.get("top_cross_pattern") or golden_data.get("top_cross_pattern")
 
-    for key in ["hero_numbers", "hero_numbers_global", "HERO_NUMBERS"]:
-        if key in golden_data:
-            raw = golden_data[key]
-            if isinstance(raw, str):
-                parts = [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
-                hero_numbers = [p.zfill(2) for p in parts if p.isdigit()]
-            elif isinstance(raw, list):
-                hero_numbers = [str(x).strip().zfill(2) for x in raw]
-            break
+    def _parse_pattern(pattern: str):
+        if not isinstance(pattern, str):
+            return None, None
+        normalized = pattern.replace("→", "->")
+        if "->" in normalized:
+            from_slot, to_slot = [p.strip() for p in normalized.split("->", 1)]
+            return from_slot or None, to_slot or None
+        return None, None
 
-    for key in ["top_cross_pattern", "TOP_CROSS_PATTERN"]:
-        if key in golden_data and isinstance(golden_data[key], dict):
-            tcp = golden_data[key]
-            from_slot = tcp.get("from_slot") or tcp.get("FROM_SLOT")
-            to_slot = tcp.get("to_slot") or tcp.get("TO_SLOT")
-            hits = tcp.get("hits") or tcp.get("HITS")
-            avg_rank = tcp.get("avg_rank") or tcp.get("AVG_RANK")
+    if isinstance(pattern_key, str) and pattern_key.upper() != "NONE":
+        from_slot, to_slot = _parse_pattern(pattern_key)
+        pattern_info = cross_patterns.get(pattern_key) if isinstance(cross_patterns, dict) else None
+        hits = pattern_info.get("hits") if isinstance(pattern_info, dict) else None
+        avg_rank = pattern_info.get("avg_rank") if isinstance(pattern_info, dict) else None
+
+        if from_slot or to_slot or pattern_info:
             top_cross = {
                 "from_slot": str(from_slot) if from_slot else None,
                 "to_slot": str(to_slot) if to_slot else None,
                 "hits": hits,
                 "avg_rank": avg_rank,
             }
-            break
 
     return hero_numbers, top_cross
 
@@ -56,14 +71,23 @@ def extract_near_miss_pressure(near_miss_data, top_n: int = 10):
     if not isinstance(near_miss_data, dict):
         return []
 
-    agg = None
+    agg_section = None
     for key in ["aggregate", "AGGREGATE", "aggregate_candidates"]:
         if key in near_miss_data:
-            agg = near_miss_data[key]
+            agg_section = near_miss_data[key]
             break
 
-    if agg is None:
+    if agg_section is None:
         return []
+
+    agg = agg_section
+    if isinstance(agg_section, dict):
+        agg = (
+            agg_section.get("top_near_miss_candidates")
+            or agg_section.get("candidates")
+            or agg_section.get("top_candidates")
+            or agg_section
+        )
 
     result = []
     if isinstance(agg, list):
@@ -173,10 +197,14 @@ def main():
     print("   (Informational layer based on golden days + near-miss pressure)")
     print("------------------------------------------------------------------")
 
-    if not golden_data or not hero_numbers:
-        print("   ⚠️ Golden block insights not available. Run golden_block_finder.py first.")
+    if not golden_data:
+        print("   ⚠️ Golden block insights file not found. Run golden_block_finder.py first.")
     else:
-        print(f"   Hero numbers (global): {', '.join(hero_numbers) if hero_numbers else 'None'}")
+        if hero_numbers:
+            print(f"   Hero numbers (global): {', '.join(hero_numbers)}")
+        else:
+            print("   Hero numbers (global): -")
+
         print("   Hero numbers present in today’s plan:")
         for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
             slot_heroes = per_slot_hero.get(slot, [])
@@ -187,7 +215,7 @@ def main():
 
         if near_miss_pressure:
             top_pressure_str = ", ".join([f"{n}({c})" for (n, c) in near_miss_pressure])
-            print(f"   Near-miss pressure (last 30 days, aggregate): {top_pressure_str}")
+            print(f"   Near-miss pressure (aggregate, last 30 days): {top_pressure_str}")
             print("   Near-miss numbers present in today’s plan:")
             for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
                 slot_p = per_slot_pressure.get(slot, [])
@@ -196,17 +224,20 @@ def main():
                 else:
                     print(f"     • {slot}: -")
         else:
-            print("   Near-miss pressure: not available (run near_miss_analyzer.py).")
+            if near_miss_data is None:
+                print("   Near-miss pressure: file not found. Run near_miss_analyzer.py.")
+            else:
+                print("   Near-miss pressure: no aggregate candidates detected.")
 
-        if top_cross and top_cross.get("from_slot") and top_cross.get("to_slot"):
-            fs = top_cross["from_slot"]
-            ts = top_cross["to_slot"]
+        if top_cross and (top_cross.get("from_slot") or top_cross.get("to_slot")):
+            fs = top_cross.get("from_slot") or "?"
+            ts = top_cross.get("to_slot") or "?"
             hits = top_cross.get("hits")
             avg_rank = top_cross.get("avg_rank")
             print("   Golden cross-slot pattern:")
             print(f"     • {fs} → {ts} | Hits: {hits}, Avg rank: {avg_rank}")
         else:
-            print("   Golden cross-slot pattern: not available.")
+            print("   Golden cross-slot pattern: not available in JSON.")
 
     print("------------------------------------------------------------------")
     print("Note: Golden overlay is advisory only; core plan and stakes remain unchanged.")
