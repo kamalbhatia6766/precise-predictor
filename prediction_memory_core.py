@@ -18,7 +18,8 @@ def main():
         print(f"⚠️ Unable to read hit memory file: {exc}")
         return
 
-    df.columns = [str(col).upper() for col in df.columns]
+    df = df.loc[:, ~df.columns.duplicated()]
+    df.rename(columns={c: str(c).upper() for c in df.columns}, inplace=True)
     total_rows = len(df)
     print(f"✅ Loaded hit memory: {total_rows} rows")
 
@@ -26,15 +27,29 @@ def main():
     script_type_counts = {}
     slot_type_counts = {}
 
-    if "HIT_TYPE" in df.columns:
-        hit_type_counts = df["HIT_TYPE"].value_counts().to_dict()
+    has_hit_type = "HIT_TYPE" in df.columns
+    if has_hit_type:
+        hit_type_obj = df["HIT_TYPE"]
+        if isinstance(hit_type_obj, pd.DataFrame):
+            first_col = hit_type_obj.columns[0]
+            hit_type_series = hit_type_obj[first_col]
+        else:
+            hit_type_series = hit_type_obj
+
+        hit_type_series = hit_type_series.astype(str).str.strip()
+        hit_type_series = hit_type_series.replace({"nan": pd.NA, "None": pd.NA}).dropna()
+
+        hit_type_counts = hit_type_series.value_counts().to_dict()
         print("📊 Hit counts by type:")
         for hit_type, count in hit_type_counts.items():
             print(f" • {hit_type}: {count}")
 
         if {"SCRIPT", "HIT_TYPE"}.issubset(df.columns):
             script_type_counts = (
-                df.groupby(["SCRIPT", "HIT_TYPE"]).size().unstack(fill_value=0)
+                df.assign(HIT_TYPE=hit_type_series)
+                .groupby(["SCRIPT", "HIT_TYPE"])
+                .size()
+                .unstack(fill_value=0)
             )
             print("\n📌 Hits by script and type:")
             for script, row in script_type_counts.iterrows():
@@ -43,15 +58,17 @@ def main():
 
         if {"REAL_SLOT", "HIT_TYPE"}.issubset(df.columns):
             slot_type_counts = (
-                df.groupby(["REAL_SLOT", "HIT_TYPE"]).size().unstack(fill_value=0)
+                df.assign(HIT_TYPE=hit_type_series)
+                .groupby(["REAL_SLOT", "HIT_TYPE"])
+                .size()
+                .unstack(fill_value=0)
             )
             print("\n🎯 Hits by slot and type:")
             for slot, row in slot_type_counts.iterrows():
                 details = ", ".join([f"{t}:{row[t]}" for t in row.index])
                 print(f" • {slot}: {details}")
     else:
-        print("⚠️ HIT_TYPE column missing; showing raw columns instead.")
-        print(df.head())
+        print("⚠️ HIT_TYPE column missing; generating summary without hit-type breakdown.")
 
     summary_path = MEMORY_FILE.with_name("prediction_memory_summary.json")
     try:
