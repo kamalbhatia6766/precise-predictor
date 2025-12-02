@@ -223,7 +223,7 @@ class UltimatePredictionEngine:
                     )
                     cached_preds = self.script_prediction_cache[cache_key]
                     return {slot: list(nums) for slot, nums in cached_preds.items()}
-                timeout_seconds = 900  # Extended timeout for SCR6 only
+                timeout_seconds = None  # Allow generous runtime for SCR6 without killing the process
 
             print(f"   🔄 Running {script_name}...")
 
@@ -231,7 +231,7 @@ class UltimatePredictionEngine:
                 ['py', '-3.12', script_name],
                 capture_output=True,
                 text=True,
-                timeout=timeout_seconds
+                timeout=timeout_seconds,
             )
             
             predictions = {"FRBD": [], "GZBD": [], "GALI": [], "DSWR": []}

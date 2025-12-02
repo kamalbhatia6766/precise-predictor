@@ -13,9 +13,10 @@ class MoneyStakeManager:
       4) MoneyManager                 → money_management_plan.json + XLSX
       5) ExecutionReadinessEngine     → execution_readiness_summary.json + XLSX
     """
-    def __init__(self, readiness_days: int = 10, quiet: bool = False):
+    def __init__(self, readiness_days: int = 10, quiet: bool = False, force_refresh: bool = False):
         self.readiness_days = readiness_days
         self.quiet = quiet
+        self.force_refresh = force_refresh
         self.base_dir = Path(__file__).resolve().parent
         self.step_status = {}
 
@@ -68,7 +69,7 @@ class MoneyStakeManager:
         # 3) Dynamic stake allocation (slot-wise stakes)
         try:
             self._log("3️⃣  DYNAMIC STAKE ALLOCATOR…")
-            da = DynamicStakeAllocator()
+            da = DynamicStakeAllocator(force_refresh=self.force_refresh)
             ok = da.run_allocation()
             self.step_status["dynamic_stake_allocator"] = bool(ok)
             ok_all &= bool(ok)
@@ -140,9 +141,18 @@ def main() -> int:
         action="store_true",
         help="Minimal console output",
     )
+    parser.add_argument(
+        "--force-refresh-stakes",
+        action="store_true",
+        help="Recompute dynamic stakes even if a previous lock exists",
+    )
     args = parser.parse_args()
 
-    mgr = MoneyStakeManager(readiness_days=args.days, quiet=args.quiet)
+    mgr = MoneyStakeManager(
+        readiness_days=args.days,
+        quiet=args.quiet,
+        force_refresh=args.force_refresh_stakes,
+    )
     ok = mgr.run()
     return 0 if ok else 1
 

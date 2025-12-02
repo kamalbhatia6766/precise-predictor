@@ -1,26 +1,41 @@
 # dynamic_stake_allocator.py - UPDATED
 # dynamic_stake_allocator.py - REALITY-DRIVEN STAKE ALLOCATION
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from datetime import datetime, timedelta
+import argparse
+import hashlib
 import json
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
 import warnings
+
 warnings.filterwarnings('ignore')
 
 # 🆕 Import central helpers
-import quant_paths
 import quant_data_core
+import quant_paths
 
 
 def fmt_rupees(value: float) -> str:
-    """Format rupee amounts with 2 decimal places for cleaner console output."""
-    return f"₹{float(value):.2f}"
+    """Format rupee amounts with clean rounding for console output."""
+    try:
+        amt = float(value)
+    except (TypeError, ValueError):
+        return "₹0"
+
+    if abs(amt - round(amt)) < 0.01:
+        return f"₹{int(round(amt))}"
+    return f"₹{amt:.2f}"
 
 class DynamicStakeAllocator:
-    def __init__(self):
+    def __init__(self, force_refresh: bool | None = None):
         self.base_dir = quant_paths.get_project_root()
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
+        env_force = os.getenv("FORCE_DYNAMIC_STAKE_REFRESH", "0")
+        self.force_refresh = bool(int(env_force)) if force_refresh is None else bool(force_refresh)
+        self.meta_file = quant_paths.get_performance_logs_dir() / "dynamic_stake_plan_meta.json"
         
     def load_base_bet_plan(self):
         """Load the latest bet plan to get base stakes (always from master file)."""
@@ -48,6 +63,53 @@ class DynamicStakeAllocator:
         except Exception as e:
             print(f"❌ Error loading bet plan: {e}")
             return None, None, None, None
+
+    def _load_strategy_context(self):
+        """Load strategy recommendation context when available for signature building."""
+        strategy_file = quant_paths.get_performance_logs_dir() / "strategy_recommendation.json"
+        if not strategy_file.exists():
+            return {}
+        try:
+            with open(strategy_file, "r") as f:
+                return json.load(f) or {}
+        except Exception:
+            return {}
+
+    def _load_meta_store(self):
+        if not self.meta_file.exists():
+            return {}
+        try:
+            with open(self.meta_file, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _save_meta_store(self, meta):
+        self.meta_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.meta_file, "w") as f:
+            json.dump(meta, f, indent=2)
+
+    def _compute_config_signature(self, performance_data, base_slot_stakes):
+        strategy_context = self._load_strategy_context()
+        overall_block = performance_data.get("overall", {}) if performance_data else {}
+        date_range = overall_block.get("date_range", {}) if isinstance(overall_block, dict) else {}
+        slot_rois = self.calculate_slot_rois(performance_data) if performance_data else {}
+
+        payload = {
+            "base_slot_stakes": {k: round(float(v or 0), 2) for k, v in base_slot_stakes.items()},
+            "overall_roi": round(float(overall_block.get("overall_roi", 0) or 0), 4),
+            "date_window": {
+                "start": date_range.get("start"),
+                "end": date_range.get("end"),
+            },
+            "slot_rois": {k: round(float(v or 0), 3) for k, v in slot_rois.items()},
+            "strategy": strategy_context.get("recommended_strategy") or strategy_context.get("strategy"),
+            "risk_mode": strategy_context.get("risk_mode"),
+            "base_roi": strategy_context.get("metrics", {}).get("base_roi"),
+        }
+
+        signature_str = json.dumps(payload, sort_keys=True)
+        return hashlib.sha256(signature_str.encode()).hexdigest()[:16]
     
     def calculate_base_stakes(self, bets_df):
         """Calculate base stakes from bet plan"""
@@ -405,11 +467,37 @@ class DynamicStakeAllocator:
             return None
 
         return slot_stakes
+
+    def _persist_meta_entry(
+        self,
+        meta_store,
+        date_key,
+        base_total,
+        final_total,
+        config_signature,
+    ):
+        meta_store[date_key] = {
+            "target_date": date_key,
+            "base_total_stake": round(float(base_total or 0), 2),
+            "final_total_stake": round(float(final_total or 0), 2),
+            "config_signature": config_signature,
+            "stake_state": "DYNAMIC_LOCKED",
+            "timestamp": datetime.now().isoformat(),
+        }
+        self._save_meta_store(meta_store)
     
-    def generate_stake_plan(self, base_slot_stakes, final_slot_stakes, target_date, overall_roi, slot_rois):
+    def generate_stake_plan(
+        self,
+        base_slot_stakes,
+        final_slot_stakes,
+        target_date,
+        overall_roi,
+        slot_rois,
+        config_signature=None,
+    ):
         """Generate the dynamic stake plan JSON"""
         total_daily_stake = sum(final_slot_stakes.values())
-        
+
         stake_plan = {
             "timestamp": datetime.now().isoformat(),
             "target_date": target_date.strftime("%Y-%m-%d") if target_date else "UNKNOWN",
@@ -419,7 +507,9 @@ class DynamicStakeAllocator:
             "overall_roi": overall_roi,
             "slot_rois": slot_rois,
             "logic_version": "v1_reality_simple",
-            "central_pnl_source": "quant_reality_pnl.json"
+            "central_pnl_source": "quant_reality_pnl.json",
+            "config_signature": config_signature,
+            "stake_state": "DYNAMIC_LOCKED",
         }
         
         return stake_plan
@@ -486,6 +576,10 @@ class DynamicStakeAllocator:
         # Step 2: Calculate base stakes
         base_slot_stakes, base_daily_stake = self.calculate_base_stakes(bets_df)
 
+        date_key = target_date.strftime("%Y-%m-%d") if target_date else "UNKNOWN"
+        meta_store = self._load_meta_store()
+        existing_meta = meta_store.get(date_key)
+
         existing_final_total = None
         existing_final_slot_stakes = None
         candidate_final = None
@@ -504,50 +598,85 @@ class DynamicStakeAllocator:
         performance_data = self.load_reality_performance()
         if performance_data is None:
             return False
-        
+
         # Step 4: Apply reality overlay
         final_slot_stakes, overall_roi, slot_rois = self.apply_reality_overlay(base_slot_stakes, performance_data)
-        
-        # Step 5: Generate stake plan
-        stake_plan = self.generate_stake_plan(base_slot_stakes, final_slot_stakes, target_date, overall_roi, slot_rois)
 
-        # Step 6: Apply overlay to bet plan and save final plan
-        desired_total = stake_plan['total_daily_stake']
+        config_signature = self._compute_config_signature(performance_data, base_slot_stakes)
+
+        # Step 5: Apply overlay to bet plan and save final plan with idempotence
+        desired_total = sum(final_slot_stakes.values())
         already_aligned = False
         write_final_plan = True
+        locked_noop = False
 
-        if existing_final_total is not None and desired_total > 0:
-            total_diff = abs(desired_total - existing_final_total)
-            if total_diff < 0.1 and existing_final_slot_stakes:
-                already_aligned = True
-                write_final_plan = False
-                final_slot_stakes = existing_final_slot_stakes
-                desired_total = sum(final_slot_stakes.values())
-                stake_plan['slot_stakes'] = final_slot_stakes
-                stake_plan['total_daily_stake'] = desired_total
+        if existing_meta and candidate_final and candidate_final.exists():
+            if not self.force_refresh and existing_meta.get("config_signature") == config_signature:
+                locked_noop = True
                 print(
-                    "ℹ️ Base bet plan already aligned; reusing existing final stakes (idempotent). "
-                    f"Total ≈ {fmt_rupees(existing_final_total)}"
+                    f"ℹ️ Dynamic stakes already locked for {date_key} (config unchanged) – idempotent no-op."
                 )
-            elif total_diff >= 0.1:
+            elif not self.force_refresh and existing_meta.get("config_signature") != config_signature:
+                locked_noop = True
                 print(
-                    f"⚠️ Final bet plan updated: previous total={fmt_rupees(existing_final_total)}, "
-                    f"new total={fmt_rupees(desired_total)} (config/ROI change)"
+                    "⚠️ Config signature changed but stakes are locked; skipping refresh. "
+                    "Use --force-refresh-stakes or FORCE_DYNAMIC_STAKE_REFRESH=1 to recompute."
+                )
+            elif self.force_refresh:
+                print(
+                    f"🔄 Force refresh enabled for {date_key} – recomputing dynamic stakes despite lock."
                 )
 
-        if not already_aligned and desired_total > 0 and abs(base_daily_stake - desired_total) / max(desired_total, 1) <= 0.01:
+        if locked_noop:
+            final_slot_stakes = existing_final_slot_stakes or final_slot_stakes
+            desired_total = sum(final_slot_stakes.values()) if final_slot_stakes else desired_total
+            write_final_plan = False
             already_aligned = True
-            print(
-                "ℹ️ Base bet plan already aligned with dynamic final stakes "
-                f"(total ≈ {fmt_rupees(base_daily_stake)}). No additional scaling applied."
-            )
+        else:
+            if existing_final_total is not None and desired_total > 0:
+                total_diff = abs(desired_total - existing_final_total)
+                if total_diff < 0.1 and existing_final_slot_stakes:
+                    already_aligned = True
+                    write_final_plan = False
+                    final_slot_stakes = existing_final_slot_stakes
+                    desired_total = sum(final_slot_stakes.values())
+                    print(
+                        "ℹ️ Base bet plan already aligned; reusing existing final stakes (idempotent). "
+                        f"Total ≈ {fmt_rupees(existing_final_total)}"
+                    )
+                elif total_diff >= 0.1 and self.force_refresh:
+                    print(
+                        f"⚠️ Final bet plan updated with forced refresh: previous total={fmt_rupees(existing_final_total)}, "
+                        f"new total={fmt_rupees(desired_total)}"
+                    )
+                elif total_diff >= 0.1:
+                    print(
+                        f"⚠️ Final bet plan updated: previous total={fmt_rupees(existing_final_total)}, "
+                        f"new total={fmt_rupees(desired_total)} (config/ROI change)"
+                    )
+
+            if not already_aligned and desired_total > 0 and abs(base_daily_stake - desired_total) / max(desired_total, 1) <= 0.01:
+                already_aligned = True
+                print(
+                    "ℹ️ Base bet plan already aligned with dynamic final stakes "
+                    f"(total ≈ {fmt_rupees(base_daily_stake)}). No additional scaling applied."
+                )
+
+        stake_plan = self.generate_stake_plan(
+            base_slot_stakes,
+            final_slot_stakes,
+            target_date,
+            overall_roi,
+            slot_rois,
+            config_signature=config_signature,
+        )
 
         if already_aligned:
             scaled_bets, scaled_summary = bets_df, summary_df
         else:
             scaled_bets, scaled_summary = self._scale_bet_plan(bets_df, summary_df, final_slot_stakes, base_slot_stakes)
 
-        # Step 7: Persist stake plan (after any idempotent overrides)
+        # Step 6: Persist stake plan (after any idempotent overrides)
         self.save_stake_plan(stake_plan)
 
         if write_final_plan:
@@ -559,6 +688,10 @@ class DynamicStakeAllocator:
                 base_slot_stakes,
                 final_slot_stakes,
             )
+            self._persist_meta_entry(meta_store, date_key, base_daily_stake, desired_total, config_signature)
+        elif not existing_meta:
+            # No meta exists yet but we are keeping the current plan; still persist metadata for lock-in
+            self._persist_meta_entry(meta_store, date_key, base_daily_stake, desired_total, config_signature)
         elif candidate_final:
             print(f"ℹ️ Skipped rewriting existing final plan ({candidate_final.name}) to keep stakes stable.")
 
@@ -569,9 +702,18 @@ class DynamicStakeAllocator:
         return True
 
 def main():
-    allocator = DynamicStakeAllocator()
+    parser = argparse.ArgumentParser(description="Dynamic Stake Allocator – reality linked")
+    parser.add_argument(
+        "--force-refresh-stakes",
+        action="store_true",
+        help="Recompute and overwrite dynamic stakes even when a lock exists",
+    )
+    args = parser.parse_args()
+
+    allocator = DynamicStakeAllocator(force_refresh=args.force_refresh_stakes)
     success = allocator.run_allocation()
     return 0 if success else 1
+
 
 if __name__ == "__main__":
     exit(main())
