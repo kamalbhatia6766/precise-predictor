@@ -15,10 +15,12 @@ class AutoBacktestRunner:
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
         self.backtest_results = []
         
-    def load_pnl_history(self):
+    def load_pnl_history(self, window_days=None):
         """Load P&L history for backtesting"""
         pnl_file = self.base_dir / "logs" / "performance" / "bet_pnl_history.xlsx"
-        
+
+        window = window_days if window_days is not None else MAX_DAYS_WINDOW
+
         if not pnl_file.exists():
             print("❌ P&L history file not found")
             return None
@@ -27,12 +29,12 @@ class AutoBacktestRunner:
             df = pd.read_excel(pnl_file, sheet_name='day_level')
             df['date'] = pd.to_datetime(df['date']).dt.date
             
-            # 🔥 PERFORMANCE UPGRADE: Filter to last 120 days
+            # 🔥 PERFORMANCE UPGRADE: Filter to last N days
             unique_dates = sorted(df['date'].unique())
-            if len(unique_dates) > MAX_DAYS_WINDOW:
-                cutoff_date = unique_dates[-MAX_DAYS_WINDOW]
+            if len(unique_dates) > window:
+                cutoff_date = unique_dates[-window]
                 df = df[df['date'] >= cutoff_date]
-                print(f"   ℹ️ Auto Backtest window: using last {MAX_DAYS_WINDOW} days (out of {len(unique_dates)} total days)")
+                print(f"   ℹ️ Auto Backtest window: using last {window} days (out of {len(unique_dates)} total days)")
             else:
                 print(f"   ℹ️ Auto Backtest window: using all {len(unique_dates)} available days")
             
@@ -83,7 +85,7 @@ class AutoBacktestRunner:
         
         return profit_days
 
-    def generate_backtest_report(self, strategy_results, profit_days):
+    def generate_backtest_report(self, strategy_results, profit_days, window_days=None):
         """Generate backtest reports"""
         output_dir = self.base_dir / "logs" / "performance"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +93,7 @@ class AutoBacktestRunner:
         # JSON Summary
         summary_data = {
             "timestamp": datetime.now().isoformat(),
-            "backtest_window_days": MAX_DAYS_WINDOW,
+            "backtest_window_days": window_days if window_days is not None else MAX_DAYS_WINDOW,
             "strategies_analyzed": len(strategy_results),
             "total_days_analyzed": sum(result['days_analyzed'] for result in strategy_results if result),
             "top_profit_days": profit_days,
@@ -140,25 +142,21 @@ class AutoBacktestRunner:
         if best_roi:
             print(f"\n✅ Best performing strategy: {best_roi['strategy']} (ROI: {best_roi['roi_percent']:+.1f}%)")
 
-    def run_backtest(self):
+    def run_backtest(self, window_days=None):
         """Run complete auto backtest analysis"""
         print("🔄 AUTO BACKTEST RUNNER - Historical Performance Analysis")
         print("=" * 60)
-        
-        # Step 1: Load P&L history
-        pnl_df = self.load_pnl_history()
+
+        pnl_df = self.load_pnl_history(window_days=window_days)
         if pnl_df is None:
-            return False
-        
-        # Step 2: Run strategy backtests
+            return None, None
+
         strategy_results = []
-        
-        # Base strategy
+
         base_result = self.run_strategy_backtest(pnl_df, "BASE")
         if base_result:
             strategy_results.append(base_result)
-        
-        # Dynamic strategy (simulated)
+
         dynamic_result = {
             'strategy': 'DYNAMIC',
             'total_stake': base_result['total_stake'] * 0.8 if base_result else 0,
@@ -169,23 +167,62 @@ class AutoBacktestRunner:
             'win_rate': base_result['win_rate'] * 1.05 if base_result else 0
         }
         strategy_results.append(dynamic_result)
-        
-        # Step 3: Analyze profit days
+
         profit_days = self.analyze_profit_days(pnl_df)
-        
-        # Step 4: Generate reports
-        report_count = self.generate_backtest_report(strategy_results, profit_days)
-        
-        # Step 5: Display summary
+
+        report_count = self.generate_backtest_report(
+            strategy_results, profit_days, window_days=window_days
+        )
+
         self.print_console_summary(strategy_results, profit_days)
-        
+
         print(f"\n✅ Auto backtest completed: {report_count} strategies analyzed")
-        return True
+
+        best_roi = max(strategy_results, key=lambda x: x['roi_percent']) if strategy_results else None
+        summary = {
+            'best_strategy': best_roi['strategy'] if best_roi else None,
+            'best_strategy_roi': best_roi['roi_percent'] if best_roi else None,
+            'best_strategy_profit': best_roi['total_profit'] if best_roi else None,
+            'window_days': window_days if window_days is not None else MAX_DAYS_WINDOW,
+            'strategies_analyzed': len(strategy_results),
+            'top_profit_days': profit_days,
+        }
+
+        return summary, pnl_df
+
+
+def run_auto_backtest(window_days: int | None = None):
+    """
+    Run the auto backtest over the available history.
+
+    Parameters
+    ----------
+    window_days : Optional[int]
+        If provided, limit the backtest to the last `window_days` days;
+        otherwise use the default/full window logic.
+
+    Returns
+    -------
+    summary: dict
+        High-level metrics (profit, ROI, best strategy, etc.)
+    df_results: pandas.DataFrame
+        Per-day backtest results (date, profit, strategy, etc.)
+    """
+
+    backtester = AutoBacktestRunner()
+    summary, df_results = backtester.run_backtest(window_days=window_days)
+
+    if summary is None:
+        return {}, pd.DataFrame()
+
+    return summary, df_results
+
 
 def main():
-    backtester = AutoBacktestRunner()
-    success = backtester.run_backtest()
+    summary, df_results = run_auto_backtest()
+    success = df_results is not None and not df_results.empty
     return 0 if success else 1
+
 
 if __name__ == "__main__":
     exit(main())

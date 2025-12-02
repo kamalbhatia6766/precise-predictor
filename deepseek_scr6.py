@@ -1315,10 +1315,10 @@ class UltimatePredictorPro:
         """Create comprehensive output files in organized folders - PHASE 3"""
         # Create wide format
         wide_df = predictions_df.pivot_table(
-            index='date', 
-            columns='slot', 
+            index='date',
+            columns='slot',
             values='number',
-            aggfunc=lambda x: ', '.join(x)
+            aggfunc=lambda x: ', '.join(map(str, x))
         ).reset_index()
         
         column_order = ['date'] + [self.slot_names[i] for i in [1, 2, 3, 4]]
@@ -1336,9 +1336,13 @@ class UltimatePredictorPro:
         analysis_file = os.path.join(self.output_dir, f'ultimate_analysis_{timestamp}.txt')
         pattern_file = os.path.join(self.output_dir, f'pattern_analysis_{timestamp}.xlsx')
         cross_script_file = os.path.join(self.output_dir, f'cross_script_analysis_{timestamp}.xlsx')
-        
+        ultimate_long_file = os.path.join(
+            self.output_dir, f'ultimate_predictions_long_{timestamp}.xlsx'
+        )
+
         wide_df.to_excel(wide_file, index=False)
         predictions_df.to_excel(detailed_file, index=False)
+        self._export_ultimate_long(predictions_df, ultimate_long_file)
         
         self.create_analysis_report(predictions_df, df, analysis_file)
         self.save_pattern_analysis(pattern_file)
@@ -1346,8 +1350,32 @@ class UltimatePredictorPro:
         
         # Print actual file paths for user confirmation
         print(f"📁 Organized folder: {self.output_dir}")
-        
+
         return wide_df
+
+    def _export_ultimate_long(self, predictions_df, filename):
+        """Save a long-format ultimate predictions file for interoperability."""
+        long_df = predictions_df.copy()
+        if 'date' in long_df.columns:
+            long_df['DATE'] = pd.to_datetime(long_df['date']).dt.date
+        else:
+            long_df['DATE'] = None
+
+        long_df['SLOT'] = (
+            long_df['slot'].astype(str).str.upper() if 'slot' in long_df else None
+        )
+        long_df['RANK'] = long_df['rank'] if 'rank' in long_df else None
+        long_df['NUMBER'] = (
+            long_df['number'].apply(lambda x: f"{int(x):02d}" if pd.notna(x) else None)
+            if 'number' in long_df
+            else None
+        )
+        long_df['SOURCE'] = 'SCR6'
+
+        export_cols = ['DATE', 'SLOT', 'RANK', 'NUMBER', 'SOURCE']
+        long_df = long_df[export_cols].sort_values(['DATE', 'SLOT', 'RANK'])
+
+        long_df.to_excel(filename, index=False)
 
     def create_analysis_report(self, predictions_df, df, filename):
         """Create detailed analysis report - PHASE 2 & 3"""
