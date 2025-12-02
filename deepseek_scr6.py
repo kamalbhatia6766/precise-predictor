@@ -1608,5 +1608,19 @@ def main():
     else:
         print("❌ Failed to load data.")
 
+
+def build_ml_feature_dataframe(history_numbers):
+    """Helper to expose SCR6 feature builder for external utilities."""
+    predictor = UltimatePredictorPro()
+    features, targets = predictor.create_advanced_features(history_numbers)
+    if features is None or len(features) == 0:
+        return pd.DataFrame()
+
+    columns = [f"feature_{i+1}" for i in range(features.shape[1])]
+    df = pd.DataFrame(features, columns=columns)
+    df["target"] = targets
+    return df
+
+
 if __name__ == "__main__":
     main()

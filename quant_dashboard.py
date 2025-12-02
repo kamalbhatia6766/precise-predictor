@@ -47,7 +47,12 @@ def _summarize_auto_backtest():
     if top_days:
         print("Top profit days:")
         for item in top_days[:3]:
-            print(f" • {item['date']}: ₹{item['profit']:,+.0f}")
+            profit = item.get("profit")
+            if isinstance(profit, (int, float)):
+                print(f" • {item['date']}: ₹{profit:+,.0f}")
+            else:
+                display_profit = "N/A" if profit is None else profit
+                print(f" • {item['date']}: ₹{display_profit}")
 
 
 def _summarize_real_time():

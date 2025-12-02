@@ -1214,8 +1214,76 @@ class PreciseBetEngine:
         
         with open(explain_json, 'w') as f:
             json.dump(explain_summary, f, indent=2)
-        
+
         return file_path
+
+
+def analyze_near_miss_history(days: int = 30):
+    """Analyze near-miss candidates using the same logic as the bet engine."""
+    try:
+        results_df = quant_data_core.load_results_dataframe()
+    except Exception as exc:
+        print(f"⚠️ Unable to load results for near-miss analysis: {exc}")
+        return {}
+
+    if results_df is None or results_df.empty:
+        print("⚠️ No historical results available for near-miss analysis")
+        return {}
+
+    results_df['DATE'] = pd.to_datetime(results_df['DATE'], errors='coerce')
+    results_df = results_df.dropna(subset=['DATE'])
+    results_df['DATE_ONLY'] = results_df['DATE'].dt.date
+
+    latest_real_date = quant_data_core.get_latest_result_date(results_df)
+    if not latest_real_date:
+        print("⚠️ Could not determine latest result date")
+        return {}
+
+    start_date = latest_real_date - timedelta(days=days - 1)
+    filtered_df = results_df[(results_df['DATE_ONLY'] >= start_date) & (results_df['DATE_ONLY'] <= latest_real_date)]
+
+    slots = ["FRBD", "GZBD", "GALI", "DSWR"]
+    summary = {}
+    aggregate_counter = Counter()
+
+    for slot in slots:
+        if slot not in filtered_df.columns:
+            continue
+        numbers = pd.to_numeric(filtered_df[slot], errors='coerce').dropna().astype(int).tolist()
+        counter = Counter()
+        for num in numbers:
+            neighbors = [num - 1, num + 1]
+            for candidate in neighbors:
+                counter[candidate % 100] += 1
+                aggregate_counter[candidate % 100] += 1
+
+        summary[slot] = {
+            "recent_draws": len(numbers),
+            "top_near_miss_candidates": counter.most_common(5),
+        }
+
+    summary["aggregate"] = {
+        "top_near_miss_candidates": aggregate_counter.most_common(10)
+    }
+
+    output_path = Path(__file__).resolve().parent / "logs" / "performance" / "near_miss_report.json"
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(summary, f, indent=2)
+        print(f"💾 Near-miss report saved to {output_path}")
+    except Exception as exc:
+        print(f"⚠️ Unable to save near-miss report: {exc}")
+
+    print("\n🔍 Near-miss candidates (last {days} days):".format(days=days))
+    for slot, info in summary.items():
+        if slot == "aggregate":
+            continue
+        print(f" • {slot}: {info['top_near_miss_candidates']}")
+    print(f" • Aggregate: {summary.get('aggregate', {}).get('top_near_miss_candidates', [])}")
+
+    return summary
+
 
 def main():
     parser = argparse.ArgumentParser(description='Precise Bet Engine v5 Rocket - Ultra clear output')

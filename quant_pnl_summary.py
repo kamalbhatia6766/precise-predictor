@@ -3,11 +3,14 @@ quant_pnl_summary.py - P&L Summary and Analysis Utilities
 Optional module for clean separation of P&L calculation logic.
 """
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+
 import quant_paths
 
 
@@ -51,36 +54,76 @@ class QuantPnLSummary:
                 summary_data = {}
             
             return slot_pnl_df, layer_pnl_df, summary_data
-            
+
         except Exception as e:
             raise ValueError(f"Error loading master P&L data: {e}")
+
+    def _load_quant_reality_json(self) -> Dict:
+        pnl_file = quant_paths.get_performance_logs_dir() / "quant_reality_pnl.json"
+        if not pnl_file.exists():
+            return {}
+        try:
+            with open(pnl_file, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _build_daily_pnl(self, quant_data: Dict) -> pd.DataFrame:
+        entries = quant_data.get("daily") or quant_data.get("records") or []
+        rows = []
+        for entry in entries:
+            date_val = pd.to_datetime(entry.get("date") or entry.get("DATE"), errors="coerce")
+            if pd.isna(date_val):
+                continue
+            stake = float(entry.get("total_stake", entry.get("stake", 0)) or 0)
+            ret = float(entry.get("total_return", entry.get("return", 0)) or 0)
+            pnl_val = entry.get("pnl")
+            pnl = float(pnl_val) if pnl_val is not None else ret - stake
+            rows.append({"DATE": date_val.normalize(), "STAKE": stake, "PNL": pnl})
+        if not rows:
+            return pd.DataFrame(columns=["DATE", "STAKE", "PNL"])
+        df = pd.DataFrame(rows)
+        return df.groupby("DATE")[["STAKE", "PNL"]].sum().reset_index().sort_values("DATE")
+
+    def _calculate_winning_streak(self, daily_df: pd.DataFrame) -> int:
+        if daily_df is None or daily_df.empty:
+            return 0
+        streak = 0
+        for pnl in reversed(daily_df.sort_values("DATE")["PNL"].tolist()):
+            if pnl > 0:
+                streak += 1
+            else:
+                break
+        return streak
     
     def get_current_performance_summary(self) -> Dict:
         """Get current performance summary for dashboards"""
         try:
             slot_pnl_df, layer_pnl_df, summary_data = self.load_master_pnl_data()
-            
-            # Calculate recent performance (last 7 days)
-            recent_days = slot_pnl_df[slot_pnl_df['slot'] == 'DAY_TOTAL'].tail(7)
-            recent_stake = recent_days['total_stake'].sum()
-            recent_return = recent_days['total_return'].sum()
-            recent_roi = (recent_return / recent_stake - 1) * 100 if recent_stake > 0 else 0
-            
-            # Current streak analysis
-            daily_pnl = recent_days['pnl'].tolist()
-            current_streak = 0
-            for pnl in reversed(daily_pnl):
-                if pnl > 0:
-                    current_streak += 1
-                else:
-                    break
+            quant_data = self._load_quant_reality_json()
+
+            daily_df = self._build_daily_pnl(quant_data)
+            recent_window = daily_df.tail(7)
+            recent_stake = recent_window['STAKE'].sum()
+            recent_pnl = recent_window['PNL'].sum()
+            recent_roi = (recent_pnl / recent_stake * 100) if recent_stake > 0 else 0
+            current_streak = self._calculate_winning_streak(daily_df)
+
+            overall_block = summary_data.get('overall', {}) or quant_data.get('overall', {})
+            if overall_block:
+                overall_info = overall_block
+            else:
+                overall_stake = daily_df['STAKE'].sum()
+                overall_pnl = daily_df['PNL'].sum()
+                overall_roi = (overall_pnl / overall_stake * 100) if overall_stake > 0 else 0
+                overall_info = {'overall_roi': overall_roi, 'total_pnl': overall_pnl}
             
             return {
                 'timestamp': datetime.now().isoformat(),
-                'overall': summary_data.get('overall', {}),
+                'overall': overall_info,
                 'recent_7d': {
                     'stake': recent_stake,
-                    'return': recent_return,
+                    'return': recent_stake + recent_pnl,
                     'roi': recent_roi,
                     'winning_streak': current_streak
                 },

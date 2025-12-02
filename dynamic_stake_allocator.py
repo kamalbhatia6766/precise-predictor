@@ -555,7 +555,12 @@ class DynamicStakeAllocator:
             base = base_stakes[slot]
             final = final_stakes[slot]
             change_pct = ((final - base) / base * 100) if base > 0 else 0
-            trend = "🟢" if change_pct > 0 else "🔴" if change_pct < 0 else "🟡"
+            if roi > 0:
+                trend = "🟢"
+            elif roi <= -20:
+                trend = "🔴"
+            else:
+                trend = "🟡"
             print(
                 f"   {trend} {slot}: ROI={roi:+.1f}% → Stake: {fmt_rupees(base)}→{fmt_rupees(final)} "
                 f"({change_pct:+.1f}%)"

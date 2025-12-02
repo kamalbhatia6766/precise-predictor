@@ -53,6 +53,18 @@ class SystemRecapEngine:
         except Exception as e:
             print(f"❌ Error loading P&L data: {e}")
             return None, None
+
+    def load_quant_reality_pnl(self):
+        """Load quant_reality_pnl.json as the source of truth for ROI/P&L."""
+        pnl_file = self.base_dir / "logs" / "performance" / "quant_reality_pnl.json"
+        if not pnl_file.exists():
+            return None
+        try:
+            with open(pnl_file, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"⚠️ Error loading quant_reality_pnl.json: {e}")
+            return None
     
     def load_pattern_intelligence(self):
         """Load pattern intelligence data"""
@@ -104,11 +116,38 @@ class SystemRecapEngine:
         
         return None
     
-    def calculate_roi_summary(self, day_df):
-        """Calculate ROI summary from day-level data"""
+    def calculate_roi_summary(self, day_df, quant_reality_data=None):
+        """Calculate ROI summary from reality P&L when available."""
+        if quant_reality_data:
+            daily_entries = quant_reality_data.get("daily") or quant_reality_data.get("records") or []
+            total_stake = total_return = 0.0
+            for entry in daily_entries:
+                stake = float(entry.get("total_stake", entry.get("stake", 0)) or 0)
+                ret = float(entry.get("total_return", entry.get("return", 0)) or 0)
+                pnl_entry = entry.get("pnl")
+                pnl_val = float(pnl_entry) if pnl_entry is not None else ret - stake
+                total_stake += stake
+                total_return += ret
+
+            overall_block = quant_reality_data.get("overall", {})
+            total_profit = overall_block.get("total_pnl")
+            if total_profit is None:
+                total_profit = total_return - total_stake
+            roi_percent = overall_block.get("overall_roi")
+            if roi_percent is None:
+                roi_percent = (total_profit / total_stake * 100) if total_stake > 0 else 0
+
+            return {
+                'total_stake': total_stake,
+                'total_return': total_return,
+                'total_profit': total_profit,
+                'roi_percent': roi_percent,
+                'cumulative_profit': total_profit,
+            }
+
         if day_df is None or day_df.empty:
             return {}
-            
+
         try:
             latest_day = day_df.iloc[-1]
             roi_data = {
@@ -122,14 +161,29 @@ class SystemRecapEngine:
         except Exception as e:
             print(f"❌ Error calculating ROI: {e}")
             return {}
-    
-    def calculate_slot_performance(self, slot_df):
+
+    def calculate_slot_performance(self, slot_df, quant_reality_data=None):
         """Calculate slot-wise performance"""
+        if quant_reality_data and quant_reality_data.get("by_slot"):
+            slot_performance = {}
+            for row in quant_reality_data.get("by_slot", []):
+                slot = row.get("slot")
+                if slot:
+                    slot_performance[slot] = {
+                        'total_stake': row.get('total_stake', 0),
+                        'total_return': row.get('total_return', 0),
+                        'profit': row.get('pnl', row.get('total_pnl', 0)),
+                        'main_hits': row.get('main_hits', 0),
+                        'andar_hits': row.get('andar_hits', 0),
+                        'bahar_hits': row.get('bahar_hits', 0)
+                    }
+            return slot_performance
+
         if slot_df is None or slot_df.empty:
             return {}
-            
+
         slot_performance = {}
-        
+
         for slot in self.slots:
             slot_data = slot_df[slot_df['slot'] == slot]
             if not slot_data.empty:
@@ -142,7 +196,7 @@ class SystemRecapEngine:
                     'andar_hits': latest.get('andar_hits', 0),
                     'bahar_hits': latest.get('bahar_hits', 0)
                 }
-        
+
         return slot_performance
     
     def analyze_pattern_insights(self, pattern_data):
@@ -171,10 +225,11 @@ class SystemRecapEngine:
         # Reuse existing load functions
         slot_df, day_df = self.load_pnl_data()
         pattern_data = self.load_pattern_intelligence()
-        
+        quant_reality_data = self.load_quant_reality_pnl()
+
         # Calculate metrics using existing functions
-        roi_summary = self.calculate_roi_summary(day_df)
-        slot_performance = self.calculate_slot_performance(slot_df)
+        roi_summary = self.calculate_roi_summary(day_df, quant_reality_data)
+        slot_performance = self.calculate_slot_performance(slot_df, quant_reality_data)
         pattern_insights = self.analyze_pattern_insights(pattern_data)
         
         hud_data = {
@@ -194,13 +249,14 @@ class SystemRecapEngine:
         # Load all data sources
         perf_df = self.load_performance_data()
         slot_df, day_df = self.load_pnl_data()
+        quant_reality_data = self.load_quant_reality_pnl()
         pattern_data = self.load_pattern_intelligence()
         fusion_weights = self.load_fusion_weights()
         strategy_data = self.load_strategy_recommendation()
-        
+
         # Calculate metrics
-        roi_summary = self.calculate_roi_summary(day_df)
-        slot_performance = self.calculate_slot_performance(slot_df)
+        roi_summary = self.calculate_roi_summary(day_df, quant_reality_data)
+        slot_performance = self.calculate_slot_performance(slot_df, quant_reality_data)
         pattern_insights = self.analyze_pattern_insights(pattern_data)
         
         # Generate text report
