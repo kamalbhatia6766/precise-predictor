@@ -1,4 +1,11 @@
 # bet_pnl_tracker.py - ENHANCED REALITY P&L TRACKER WITH DEFENSIVE COLUMN HANDLING
+# Additions:
+# - Slot-wise forensic summaries with configurable window (--days)
+# - FRBD-focused slump diagnostics and optional debug alignment tracer (--debug-frbd)
+# - Forensic CSV export under output/ for offline review
+# Examples:
+#   py -3.12 bet_pnl_tracker.py --days 45
+#   py -3.12 bet_pnl_tracker.py --days 30 --debug-frbd
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -18,7 +25,14 @@ class BetPnLTracker:
     def __init__(self):
         self.base_dir = quant_paths.get_base_dir()
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
+        self.SLOT_COLUMNS = {
+            "FRBD": "FRBD",
+            "GZBD": "GZBD",
+            "GALI": "GALI",
+            "DSWR": "DSWR"
+        }
         self.unit = 10  # ₹10 per bet
+        self.matched_dates_data = []
         
         # 🆕 Payout multipliers
         self.PAYOUT_MULTIPLIERS = {
@@ -65,6 +79,36 @@ class BetPnLTracker:
                 return pd.Series([default_value] * len(df))
             else:
                 return pd.Series([0] * len(df))
+
+    def normalize_date_value(self, date_value):
+        """Normalize various date formats to date objects"""
+        if isinstance(date_value, datetime):
+            return date_value.date()
+        if hasattr(date_value, 'date'):
+            try:
+                return date_value.date()
+            except Exception:
+                pass
+        if isinstance(date_value, str):
+            for fmt in ['%Y-%m-%d', '%Y%m%d']:
+                try:
+                    return datetime.strptime(date_value, fmt).date()
+                except ValueError:
+                    continue
+            try:
+                parsed = pd.to_datetime(date_value, errors='coerce')
+                if not pd.isna(parsed):
+                    return parsed.date()
+            except Exception:
+                return None
+        if isinstance(date_value, (pd.Timestamp, np.datetime64)):
+            try:
+                return pd.to_datetime(date_value).date()
+            except Exception:
+                return None
+        if hasattr(date_value, 'year') and hasattr(date_value, 'month') and hasattr(date_value, 'day'):
+            return date_value
+        return None
 
     def parse_bet_plan(self, file_path: Path) -> Dict:
         """Parse a bet plan file and extract structured bet data - DEFENSIVE VERSION"""
@@ -216,7 +260,8 @@ class BetPnLTracker:
 
         # Force final columns regardless of detection path
         df = df.iloc[:, :5].copy()
-        df.columns = ["DATE", "FRBD", "GZBD", "GALI", "DSWR"]
+        expected_columns = ["DATE"] + [self.SLOT_COLUMNS[slot] for slot in self.slots]
+        df.columns = expected_columns
 
         # Robust DATE parsing
         excel_origin = datetime(1899, 12, 30).date()
@@ -342,30 +387,9 @@ class BetPnLTracker:
             if not valid_dates.empty:
                 max_real_date = valid_dates.max()
 
-        def _normalize_bet_plan_date(date_value):
-            if isinstance(date_value, datetime):
-                return date_value.date()
-            if hasattr(date_value, 'date'):
-                try:
-                    return date_value.date()
-                except Exception:
-                    pass
-            if isinstance(date_value, str):
-                for fmt in ['%Y-%m-%d', '%Y%m%d']:
-                    try:
-                        return datetime.strptime(date_value, fmt).date()
-                    except ValueError:
-                        continue
-            if isinstance(date_value, (pd.Timestamp, np.datetime64)):
-                try:
-                    return pd.to_datetime(date_value).date()
-                except Exception:
-                    return None
-            return date_value if hasattr(date_value, 'year') and hasattr(date_value, 'month') and hasattr(date_value, 'day') else None
-
         matched_dates_data = []
         for date in dates:
-            date_obj = _normalize_bet_plan_date(date)
+            date_obj = self.normalize_date_value(date)
             if not date_obj:
                 print(f"⚠️  Invalid date format: {date}, skipping")
                 continue
@@ -387,6 +411,7 @@ class BetPnLTracker:
             })
 
         print(f"📅 Bet plan dates with real result matches: {len(matched_dates_data)} / {len(dates)}")
+        self.matched_dates_data = matched_dates_data
         if not matched_dates_data:
             return pd.DataFrame(slot_level_data), pd.DataFrame(layer_level_data)
 
@@ -646,6 +671,231 @@ class BetPnLTracker:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         df_summary.to_excel(output_path, index=False)
 
+    def compute_slot_forensics(self, slot_pnl_df: pd.DataFrame, days_window: int = 30) -> Optional[Dict]:
+        """Build slot-wise forensic stats for the last N days"""
+        if slot_pnl_df.empty:
+            print("⚠️  Skipping forensic computation: empty P&L frame")
+            return None
+
+        slot_df = slot_pnl_df[slot_pnl_df['slot'] != 'DAY_TOTAL'].copy()
+        slot_df['date_dt'] = pd.to_datetime(slot_df['date'], errors='coerce').dt.date
+
+        if slot_df['date_dt'].isna().all():
+            print("⚠️  Skipping forensic computation: no parsable dates")
+            return None
+
+        max_date = slot_df['date_dt'].max()
+        if pd.isna(max_date):
+            print("⚠️  Skipping forensic computation: unable to detect max date")
+            return None
+
+        cutoff = max_date - timedelta(days=days_window - 1)
+        slot_df = slot_df[slot_df['date_dt'] >= cutoff]
+
+        slot_summaries = []
+        frbd_daily = []
+
+        for slot in self.slots:
+            slot_data = slot_df[slot_df['slot'] == slot].copy()
+            total_bet = slot_data['total_stake'].sum()
+            total_return = slot_data['total_return'].sum()
+            net_pnl = total_return - total_bet
+            roi_percent = (net_pnl / total_bet * 100) if total_bet > 0 else 0
+
+            slot_data['win_flag'] = slot_data[['main_hit', 'andar_hit', 'bahar_hit']].sum(axis=1) > 0
+            wins = int(slot_data['win_flag'].sum())
+            losses = int(len(slot_data) - wins)
+            hit_rate = (wins / (wins + losses)) if (wins + losses) > 0 else 0
+
+            slot_summaries.append({
+                'slot': slot,
+                'days': days_window,
+                'total_bet': total_bet,
+                'total_return': total_return,
+                'net_pnl': net_pnl,
+                'roi_percent': roi_percent,
+                'wins': wins,
+                'losses': losses,
+                'hit_rate': hit_rate
+            })
+
+            if slot == 'FRBD':
+                for _, row in slot_data.iterrows():
+                    frbd_daily.append({
+                        'date': row['date_dt'],
+                        'total_bet': row['total_stake'],
+                        'total_return': row['total_return'],
+                        'net_pnl': row['total_return'] - row['total_stake'],
+                        'hit_flag': 'HIT' if row['win_flag'] else 'MISS'
+                    })
+
+        frbd_summary = next((s for s in slot_summaries if s['slot'] == 'FRBD'), None)
+        others = [s for s in slot_summaries if s['slot'] != 'FRBD' and s['total_bet'] > 0]
+        avg_roi_others = np.mean([s['roi_percent'] for s in others]) if others else 0
+
+        frbd_diag = self._compute_frbd_streaks(slot_df[slot_df['slot'] == 'FRBD'])
+        frbd_diag.update({
+            'roi_percent': frbd_summary['roi_percent'] if frbd_summary else 0,
+            'avg_roi_others': avg_roi_others,
+            'days_window': days_window
+        })
+
+        return {
+            'slot_summaries': slot_summaries,
+            'frbd_diag': frbd_diag,
+            'frbd_daily': sorted(frbd_daily, key=lambda x: x['date'] or datetime.min.date())
+        }
+
+    def _compute_frbd_streaks(self, frbd_df: pd.DataFrame) -> Dict:
+        """Compute FRBD streak metrics"""
+        if frbd_df.empty:
+            return {
+                'last_hit_date': None,
+                'longest_losing_streak': 0,
+                'current_losing_streak': 0
+            }
+
+        frbd_df = frbd_df.sort_values('date_dt')
+        frbd_df['win_flag'] = frbd_df[['main_hit', 'andar_hit', 'bahar_hit']].sum(axis=1) > 0
+        dates = frbd_df['date_dt'].tolist()
+        wins = frbd_df['win_flag'].tolist()
+
+        last_hit_date = None
+        for d, w in zip(dates, wins):
+            if w:
+                last_hit_date = d
+
+        longest = 0
+        current = 0
+        streak = 0
+        for w in wins:
+            if not w:
+                streak += 1
+            else:
+                longest = max(longest, streak)
+                streak = 0
+        longest = max(longest, streak)
+
+        # Current losing streak from the end
+        for w in reversed(wins):
+            if not w:
+                current += 1
+            else:
+                break
+
+        return {
+            'last_hit_date': last_hit_date,
+            'longest_losing_streak': longest,
+            'current_losing_streak': current
+        }
+
+    def print_slot_forensic_table(self, forensic_data: Dict):
+        """Print slot-wise forensic summary table"""
+        if not forensic_data:
+            return
+
+        slot_rows = forensic_data.get('slot_summaries', [])
+        if not slot_rows:
+            return
+
+        print("\nSLOT  DAYS  TOTAL_BET  TOTAL_RETURN  NET_PNL  ROI_%  WINS  LOSSES  HIT_RATE")
+        for row in slot_rows:
+            print(f"{row['slot']:<4} {row['days']:<4} {row['total_bet']:<10.2f} {row['total_return']:<12.2f} "
+                  f"{row['net_pnl']:<8.2f} {row['roi_percent']:<6.2f} {row['wins']:<5} {row['losses']:<7} "
+                  f"{row['hit_rate']:.2f}")
+
+    def print_frbd_slump_diagnostics(self, forensic_data: Dict):
+        """Print FRBD slump diagnostic block"""
+        diag = forensic_data.get('frbd_diag', {}) if forensic_data else {}
+        if not diag:
+            return
+
+        days_window = diag.get('days_window', 30)
+        print(f"\n=== FRBD SLUMP DIAGNOSTICS (last {days_window} days) ===")
+        last_hit = diag.get('last_hit_date')
+        last_hit_text = last_hit.isoformat() if last_hit else "no hits in window"
+        print(f"Last FRBD hit date: {last_hit_text}")
+        print(f"Longest losing streak: {diag.get('longest_losing_streak', 0)} days")
+        print(f"Current losing streak: {diag.get('current_losing_streak', 0)} days")
+        frbd_roi = diag.get('roi_percent', None)
+        print(f"FRBD ROI: {diag.get('roi_percent', 0):+.2f}%")
+        print(f"Other slots average ROI: {diag.get('avg_roi_others', 0):+.2f}%")
+        if frbd_roi is not None:
+            delta = frbd_roi - diag.get('avg_roi_others', 0)
+            print(f"FRBD is underperforming vs others by {delta:+.2f}% over last {days_window} days")
+
+    def print_frbd_debug_lines(self, bet_plans: Dict, real_results_df: pd.DataFrame, debug_days: int = 10):
+        """Optional debug tracer for FRBD alignment"""
+        if not self.matched_dates_data:
+            print("⚠️  Debug trace unavailable: no matched dates data")
+            return
+
+        sorted_matches = sorted(self.matched_dates_data, key=lambda x: x['date_obj'])
+        debug_slice = sorted_matches[-debug_days:]
+
+        print("\nDATE       | SLOT | RESULT | BET_NUMBERS | HIT?")
+        for match in debug_slice:
+            date_obj = match['date_obj']
+            bet_file = match['bet_file']
+            date_results = match['date_results']
+
+            slot_bets = self.parse_bet_plan(bet_file).get('FRBD', {})
+            result_number = None
+            if not date_results.empty and self.SLOT_COLUMNS['FRBD'] in date_results.columns:
+                valid_results = date_results[date_results[self.SLOT_COLUMNS['FRBD']].notna()]
+                if not valid_results.empty:
+                    try:
+                        result_number = int(float(valid_results[self.SLOT_COLUMNS['FRBD']].iloc[0]))
+                    except Exception:
+                        result_number = None
+
+            hits = self.compute_hits_and_returns(slot_bets, result_number)
+            bet_numbers = slot_bets.get('main_numbers', [])
+            hit_text = "HIT" if hits.get('main_hit') or hits.get('andar_hit') or hits.get('bahar_hit') else "MISS"
+
+            print(f"{date_obj} | FRBD | {result_number if result_number is not None else 'MISSING':>6} | "
+                  f"{bet_numbers} | {hit_text}")
+
+    def export_forensic_report(self, forensic_data: Dict):
+        """Export forensic tables to CSV under output/"""
+        if not forensic_data:
+            return
+
+        output_dir = self.base_dir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"frbd_forensic_report_{datetime.now().strftime('%Y%m%d')}.csv"
+        output_path = output_dir / filename
+
+        rows = []
+        for row in forensic_data.get('slot_summaries', []):
+            rows.append({
+                'section': 'SLOT_SUMMARY',
+                **row
+            })
+
+        diag = forensic_data.get('frbd_diag', {})
+        if diag:
+            rows.append({
+                'section': 'FRBD_DIAGNOSTICS',
+                'last_hit_date': diag.get('last_hit_date'),
+                'longest_losing_streak': diag.get('longest_losing_streak'),
+                'current_losing_streak': diag.get('current_losing_streak'),
+                'roi_percent': diag.get('roi_percent'),
+                'avg_roi_others': diag.get('avg_roi_others'),
+                'days_window': diag.get('days_window')
+            })
+
+        for row in forensic_data.get('frbd_daily', []):
+            rows.append({
+                'section': 'FRBD_DAILY',
+                **row
+            })
+
+        if rows:
+            df = pd.DataFrame(rows)
+            df.to_csv(output_path, index=False)
+            print(f"💾 Forensic report saved: {output_path}")
+
     def save_pnl_master_file(self, slot_pnl_df: pd.DataFrame, layer_pnl_df: pd.DataFrame, summary_data: Dict):
         """Save master P&L file with all details"""
         output_file = quant_paths.get_performance_logs_dir() / "quant_reality_pnl.xlsx"
@@ -732,8 +982,8 @@ class BetPnLTracker:
         
         print("="*70)
 
-    def run(self, days_back: Optional[int] = None):
-        """Main function to run the enhanced P&L tracker"""
+    def run(self, days_back: Optional[int] = None, forensic_days: int = 30, debug_frbd: bool = False):
+        """Main function to run the enhanced P&L tracker with optional forensics"""
         print("🔍 QUANT REALITY P&L TRACKER - ENHANCED & DEFENSIVE")
         print("="*50)
         
@@ -784,10 +1034,21 @@ class BetPnLTracker:
 
         # Step 6b: Export compact quant P&L summary for ROI consumers
         self.export_quant_pnl_summary(slot_pnl_df)
-        
-        # Step 7: Print console summary
+
+        # Step 7: Forensic slot/FRBD summaries
+        forensic_data = self.compute_slot_forensics(slot_pnl_df, days_window=forensic_days)
+        if forensic_data:
+            self.print_slot_forensic_table(forensic_data)
+            self.print_frbd_slump_diagnostics(forensic_data)
+            self.export_forensic_report(forensic_data)
+
+        # Step 8: Optional FRBD debug alignment tracer
+        if debug_frbd:
+            self.print_frbd_debug_lines(bet_plans, real_results_df, debug_days=min(10, forensic_days))
+
+        # Step 9: Print console summary
         self.print_console_summary(summary_data)
-        
+
         print("\n✅ Enhanced P&L tracking completed successfully!")
         return True
 
@@ -796,6 +1057,8 @@ def main():
     
     parser = argparse.ArgumentParser(description='Enhanced Reality P&L Tracker')
     parser.add_argument('--days-back', type=int, help='Process only last N days of data')
+    parser.add_argument('--days', type=int, default=30, help='Forensic analysis window in days (default: 30)')
+    parser.add_argument('--debug-frbd', action='store_true', help='Enable FRBD alignment debug trace for recent days')
     parser.add_argument('--all', action='store_true', help='Process all available data (default)')
     
     args = parser.parse_args()
@@ -803,9 +1066,9 @@ def main():
     tracker = BetPnLTracker()
     
     if args.days_back:
-        success = tracker.run(days_back=args.days_back)
+        success = tracker.run(days_back=args.days_back, forensic_days=args.days, debug_frbd=args.debug_frbd)
     else:
-        success = tracker.run()
+        success = tracker.run(forensic_days=args.days, debug_frbd=args.debug_frbd)
     
     return 0 if success else 1
 
