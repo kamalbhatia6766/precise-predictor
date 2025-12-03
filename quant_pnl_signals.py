@@ -59,10 +59,7 @@ def _compute_others_roi(slot: str, data: Dict[str, Any]) -> float:
 
 
 def get_slot_health(slot: str, data: Optional[Dict[str, Any]] = None) -> SlotHealth:
-    """
-    Look up numeric P&L and slump diagnostics for a given slot
-    (FRBD/GZBD/GALI/DSWR) from quant_reality_pnl.json and return a SlotHealth.
-    """
+    """Return numeric P&L and slump diagnostics for a given slot."""
 
     slot_key = slot.upper()
     pnl_data = data if data is not None else load_latest_pnl_json()
@@ -138,7 +135,8 @@ def _main():
         health = get_slot_health(slot, data=pnl_data)
         slump_flag = is_slot_in_slump(slot, data=pnl_data)
         print(
-            f"{health.slot}: ROI={health.roi_pct:+.1f}%, "
+            f"{health.slot}: ROI={health.roi_pct:+.1f}%, wins={health.wins}, "
+            f"losses={health.losses}, hit_rate={health.hit_rate:.2f}, "
             f"current_streak={health.current_losing_streak}, slump={str(slump_flag)}"
         )
 
