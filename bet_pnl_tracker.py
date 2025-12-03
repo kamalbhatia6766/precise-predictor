@@ -887,11 +887,17 @@ class BetPnLTracker:
         print(f"Longest losing streak: {diag.get('longest_losing_streak', 0)} days")
         print(f"Current losing streak: {diag.get('current_losing_streak', 0)} days")
         frbd_roi = diag.get('roi_percent', None)
-        print(f"FRBD ROI: {diag.get('roi_percent', 0):+.2f}%")
-        print(f"Other slots average ROI: {diag.get('avg_roi_others', 0):+.2f}%")
+        avg_others = diag.get('avg_roi_others', 0.0)
+        print(f"FRBD ROI: {frbd_roi:+.2f}%")
+        print(f"Other slots average ROI: {avg_others:+.2f}%")
         if frbd_roi is not None:
-            delta = frbd_roi - diag.get('avg_roi_others', 0)
-            print(f"FRBD is underperforming vs others by {delta:+.2f}% over last {days_window} days")
+            delta = frbd_roi - avg_others
+            if delta < -1e-6:
+                print(f"FRBD is underperforming vs others by {abs(delta):.2f}% over last {days_window} days")
+            elif delta > 1e-6:
+                print(f"FRBD is outperforming others by {delta:.2f}% over last {days_window} days")
+            else:
+                print(f"FRBD is performing in line with other slots over last {days_window} days")
 
     def print_all_slot_slump_diagnostics(self, forensic_data: Dict):
         """Print slump diagnostics block for all slots"""
@@ -906,6 +912,10 @@ class BetPnLTracker:
         slot_roi_map = {row['slot']: row.get('roi_percent', 0) for row in slot_summaries}
 
         for slot in self.slots:
+            # 🆕 Skip FRBD here because it already has a dedicated block
+            if slot == "FRBD":
+                continue
+
             diag = per_slot_diag.get(slot, {})
             if not diag:
                 continue
@@ -923,8 +933,14 @@ class BetPnLTracker:
             if other_rois:
                 avg_other = float(np.mean(other_rois))
                 print(f"Other slots average ROI: {avg_other:+.2f}%")
-                delta = diag.get('roi_percent', 0) - avg_other
-                print(f"{slot} is underperforming vs others by {delta:+.2f}% over last {days_window} days")
+                slot_roi = diag.get('roi_percent', 0)
+                delta = slot_roi - avg_other
+                if delta < -1e-6:
+                    print(f"{slot} is underperforming vs others by {abs(delta):.2f}% over last {days_window} days")
+                elif delta > 1e-6:
+                    print(f"{slot} is outperforming others by {delta:.2f}% over last {days_window} days")
+                else:
+                    print(f"{slot} is performing in line with other slots over last {days_window} days")
 
     def print_slot_debug_lines(self, slot_name: str, bet_plans: Dict, real_results_df: pd.DataFrame, debug_days: int = 10):
         """Optional debug tracer for any slot alignment"""

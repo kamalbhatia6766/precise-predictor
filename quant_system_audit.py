@@ -5,6 +5,7 @@ without modifying any files. Outputs a CSV report under logs/performance.
 """
 from pathlib import Path
 from datetime import datetime
+from collections import Counter
 import re
 import csv
 
@@ -127,6 +128,17 @@ def run_audit():
     print("=== QUANT SYSTEM STATIC AUDIT ===")
     print(f"Scanned {len(py_files)} .py files")
     print(f"Found {len(all_warnings)} warnings")
+    if all_warnings:
+        type_counts = Counter(w["warning_type"] for w in all_warnings)
+        file_counts = Counter(w["file_path"] for w in all_warnings)
+
+        print("Warning types summary:")
+        for wtype, count in type_counts.most_common():
+            print(f"  {wtype}: {count}")
+
+        print("Top 10 files by warnings:")
+        for fpath, count in file_counts.most_common(10):
+            print(f"  {Path(fpath).name}: {count}")
     if not all_warnings:
         print("No warnings found")
     print(f"Report saved to: {report_path}")
