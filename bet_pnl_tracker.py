@@ -615,7 +615,16 @@ class BetPnLTracker:
             }
         
         # Filter out day total rows for slot analysis
-        slot_analysis_df = slot_pnl_df[slot_pnl_df['slot'] != 'DAY_TOTAL']
+        slot_analysis_df = slot_pnl_df[slot_pnl_df['slot'] != 'DAY_TOTAL'].copy()
+
+        # Normalize bet_numbers and compute validity flags for win/loss tracking
+        slot_analysis_df['bet_numbers'] = slot_analysis_df['bet_numbers'].apply(
+            lambda x: x if isinstance(x, list) else []
+        )
+        slot_analysis_df['has_bet'] = slot_analysis_df['bet_numbers'].apply(lambda bets: len(bets) > 0)
+        slot_analysis_df['norm_result'] = slot_analysis_df['result_number'].apply(self.normalize_result)
+        slot_analysis_df['valid_row'] = slot_analysis_df['has_bet'] & slot_analysis_df['norm_result'].notna()
+        slot_analysis_df['win_flag'] = slot_analysis_df[['main_hit', 'andar_hit', 'bahar_hit']].sum(axis=1) > 0
         
         # Overall summary
         total_stake = slot_analysis_df['total_stake'].sum()
@@ -629,10 +638,25 @@ class BetPnLTracker:
             'total_return': 'sum',
             'pnl': 'sum',
             'main_hit': 'sum',
-            'andar_hit': 'sum', 
+            'andar_hit': 'sum',
             'bahar_hit': 'sum'
         }).reset_index()
-        
+
+        valid_rows = slot_analysis_df[slot_analysis_df['valid_row']]
+        wins_losses = valid_rows.groupby('slot').agg(
+            wins=('win_flag', 'sum'),
+            total_valid=('win_flag', 'size')
+        ).reset_index()
+        wins_losses['losses'] = wins_losses['total_valid'] - wins_losses['wins']
+        wins_losses = wins_losses[['slot', 'wins', 'losses']]
+
+        slot_summary = slot_summary.merge(wins_losses, on='slot', how='left')
+        slot_summary[['wins', 'losses']] = slot_summary[['wins', 'losses']].fillna(0).astype(int)
+        slot_summary['hit_rate'] = slot_summary.apply(
+            lambda row: (row['wins'] / (row['wins'] + row['losses'])) if (row['wins'] + row['losses']) > 0 else 0.0,
+            axis=1
+        )
+
         slot_summary['roi_pct'] = (slot_summary['total_return'] / slot_summary['total_stake'] - 1) * 100
         slot_summary = slot_summary.round(2)
         
