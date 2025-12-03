@@ -804,6 +804,45 @@ class BetPnLTracker:
             'per_slot_diag': per_slot_diag
         }
 
+    def build_slot_slump_diagnostics(self, forensic_data: Dict) -> Dict:
+        """Convert slump diagnostics into JSON-safe structure"""
+        if not forensic_data:
+            return {}
+
+        slot_summaries = forensic_data.get('slot_summaries', [])
+        per_slot_diag = forensic_data.get('per_slot_diag', {})
+        frbd_diag = forensic_data.get('frbd_diag', {})
+
+        if not slot_summaries or not per_slot_diag:
+            return {}
+
+        slot_roi_map = {row['slot']: row.get('roi_percent', 0.0) for row in slot_summaries}
+        diagnostics = {}
+
+        for slot in self.slots:
+            diag = per_slot_diag.get(slot, {})
+            if not diag:
+                continue
+
+            slot_roi = float(diag.get('roi_percent', 0.0))
+
+            if slot == 'FRBD':
+                avg_other = float(frbd_diag.get('avg_roi_others', 0.0))
+            else:
+                other_rois = [roi for s, roi in slot_roi_map.items() if s != slot]
+                avg_other = float(np.mean(other_rois)) if other_rois else 0.0
+
+            diagnostics[slot] = {
+                'last_hit_date': diag.get('last_hit_date').isoformat() if diag.get('last_hit_date') else None,
+                'longest_losing_streak': int(diag.get('longest_losing_streak', 0) or 0),
+                'current_losing_streak': int(diag.get('current_losing_streak', 0) or 0),
+                'slot_roi_pct': slot_roi,
+                'others_avg_roi_pct': avg_other,
+                'roi_diff_vs_others_pct': slot_roi - avg_other
+            }
+
+        return diagnostics
+
     def _compute_slot_streaks(self, slot_df: pd.DataFrame) -> Dict:
         """Compute slot streak metrics for any slot"""
         if slot_df.empty:
@@ -1165,21 +1204,25 @@ class BetPnLTracker:
         # Step 5: Build summaries
         summary_data = self.build_summary_tables(slot_pnl_df, layer_pnl_df)
 
-        # Step 6: Save master file
+        # Step 6: Forensic slot/FRBD summaries (used for slump diagnostics)
+        forensic_data = self.compute_slot_forensics(slot_pnl_df, days_window=forensic_days)
+        if forensic_data:
+            summary_data['slot_slump_diagnostics'] = self.build_slot_slump_diagnostics(forensic_data)
+
+        # Step 7: Save master file
         self.save_pnl_master_file(slot_pnl_df, layer_pnl_df, summary_data)
 
-        # Step 6b: Export compact quant P&L summary for ROI consumers
+        # Step 7b: Export compact quant P&L summary for ROI consumers
         self.export_quant_pnl_summary(slot_pnl_df)
 
-        # Step 7: Forensic slot/FRBD summaries
-        forensic_data = self.compute_slot_forensics(slot_pnl_df, days_window=forensic_days)
+        # Step 8: Forensic slot/FRBD summaries
         if forensic_data:
             self.print_slot_forensic_table(forensic_data)
             self.print_frbd_slump_diagnostics(forensic_data)
             self.print_all_slot_slump_diagnostics(forensic_data)
             self.export_forensic_report(forensic_data)
 
-        # Step 8: Optional slot debug alignment tracer
+        # Step 9: Optional slot debug alignment tracer
         if debug_all:
             for slot in self.slots:
                 self.print_slot_debug_lines(slot, bet_plans, real_results_df, debug_days=min(10, forensic_days))
@@ -1188,7 +1231,7 @@ class BetPnLTracker:
         elif debug_frbd:
             self.print_frbd_debug_lines(bet_plans, real_results_df, debug_days=min(10, forensic_days))
 
-        # Step 9: Print console summary
+        # Step 10: Print console summary
         self.print_console_summary(summary_data)
 
         print("\n✅ Enhanced P&L tracking completed successfully!")
