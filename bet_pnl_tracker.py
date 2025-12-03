@@ -110,6 +110,36 @@ class BetPnLTracker:
             return date_value
         return None
 
+    def normalize_result(self, value: Optional[object]) -> Optional[int]:
+        """Normalize a result value to an integer between 0-99 or return None if invalid/missing"""
+        if value is None:
+            return None
+        try:
+            if isinstance(value, float) and np.isnan(value):
+                return None
+        except Exception:
+            pass
+
+        if isinstance(value, str):
+            value = value.strip()
+            if value.upper() in {"MISSING", "XX", "NAN", ""}:
+                return None
+            if not value.isdigit():
+                return None
+            try:
+                value = int(value)
+            except Exception:
+                return None
+
+        try:
+            int_val = int(float(value))
+        except Exception:
+            return None
+
+        if 0 <= int_val <= 99:
+            return int_val
+        return None
+
     def parse_bet_plan(self, file_path: Path) -> Dict:
         """Parse a bet plan file and extract structured bet data - DEFENSIVE VERSION"""
         try:
@@ -449,7 +479,7 @@ class BetPnLTracker:
                 
                 # Compute hits and returns
                 returns_data = self.compute_hits_and_returns(bets, real_number)
-                
+
                 stake_total = bets['total_stake']
                 return_total = returns_data['total_return']
                 pnl = return_total - stake_total
@@ -466,7 +496,8 @@ class BetPnLTracker:
                     'roi_pct': roi_pct,
                     'main_hit': returns_data['main_hit'],
                     'andar_hit': returns_data['andar_hit'],
-                    'bahar_hit': returns_data['bahar_hit']
+                    'bahar_hit': returns_data['bahar_hit'],
+                    'bet_numbers': bets.get('main_numbers', [])
                 })
                 
                 # Layer-level data
@@ -529,7 +560,8 @@ class BetPnLTracker:
                 'roi_pct': day_roi,
                 'main_hit': '',
                 'andar_hit': '',
-                'bahar_hit': ''
+                'bahar_hit': '',
+                'bet_numbers': []
             })
         
         print(f"✅ Processed {len(processed_dates)} dates with complete data")
@@ -546,7 +578,8 @@ class BetPnLTracker:
                 'roi_pct': 0,
                 'main_hit': 0,
                 'andar_hit': 0,
-                'bahar_hit': 0
+                'bahar_hit': 0,
+                'bet_numbers': []
             }]
         
         if not layer_level_data:
@@ -695,16 +728,29 @@ class BetPnLTracker:
         slot_summaries = []
         frbd_daily = []
 
+        def _has_bet(numbers):
+            if numbers is None:
+                return False
+            if isinstance(numbers, (list, tuple, set)):
+                return len(numbers) > 0
+            return bool(numbers)
+
         for slot in self.slots:
             slot_data = slot_df[slot_df['slot'] == slot].copy()
-            total_bet = slot_data['total_stake'].sum()
-            total_return = slot_data['total_return'].sum()
+            slot_data['bet_numbers'] = slot_data['bet_numbers'].apply(lambda x: x if isinstance(x, list) else [])
+            slot_data['has_bet'] = slot_data['bet_numbers'].apply(_has_bet)
+            slot_data['norm_result'] = slot_data['result_number'].apply(self.normalize_result)
+
+            slot_data_valid = slot_data[slot_data['has_bet'] & slot_data['norm_result'].notna()].copy()
+
+            total_bet = slot_data_valid['total_stake'].sum()
+            total_return = slot_data_valid['total_return'].sum()
             net_pnl = total_return - total_bet
             roi_percent = (net_pnl / total_bet * 100) if total_bet > 0 else 0
 
-            slot_data['win_flag'] = slot_data[['main_hit', 'andar_hit', 'bahar_hit']].sum(axis=1) > 0
-            wins = int(slot_data['win_flag'].sum())
-            losses = int(len(slot_data) - wins)
+            slot_data_valid['win_flag'] = slot_data_valid[['main_hit', 'andar_hit', 'bahar_hit']].sum(axis=1) > 0
+            wins = int(slot_data_valid['win_flag'].sum())
+            losses = int(len(slot_data_valid) - wins)
             hit_rate = (wins / (wins + losses)) if (wins + losses) > 0 else 0
 
             slot_summaries.append({
@@ -726,7 +772,8 @@ class BetPnLTracker:
                         'total_bet': row['total_stake'],
                         'total_return': row['total_return'],
                         'net_pnl': row['total_return'] - row['total_stake'],
-                        'hit_flag': 'HIT' if row['win_flag'] else 'MISS'
+                        'hit_flag': 'HIT' if row[['main_hit', 'andar_hit', 'bahar_hit']].sum() > 0 else 'MISS',
+                        'status': 'VALID' if row['has_bet'] and pd.notna(row['norm_result']) else ('SKIP_NO_BET' if not row['has_bet'] else 'SKIP_NO_RESULT')
                     })
 
         frbd_summary = next((s for s in slot_summaries if s['slot'] == 'FRBD'), None)
@@ -755,7 +802,19 @@ class BetPnLTracker:
                 'current_losing_streak': 0
             }
 
-        frbd_df = frbd_df.sort_values('date_dt')
+        frbd_df = frbd_df.sort_values('date_dt').copy()
+        frbd_df['bet_numbers'] = frbd_df['bet_numbers'].apply(lambda x: x if isinstance(x, list) else [])
+        frbd_df['has_bet'] = frbd_df['bet_numbers'].apply(lambda x: len(x) > 0)
+        frbd_df['norm_result'] = frbd_df['result_number'].apply(self.normalize_result)
+        frbd_df = frbd_df[frbd_df['has_bet'] & frbd_df['norm_result'].notna()]
+
+        if frbd_df.empty:
+            return {
+                'last_hit_date': None,
+                'longest_losing_streak': 0,
+                'current_losing_streak': 0
+            }
+
         frbd_df['win_flag'] = frbd_df[['main_hit', 'andar_hit', 'bahar_hit']].sum(axis=1) > 0
         dates = frbd_df['date_dt'].tolist()
         wins = frbd_df['win_flag'].tolist()
@@ -833,7 +892,7 @@ class BetPnLTracker:
         sorted_matches = sorted(self.matched_dates_data, key=lambda x: x['date_obj'])
         debug_slice = sorted_matches[-debug_days:]
 
-        print("\nDATE       | SLOT | RESULT | BET_NUMBERS | HIT?")
+        print("\nDATE       | SLOT | RESULT | BET_NUMBERS | STATUS")
         for match in debug_slice:
             date_obj = match['date_obj']
             bet_file = match['bet_file']
@@ -849,12 +908,19 @@ class BetPnLTracker:
                     except Exception:
                         result_number = None
 
-            hits = self.compute_hits_and_returns(slot_bets, result_number)
             bet_numbers = slot_bets.get('main_numbers', [])
-            hit_text = "HIT" if hits.get('main_hit') or hits.get('andar_hit') or hits.get('bahar_hit') else "MISS"
+            norm_result = self.normalize_result(result_number)
 
-            print(f"{date_obj} | FRBD | {result_number if result_number is not None else 'MISSING':>6} | "
-                  f"{bet_numbers} | {hit_text}")
+            if not bet_numbers:
+                status = "SKIP_NO_BET"
+            elif norm_result is None:
+                status = "SKIP_NO_RESULT"
+            else:
+                hits = self.compute_hits_and_returns(slot_bets, norm_result)
+                status = "HIT" if hits.get('main_hit') or hits.get('andar_hit') or hits.get('bahar_hit') else "MISS"
+
+            display_result = norm_result if norm_result is not None else (result_number if result_number is not None else 'MISSING')
+            print(f"{date_obj} | FRBD | {display_result:>6} | {bet_numbers} | {status}")
 
     def export_forensic_report(self, forensic_data: Dict):
         """Export forensic tables to CSV under output/"""
