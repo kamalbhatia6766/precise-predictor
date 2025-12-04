@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import re
 from collections import Counter, defaultdict
+from typing import Dict
 import warnings
 import argparse
 import json
@@ -71,6 +72,24 @@ class PreciseBetEngine:
         self.pattern_config = self.load_enhanced_pattern_intelligence()
         self.adaptive_packs = self.load_adaptive_pattern_packs()
         self.golden_insights = self.load_golden_insights()
+
+    def _compute_slot_multiplier(self, health: SlotHealth) -> float:
+        """Decide per-slot stake multiplier based on slot health."""
+        mult = 1.0
+
+        if getattr(health, "slump", False):
+            mult = 0.5
+        else:
+            roi_bucket = getattr(health, "roi_bucket", "UNKNOWN")
+            if roi_bucket == "HIGH":
+                mult = 1.10
+            elif roi_bucket == "MID":
+                mult = 1.00
+            elif roi_bucket == "LOW":
+                mult = 0.80
+
+        mult = max(0.25, min(mult, 1.50))
+        return mult
 
     def load_dynamic_stake_plan(self, target_date):
         plan_path = Path(__file__).resolve().parent / "logs" / "performance" / "dynamic_stake_plan.json"
@@ -1207,26 +1226,80 @@ class PreciseBetEngine:
         ultra_debug_df = pd.DataFrame(ultra_debug_data)
         explainability_df = pd.DataFrame(explainability_data)
 
-        slot_health_map = {slot: get_slot_health(slot) for slot in self.slots}
-        for slot, health in slot_health_map.items():
-            print(f"[QUANT-SIGNALS] Slot {slot}: slump={health.slump}, roi_bucket={health.roi_bucket}")
+        slot_health_map = {str(slot).upper(): get_slot_health(slot) for slot in self.slots}
+        slot_multipliers: Dict[str, float] = {}
+
+        for slot in self.slots:
+            key = str(slot).upper()
+            health = slot_health_map.get(key)
+            if health is None:
+                health = SlotHealth(
+                    slot=key,
+                    roi_percent=0.0,
+                    wins=0,
+                    losses=0,
+                    hit_rate=0.0,
+                    current_streak=0,
+                    slump=False,
+                    roi_bucket="UNKNOWN",
+                )
+                slot_health_map[key] = health
+                mult = 1.0
+                slump_flag = False
+                roi_bucket = "UNKNOWN"
+            else:
+                mult = self._compute_slot_multiplier(health)
+                slump_flag = health.slump
+                roi_bucket = health.roi_bucket
+
+            slot_multipliers[key] = mult
+
+            print(
+                f"[QUANT-SIGNALS] Slot {key}: "
+                f"slump={slump_flag}, roi_bucket={roi_bucket}, slot_multiplier={mult:.2f}"
+            )
 
         if not bets_df.empty:
+            bets_df["slot_key"] = bets_df["slot"].astype(str).str.upper()
+            bets_df["slot_multiplier"] = bets_df["slot_key"].map(
+                lambda k: slot_multipliers.get(k, 1.0)
+            ).fillna(1.0)
+            bets_df["stake"] = (bets_df["stake"] * bets_df["slot_multiplier"]).round(2)
+            numeric_mask = pd.to_numeric(bets_df["stake"], errors="coerce").notna()
+            bets_df.loc[numeric_mask, "potential_return"] = (
+                bets_df.loc[numeric_mask, "stake"] * 90
+            ).round(2)
             bets_df = bets_df.assign(
-                slot_slump_flag=bets_df['slot'].apply(
+                slot_slump_flag=bets_df['slot_key'].apply(
                     lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
                 ),
-                slot_roi_bucket=bets_df['slot'].apply(
+                slot_roi_bucket=bets_df['slot_key'].apply(
                     lambda s: (slot_health_map.get(s) or get_slot_health(s)).roi_bucket
                 ),
             )
 
         if not summary_df.empty:
+            summary_df["slot_key"] = summary_df["slot"].astype(str).str.upper()
+            summary_df["slot_multiplier"] = summary_df["slot_key"].map(
+                lambda k: slot_multipliers.get(k, 1.0)
+            ).fillna(1.0)
+
+            for col in [
+                "main_stake",
+                "andar_stake",
+                "bahar_stake",
+                "total_stake",
+                "max_total_return",
+                "main_max_return",
+            ]:
+                if col in summary_df.columns:
+                    summary_df[col] = (summary_df[col] * summary_df["slot_multiplier"]).round(2)
+
             summary_df = summary_df.assign(
-                slot_slump_flag=summary_df['slot'].apply(
+                slot_slump_flag=summary_df['slot_key'].apply(
                     lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
                 ),
-                slot_roi_bucket=summary_df['slot'].apply(
+                slot_roi_bucket=summary_df['slot_key'].apply(
                     lambda s: (slot_health_map.get(s) or get_slot_health(s)).roi_bucket
                 ),
             )
