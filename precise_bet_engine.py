@@ -14,6 +14,96 @@ from quant_slot_health import get_slot_health, SlotHealth
 from utils_2digit import is_valid_2d_number, to_2d_str
 warnings.filterwarnings('ignore')
 
+OVERLAY_POLICY = {
+    # Filtered S36 overlay per slot
+    "S36": {
+        "enabled": True,
+        # Minimum slot ROI (percent) required to even consider S36
+        "min_slot_roi": 0.0,
+        # If slot is in slump, force OFF regardless of ROI
+        "allow_in_slump": False,
+        # Stake units per slot (before slot_multiplier), in multiples of base_unit (₹10)
+        "stake_units": 0.0,
+    },
+    # Core 4/4 packs
+    "PackCore": {
+        "enabled": True,
+        "min_slot_roi": 150.0,   # needs reasonably positive ROI
+        "allow_in_slump": False,
+        "stake_units": 1.0,
+    },
+    # Booster 2/2 packs
+    "PackBooster": {
+        "enabled": True,
+        "min_slot_roi": 250.0,   # only for very strong slots
+        "allow_in_slump": False,
+        "stake_units": 0.5,
+    },
+}
+
+
+def apply_overlay_policy_to_bets(bets_df, slot_health_map, base_unit):
+    """
+    Apply ROI/slump-gated overlay stakes for S36 / PackCore / PackBooster.
+    Returns a modified copy of bets_df.
+    """
+    if bets_df.empty:
+        return bets_df
+
+    df = bets_df.copy()
+
+    for slot_name, health in slot_health_map.items():
+        # Skip if we don't have health info
+        if health is None:
+            continue
+
+        slot_mask = df['slot'] == slot_name
+
+        for layer_type, policy in OVERLAY_POLICY.items():
+            layer_mask = slot_mask & (df['layer_type'] == layer_type)
+            if not layer_mask.any():
+                continue
+
+            # Policy controls
+            if not policy.get("enabled", True):
+                df.loc[layer_mask, ['stake', 'potential_return']] = 0.0
+                continue
+
+            roi_percent = getattr(health, "roi_percent", 0.0) or 0.0
+            in_slump = bool(getattr(health, "slump", False))
+            min_slot_roi = float(policy.get("min_slot_roi", 0.0))
+            allow_in_slump = bool(policy.get("allow_in_slump", False))
+            stake_units = float(policy.get("stake_units", 0.0))
+
+            # Gating logic
+            if roi_percent < min_slot_roi:
+                # Slot ROI not strong enough
+                df.loc[layer_mask, ['stake', 'potential_return']] = 0.0
+                continue
+
+            if in_slump and not allow_in_slump:
+                # Slot in slump, overlay disabled
+                df.loc[layer_mask, ['stake', 'potential_return']] = 0.0
+                continue
+
+            if stake_units <= 0:
+                # Infra only; keep overlay effectively OFF
+                df.loc[layer_mask, ['stake', 'potential_return']] = 0.0
+                continue
+
+            # Compute stake AFTER slot multiplier has already been baked into base layer stakes.
+            # We just treat overlays as additional stake blocks per slot.
+            overlay_stake = stake_units * float(base_unit)
+
+            # Assign the same overlay stake to each row of that layer for that slot.
+            df.loc[layer_mask, 'stake'] = overlay_stake
+
+            # Potential return: treat overlay as a MAIN-style layer that pays at 90x on a hit.
+            # (If another convention already exists in code, follow that same factor.)
+            df.loc[layer_mask, 'potential_return'] = overlay_stake * 90.0
+
+    return df
+
 
 def fmt_rupees(value: float) -> str:
     """Cosmetic helper to keep rupee values tidy in logs."""
@@ -1182,8 +1272,8 @@ class PreciseBetEngine:
                     'layer_type': layer_type,
                     'number_or_digit': '',
                     'tier': 'NA',
-                    'stake': '',
-                    'potential_return': '',
+                    'stake': 0.0,
+                    'potential_return': 0.0,
                     'source_rank': '',
                     'notes': 'ULTRA v5 implementation',
                     'actual_result': '',
@@ -1256,6 +1346,9 @@ class PreciseBetEngine:
                 f"[QUANT-SIGNALS] Slot {key}: "
                 f"slump={health.slump}, roi_bucket={health.roi_bucket}, slot_multiplier={mult:.2f}"
             )
+
+        active_overlays = [lt for lt, pol in OVERLAY_POLICY.items() if pol.get("stake_units", 0) > 0]
+        print(f"[OVERLAYS] Active (config-driven): {', '.join(active_overlays) if active_overlays else 'None'}")
 
         try:
             # --- Apply multipliers to bets_df (numeric-safe) ---
@@ -1334,6 +1427,8 @@ class PreciseBetEngine:
             print(f"❌ Error in slot-multiplier scaling: {e}")
             # Fail-safe: if anything goes wrong, we keep original bets_df/summary_df
             # and continue without crashing.
+
+        bets_df = apply_overlay_policy_to_bets(bets_df, slot_health_map, self.base_unit)
 
         return bets_df, summary_df, diagnostic_df, quantum_debug_df, ultra_debug_df, explainability_df
 
