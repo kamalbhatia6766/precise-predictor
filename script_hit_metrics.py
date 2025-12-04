@@ -10,7 +10,11 @@ from typing import Dict, List
 import pandas as pd
 
 import quant_paths
-from script_hit_memory_utils import load_script_hit_memory
+from script_hit_memory_utils import (
+    SCRIPT_HIT_MEMORY_HEADERS,
+    get_script_hit_memory_path,
+    load_script_hit_memory,
+)
 
 DEFAULT_WINDOW_DAYS = 30
 
@@ -27,11 +31,23 @@ def _score_row(hit_rate_final: float, coverage_rate: float, blind_miss_rate: flo
     return max(0.0, min(2.0, score))
 
 
+def _load_memory_df(window_days: int) -> pd.DataFrame:
+    path = get_script_hit_memory_path()
+    try:
+        if not path.exists():
+            return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+        return load_script_hit_memory(window_days=window_days)
+    except Exception as exc:
+        print(f"⚠️  Error reading script_hit_memory.csv: {exc}")
+        return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+
+
 def compute_script_metrics(window_days: int = DEFAULT_WINDOW_DAYS) -> pd.DataFrame:
     """Compute per-script metrics for the trailing window."""
 
-    df = load_script_hit_memory(window_days=window_days)
+    df = _load_memory_df(window_days)
     if df.empty:
+        print("No metrics generated (script_hit_memory empty for this window)")
         return pd.DataFrame()
 
     if "script_id" not in df.columns or "hit_type" not in df.columns:
@@ -171,7 +187,6 @@ def _print_console_summary(metrics_df: pd.DataFrame, window_days: int) -> None:
 def _run_cli(window: int, verbose: bool) -> None:
     metrics_df = compute_script_metrics(window_days=window)
     if metrics_df.empty:
-        print("No metrics generated (script_hit_memory empty for this window)")
         return
 
     _save_metrics_outputs(metrics_df, window)

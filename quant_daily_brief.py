@@ -123,6 +123,15 @@ def load_script_performance_metrics(window_days: int = 30) -> pd.DataFrame:
     return compute_script_metrics(window_days=window_days)
 
 
+def safe_load_script_performance_metrics(window_days: int = 30) -> pd.DataFrame:
+    """Load metrics without surfacing low-level CSV errors to the brief."""
+
+    try:
+        return load_script_performance_metrics(window_days=window_days)
+    except Exception:
+        return pd.DataFrame()
+
+
 def find_latest_bet_date() -> date:
     latest = quant_paths.find_latest_bet_plan_master()
     if latest:
@@ -768,7 +777,7 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     strategy = load_strategy_summary()
     money = load_money_manager()
     confidence = load_confidence_scores()
-    script_metrics_df = load_script_performance_metrics(window_days=30)
+    script_metrics_df = safe_load_script_performance_metrics(window_days=30)
 
     print_header(bet_date, target_date, mode, strategy, execution, plan)
     print_plan_section(plan, execution, mode, final_plan=final_plan)

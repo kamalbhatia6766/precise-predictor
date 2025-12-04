@@ -120,7 +120,7 @@ def rebuild_script_hit_memory(rows: List[Dict]) -> Path:
     """Overwrite the CSV with a provided collection of rows."""
 
     memory_path = ensure_script_hit_memory()
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=SCRIPT_HIT_MEMORY_HEADERS)
     if not df.empty:
         df = _dedupe_memory(df)
     df.to_csv(memory_path, index=False)
