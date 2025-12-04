@@ -9,45 +9,69 @@ from batch or rebuild workflows.
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
 import quant_paths
-from utils_2digit import to_2d_str
 
 
-SCRIPT_HIT_MEMORY_HEADERS = [
-    "date",
-    "slot",
-    "script_name",
+# Required columns for the new hit-memory layer. Legacy columns are preserved
+# for backward compatibility.
+_BASE_HEADERS = [
+    "date",  # result date (game date)
+    "slot",  # FRBD / GZBD / GALI / DSWR
+    "script_name",  # scr1..scr9
+    "predicted",  # predicted number
+    "result",  # actual result
+    "hit_flag",  # 1/0
+    "hit_type",  # HIT / MISS
+    "predict_date",  # when the prediction was made
+    "result_date",  # same as date but explicit
+    "is_near_miss",  # 1/0
+    "pack_family",  # optional
+]
+
+_LEGACY_HEADERS = [
     "real_number",
     "top_predictions",
     "is_in_final_shortlist",
-    "hit_flag",
-    "hit_type",
     "created_at",
 ]
 
+SCRIPT_HIT_MEMORY_HEADERS = _BASE_HEADERS + [
+    col for col in _LEGACY_HEADERS if col not in _BASE_HEADERS
+]
 
-def get_script_hit_memory_path() -> Path:
-    """Return the canonical CSV path for script hit memory."""
 
-    performance_dir = quant_paths.get_performance_logs_dir()
+def get_script_hit_memory_path(base_dir: Optional[Path] = None) -> Path:
+    """Return the canonical CSV path for script hit memory.
+
+    The path is ``logs/performance/script_hit_memory.csv`` under the provided
+    ``base_dir`` (or the project root via ``quant_paths``). Parent directories
+    are created as needed.
+    """
+
+    if base_dir is None:
+        performance_dir = quant_paths.get_performance_logs_dir()
+    else:
+        performance_dir = Path(base_dir) / "logs" / "performance"
     performance_dir.mkdir(parents=True, exist_ok=True)
     return performance_dir / "script_hit_memory.csv"
 
 
-def ensure_script_hit_memory(headers: Iterable[str] = SCRIPT_HIT_MEMORY_HEADERS) -> Path:
+def _ensure_script_hit_memory(
+    headers: Iterable[str] = SCRIPT_HIT_MEMORY_HEADERS,
+    base_dir: Optional[Path] = None,
+) -> Path:
     """Ensure the CSV exists with headers.
 
     This function is idempotent; if the file already exists, it is left
     untouched. Otherwise a new file is created with the provided headers.
     """
 
-    memory_path = get_script_hit_memory_path()
+    memory_path = get_script_hit_memory_path(base_dir)
     if not memory_path.exists():
         with memory_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -55,74 +79,35 @@ def ensure_script_hit_memory(headers: Iterable[str] = SCRIPT_HIT_MEMORY_HEADERS)
     return memory_path
 
 
-def append_script_hit_row(
-    date: str,
-    slot: str,
-    script_name: str,
-    real_number: str,
-    top_predictions: Iterable[int] | Iterable[str],
-    is_in_final_shortlist: bool,
-    hit_flag: str,
-    hit_type: str,
-    created_at: Optional[str] = None,
-) -> None:
+def append_script_hit_row(row: Dict[str, Any], base_dir: Optional[Path] = None) -> None:
     """Append a single script hit record to the unified CSV.
 
-    The caller is responsible for providing validated slot and script
-    names. ``top_predictions`` will be normalised to a pipe-separated
-    string of zero-padded numbers.
+    Missing fields are filled with ``None``; extra keys are ignored.
     """
 
-    memory_path = ensure_script_hit_memory()
-    created_ts = created_at or datetime.now().isoformat()
+    memory_path = _ensure_script_hit_memory(base_dir=base_dir)
+    prepared = {key: row.get(key) if isinstance(row, dict) else None for key in SCRIPT_HIT_MEMORY_HEADERS}
+    df = pd.DataFrame([prepared])
 
-    top_pred_str = "|".join([to_2d_str(p) for p in top_predictions])
-
-    row = {
-        "date": date,
-        "slot": slot,
-        "script_name": script_name,
-        "real_number": to_2d_str(real_number),
-        "top_predictions": top_pred_str,
-        "is_in_final_shortlist": bool(is_in_final_shortlist),
-        "hit_flag": hit_flag,
-        "hit_type": hit_type,
-        "created_at": created_ts,
-    }
-
-    df = pd.DataFrame([row])
     if memory_path.exists():
         try:
             existing = pd.read_csv(memory_path)
-        except Exception:
+        except Exception as exc:
+            print(f"⚠️  Error reading existing script_hit_memory.csv: {exc}")
             existing = pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
         combined = pd.concat([existing, df], ignore_index=True)
-        combined = _dedupe_memory(combined)
         combined.to_csv(memory_path, index=False)
     else:
         df.to_csv(memory_path, index=False)
 
 
-def _dedupe_memory(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove duplicate rows based on the primary key fields."""
-
-    key_cols = ["date", "slot", "script_name"]
-    if not set(key_cols).issubset(df.columns):
-        return df
-    return (
-        df.drop_duplicates(subset=key_cols, keep="last")
-        .sort_values(key_cols)
-        .reset_index(drop=True)
-    )
-
-
-def rebuild_script_hit_memory(rows: List[Dict]) -> Path:
+def rebuild_script_hit_memory(
+    rows: List[Dict[str, Any]], base_dir: Optional[Path] = None
+) -> Path:
     """Overwrite the CSV with a provided collection of rows."""
 
-    memory_path = ensure_script_hit_memory()
+    memory_path = _ensure_script_hit_memory(base_dir=base_dir)
     df = pd.DataFrame(rows, columns=SCRIPT_HIT_MEMORY_HEADERS)
-    if not df.empty:
-        df = _dedupe_memory(df)
     df.to_csv(memory_path, index=False)
     return memory_path
 
@@ -138,72 +123,40 @@ def _normalise_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     return None
 
 
-def load_script_hit_memory(window_days: int | None = None) -> pd.DataFrame:
+def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
     """Load and normalise the script hit memory CSV.
 
-    The on-disk format is treated as canonical and left untouched. The returned
-    DataFrame exposes a consistent schema for downstream consumers. If
-    ``window_days`` is provided, the data is filtered to that trailing window
-    based on the latest available ``date``.
+    If the file does not exist, an empty DataFrame with the canonical headers
+    is returned. Any parsing error is surfaced to help diagnostics.
     """
 
-    memory_path = get_script_hit_memory_path()
+    memory_path = get_script_hit_memory_path(base_dir)
     if not memory_path.exists():
-        return pd.DataFrame()
+        return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
 
     try:
         raw_df = pd.read_csv(memory_path)
     except Exception as exc:
         print(f"⚠️  Error reading script_hit_memory.csv: {exc}")
-        return pd.DataFrame()
+        raise
 
     if raw_df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
 
-    # Flexible column resolution
-    date_col = _normalise_column(raw_df, ["date", "target_date"])
-    slot_col = _normalise_column(raw_df, ["slot", "real_slot"])
-    script_col = _normalise_column(raw_df, ["script_id", "script", "script_name"])
-    number_col = _normalise_column(raw_df, ["number", "real_number"])
-    hit_type_col = _normalise_column(raw_df, ["hit_type", "hit_flag", "hit"])
-    is_final_col = _normalise_column(raw_df, ["is_final", "is_in_final_shortlist", "final", "final_shortlist"])
-    layer_col = _normalise_column(raw_df, ["layer", "layer_name"])
-    rank_col = _normalise_column(raw_df, ["top_rank", "rank"])
-    source_col = _normalise_column(raw_df, ["source_file", "source", "file"])
+    raw_df = raw_df.dropna(how="all")
+    if raw_df.empty:
+        return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
 
-    if date_col is None or slot_col is None or script_col is None or number_col is None:
-        return pd.DataFrame()
+    # Ensure required columns exist even if missing in file
+    for col in SCRIPT_HIT_MEMORY_HEADERS:
+        if col not in raw_df.columns:
+            raw_df[col] = None
 
-    df = raw_df.copy()
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
-    df = df[pd.notna(df[date_col])]
-    df[slot_col] = df[slot_col].astype(str).str.upper()
-    df[script_col] = df[script_col].astype(str).str.upper()
-    df[number_col] = df[number_col].apply(lambda x: to_2d_str(x) if pd.notna(x) else None)
-    if hit_type_col:
-        df[hit_type_col] = df[hit_type_col].astype(str).str.upper()
+    # Normalise date columns
+    for col in ["date", "predict_date", "result_date"]:
+        if col in raw_df.columns:
+            raw_df[col] = pd.to_datetime(raw_df[col], errors="coerce").dt.date
 
-    canonical = pd.DataFrame(
-        {
-            "date": df[date_col],
-            "slot": df[slot_col],
-            "script_id": df[script_col],
-            "number": df[number_col],
-            "hit_type": df[hit_type_col] if hit_type_col else None,
-            "is_final": df[is_final_col].astype(bool) if is_final_col else False,
-            "layer": df[layer_col] if layer_col else None,
-            "top_rank": pd.to_numeric(df[rank_col], errors="coerce") if rank_col else pd.NA,
-            "source_file": df[source_col] if source_col else None,
-        }
-    )
-
-    if window_days:
-        valid_dates = canonical["date"][pd.notna(canonical["date"])]
-        if not valid_dates.empty:
-            max_date = valid_dates.max()
-            cutoff = max_date - timedelta(days=window_days - 1)
-            canonical = canonical[canonical["date"] >= cutoff]
-
-    canonical = canonical.reset_index(drop=True)
-    return canonical
+    raw_df = raw_df.dropna(how="all")
+    return raw_df.reset_index(drop=True)
 

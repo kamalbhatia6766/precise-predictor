@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, timedelta
-from typing import Dict, Iterable
+from pathlib import Path
+from typing import Dict, Iterable, Optional
 
 import pandas as pd
 
@@ -14,16 +15,18 @@ from script_hit_memory_utils import get_script_hit_memory_path
 DEFAULT_WINDOW_DAYS = 30
 
 
-def _load_memory_df() -> pd.DataFrame:
+def _load_memory_df(base_dir: Optional[Path] = None) -> pd.DataFrame:
     """Load and normalise the raw script hit memory CSV."""
 
-    path = get_script_hit_memory_path()
+    path = get_script_hit_memory_path(base_dir)
     if not path.exists():
         print("script_hit_memory.csv not found; no metrics to compute.")
         return pd.DataFrame()
 
     try:
-        df = pd.read_csv(path)
+        header_cols = pd.read_csv(path, nrows=0).columns
+        parse_cols = [c for c in ["date", "predict_date", "result_date"] if c in header_cols]
+        df = pd.read_csv(path, parse_dates=parse_cols)
     except Exception as exc:  # pragma: no cover - defensive logging
         print(f"Error reading script_hit_memory.csv: {exc}")
         return pd.DataFrame()
@@ -50,7 +53,8 @@ def _load_memory_df() -> pd.DataFrame:
         return pd.DataFrame()
 
     if "hit_flag" in df.columns:
-        df["is_hit"] = _normalise_hit_flag(df["hit_flag"])
+        df["hit_flag"] = pd.to_numeric(df["hit_flag"], errors="coerce").fillna(0)
+        df["is_hit"] = df["hit_flag"].astype(float) != 0
     else:
         df["is_hit"] = False
 
@@ -115,8 +119,8 @@ def compute_script_metrics(
         total_preds = len(group)
         hit_types = group["hit_type"].astype(str).str.upper() if "hit_type" in group.columns else pd.Series(["" for _ in range(total_preds)])
 
-        hit_series = group["is_hit"] if "is_hit" in group.columns else pd.Series([False] * total_preds)
-        hits = int(pd.Series(hit_series).astype(bool).sum())
+        hit_series = group["hit_flag"] if "hit_flag" in group.columns else group.get("is_hit", pd.Series([0] * total_preds))
+        hits = int(pd.to_numeric(hit_series, errors="coerce").fillna(0).sum())
         hit_rate = hits / total_preds if total_preds else 0.0
 
         exact_hits = int(hit_types.isin(exact_tokens).sum())
