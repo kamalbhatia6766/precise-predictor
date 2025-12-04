@@ -4,7 +4,7 @@ This module standardises append and load helpers for
 ``logs/performance/script_hit_memory.csv`` while keeping existing
 behaviour backward compatible. All helpers are additive and safe to call
 from batch or rebuild workflows.
-"""
+"""Utilities for maintaining script-level hit memory logs."""
 
 from __future__ import annotations
 
@@ -18,31 +18,37 @@ import quant_paths
 
 
 # Required columns for the new hit-memory layer. Legacy columns are preserved
-# for backward compatibility.
-_BASE_HEADERS = [
-    "date",  # result date (game date)
-    "slot",  # FRBD / GZBD / GALI / DSWR
-    "script_name",  # scr1..scr9
-    "predicted",  # predicted number
-    "result",  # actual result
-    "hit_flag",  # 1/0
-    "hit_type",  # HIT / MISS
-    "predict_date",  # when the prediction was made
-    "result_date",  # same as date but explicit
-    "is_near_miss",  # 1/0
-    "pack_family",  # optional
+# for backward compatibility. Canonical columns are upper-case to match the
+# contract shared with downstream dashboards.
+_CORE_HEADERS = [
+    "DATE",  # result date (game date)
+    "SLOT",  # FRBD / GZBD / GALI / DSWR
+    "SCRIPT_ID",  # SCR1..SCR9
+    "HIT_TYPE",  # EXACT / MIRROR / NEIGHBOR / MISS
+    "PREDICTED",  # predicted number (two-digit string)
+    "ACTUAL",  # actual result (two-digit string)
+    "RANK",  # integer rank (1 = top)
+    "SOURCE_FILE",  # filename used for the prediction
+    "PREDICT_DATE",  # when the prediction was made
 ]
 
 _LEGACY_HEADERS = [
+    "script_name",  # keep legacy alias
+    "result",  # legacy name for ACTUAL
+    "result_date",
+    "hit_flag",
+    "is_near_miss",
+    "pack_family",
     "real_number",
     "top_predictions",
     "is_in_final_shortlist",
     "created_at",
 ]
 
-SCRIPT_HIT_MEMORY_HEADERS = _BASE_HEADERS + [
-    col for col in _LEGACY_HEADERS if col not in _BASE_HEADERS
-]
+SCRIPT_HIT_MEMORY_HEADERS: List[str] = []
+for col in _CORE_HEADERS + _LEGACY_HEADERS:
+    if col not in SCRIPT_HIT_MEMORY_HEADERS:
+        SCRIPT_HIT_MEMORY_HEADERS.append(col)
 
 
 def get_script_hit_memory_path(base_dir: Optional[Path] = None) -> Path:
@@ -147,15 +153,37 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
     if raw_df.empty:
         return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
 
-    # Ensure required columns exist even if missing in file
+    # Normalize columns to expected names (case-insensitive)
+    rename_map = {}
+    for col in list(raw_df.columns):
+        key = str(col).strip()
+        upper_key = key.upper()
+        if upper_key in SCRIPT_HIT_MEMORY_HEADERS and key != upper_key:
+            rename_map[col] = upper_key
+        elif key.lower() in {"date", "result_date"}:
+            rename_map[col] = "DATE"
+        elif key.lower() == "slot":
+            rename_map[col] = "SLOT"
+        elif key.lower() in {"script", "script_name", "script_id"}:
+            rename_map[col] = "SCRIPT_ID"
+        elif key.lower() in {"predicted", "prediction", "number"}:
+            rename_map[col] = "PREDICTED"
+        elif key.lower() in {"actual", "result"}:
+            rename_map[col] = "ACTUAL"
+    if rename_map:
+        raw_df = raw_df.rename(columns=rename_map)
+
     for col in SCRIPT_HIT_MEMORY_HEADERS:
         if col not in raw_df.columns:
             raw_df[col] = None
 
-    # Normalise date columns
-    for col in ["date", "predict_date", "result_date"]:
+    for col in ["DATE", "PREDICT_DATE", "RESULT_DATE"]:
         if col in raw_df.columns:
             raw_df[col] = pd.to_datetime(raw_df[col], errors="coerce").dt.date
+
+    # Fill compatibility aliases
+    raw_df["script_name"] = raw_df.get("script_name") if "script_name" in raw_df.columns else raw_df.get("SCRIPT_ID")
+    raw_df["result"] = raw_df.get("result") if "result" in raw_df.columns else raw_df.get("ACTUAL")
 
     raw_df = raw_df.dropna(how="all")
     return raw_df.reset_index(drop=True)

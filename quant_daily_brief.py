@@ -19,15 +19,13 @@ import pandas as pd
 
 import quant_data_core
 import quant_paths
+from script_hit_metrics import get_metrics_table
 from utils_2digit import is_valid_2d_number, to_2d_str
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 PERFORMANCE_DIR = quant_paths.get_performance_logs_dir()
 BET_ENGINE_DIR = quant_paths.get_bet_engine_dir()
 SCRIPT_METRICS_WINDOW_DAYS = 30
-SCRIPT_METRICS_FILENAME_PATTERN = (
-    f"script_hit_metrics_window{SCRIPT_METRICS_WINDOW_DAYS}.csv"
-)
 
 
 @dataclass
@@ -723,72 +721,31 @@ def print_risk_section(strategy: StrategySummary, money: MoneyManagerSummary, ex
             print(f"   Confidence       : {', '.join(parts)}")
 
 
-def load_script_metrics(window_days: int = SCRIPT_METRICS_WINDOW_DAYS) -> Optional[pd.DataFrame]:
-    logs_dir = quant_paths.get_performance_logs_dir()
-    filename = (
-        SCRIPT_METRICS_FILENAME_PATTERN
-        if window_days == SCRIPT_METRICS_WINDOW_DAYS
-        else f"script_hit_metrics_window{window_days}.csv"
-    )
-    path = logs_dir / filename
-    if not path.exists():
-        return None
-
-    df = pd.read_csv(path)
-    df = df.dropna(how="all")
-    if df.empty:
-        return None
-
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    if (
-        "script_name" not in df.columns
-        or "hit_rate" not in df.columns
-        or "total_preds" not in df.columns
-    ):
-        return None
-
-    df = df[df["total_preds"] >= 5]
-    if df.empty:
-        return None
-
-    df = df.sort_values(["hit_rate", "total_preds"], ascending=[False, False])
-    return df
-
-
 def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DAYS) -> None:
     print()
     print(f"5️⃣ SCRIPT PERFORMANCE (last {window_days} days)")
-    metrics = load_script_metrics(window_days=window_days)
+    metrics, summary = get_metrics_table(window_days=window_days)
 
     if metrics is None or metrics.empty:
-        print("   No script performance data available (no rows in script_hit_memory window).")
+        print("   Script performance layer warming up (no window data yet).")
         return
 
-    best = metrics.head(3)
-    worst = metrics.tail(2) if len(metrics) > 3 else pd.DataFrame()
-
     def fmt_row(row) -> str:
-        name = str(row.get("script_name", "")).strip()
-        total = int(row.get("total_preds", 0))
-        hit_rate = float(row.get("hit_rate", 0.0)) * 100.0
-        exact_rate = (
-            float(row.get("exact_hit_rate", 0.0)) * 100.0
-            if "exact_hit_rate" in row
-            else None
+        name = str(row.get("SCRIPT_ID", "")).strip()
+        total = int(row.get("total_events", 0))
+        exact_hits = int(row.get("exact_hits", 0))
+        extended_hits = int(row.get("extended_hits", 0))
+        exact_rate = float(row.get("exact_hit_rate", 0.0)) * 100.0
+        extended_rate = float(row.get("extended_hit_rate", 0.0)) * 100.0
+        signal = row.get("signal") or "-"
+        return (
+            "   "
+            + f"{name}: EXACT {exact_hits}/{total}, EXT {extended_hits}/{total} "
+            + f"→ EXACT {exact_rate:.1f}%, EXT {extended_rate:.1f}% (Signal: {signal})"
         )
-        parts = [f"{name}: {total} preds, hit_rate={hit_rate:.1f}%"]
-        if exact_rate is not None:
-            parts.append(f"exact={exact_rate:.1f}%")
-        return "   " + ", ".join(parts)
 
-    print("   Best scripts:")
-    for _, row in best.iterrows():
+    for _, row in metrics.iterrows():
         print(fmt_row(row))
-
-    if worst is not None and not worst.empty:
-        print("   Weak scripts:")
-        for _, row in worst.iterrows():
-            print(fmt_row(row))
 
 
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
