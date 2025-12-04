@@ -20,7 +20,7 @@ import pandas as pd
 import quant_data_core
 import quant_paths
 from utils_2digit import is_valid_2d_number, to_2d_str
-from script_hit_metrics import compute_script_metrics
+from script_hit_metrics import load_script_metrics
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 PERFORMANCE_DIR = quant_paths.get_performance_logs_dir()
@@ -104,32 +104,6 @@ def load_results_df() -> pd.DataFrame:
     if not df.empty and "DATE" in df.columns:
         df["DATE_ONLY"] = pd.to_datetime(df["DATE"], errors="coerce").dt.date
     return df
-
-
-def load_script_performance_metrics(window_days: int = 30) -> pd.DataFrame:
-    perf_dir = quant_paths.get_performance_logs_dir()
-    metrics_path = perf_dir / "script_hit_metrics.csv"
-    if metrics_path.exists():
-        try:
-            df = pd.read_csv(metrics_path)
-            if not df.empty:
-                if "window_days" in df.columns:
-                    filtered = df[df["window_days"] == window_days]
-                    if not filtered.empty:
-                        df = filtered
-                return df
-        except Exception:
-            pass
-    return compute_script_metrics(window_days=window_days)
-
-
-def safe_load_script_performance_metrics(window_days: int = 30) -> pd.DataFrame:
-    """Load metrics without surfacing low-level CSV errors to the brief."""
-
-    try:
-        return load_script_performance_metrics(window_days=window_days)
-    except Exception:
-        return pd.DataFrame()
 
 
 def find_latest_bet_date() -> date:
@@ -720,27 +694,50 @@ def print_risk_section(strategy: StrategySummary, money: MoneyManagerSummary, ex
             print(f"   Confidence       : {', '.join(parts)}")
 
 
-def print_script_performance_section(metrics_df: pd.DataFrame) -> None:
-    print("\n5️⃣ SCRIPT PERFORMANCE (last 30 days)")
-    if metrics_df is None or metrics_df.empty:
-        print("   No script performance data available.")
-        return
-    metrics_df = metrics_df.copy()
-    metrics_df["script_id"] = metrics_df["script_id"].astype(str)
-    top_scripts = metrics_df.sort_values("score", ascending=False).head(5)
-    for _, row in top_scripts.iterrows():
-        script = row.get("script_id", "?")
-        rows = int(row.get("total_rows", 0))
-        final_hits = int(row.get("final_hits", 0))
-        cov = int(row.get("script_hits_not_final", 0)) + final_hits
-        blind = int(row.get("blind_misses", 0))
-        hit_pct = float(row.get("hit_rate_final", 0.0)) * 100
-        blind_pct = float(row.get("blind_miss_rate", 0.0)) * 100
-        score = float(row.get("score", 0.0))
-        print(
-            f"   {script}: rows={rows}, final={final_hits}, cov={cov}, blind={blind}, "
-            f"hit%={hit_pct:.1f}%, blind%={blind_pct:.1f}%, score={score:.2f}"
+def _render_script_performance_section(window_days: int = 30) -> List[str]:
+    """Build the Script Performance section lines."""
+
+    try:
+        metrics = load_script_metrics(window_days=window_days)
+    except Exception:
+        return [
+            f"5️⃣ SCRIPT PERFORMANCE (last {window_days} days)",
+            "   No script performance data available.",
+        ]
+
+    if (
+        not metrics
+        or metrics.get("script_count", 0) == 0
+        or metrics.get("total_rows", 0) == 0
+    ):
+        return [
+            f"5️⃣ SCRIPT PERFORMANCE (last {window_days} days)",
+            "   No script performance data available.",
+        ]
+
+    best_name = metrics.get("best_script")
+    worst_name = metrics.get("worst_script")
+    lines = [f"5️⃣ SCRIPT PERFORMANCE (last {window_days} days)"]
+    lines.append(
+        f"   Date range    : {metrics.get('date_min')} → {metrics.get('date_max')}"
+    )
+    lines.append(f"   Scripts seen  : {metrics.get('script_count')}")
+    lines.append(f"   Rows analysed : {metrics.get('total_rows')}")
+
+    if best_name:
+        bm = metrics["metrics_by_script"][best_name]
+        bhr = bm["hit_rate_any"] * 100.0 if bm["total_rows"] > 0 else 0.0
+        lines.append(
+            f"   Best script   : {best_name} (hit_rate_any {bhr:.1f}%, rows={bm['total_rows']})"
         )
+    if worst_name:
+        wm = metrics["metrics_by_script"][worst_name]
+        whr = wm["hit_rate_any"] * 100.0 if wm["total_rows"] > 0 else 0.0
+        lines.append(
+            f"   Weak script   : {worst_name} (hit_rate_any {whr:.1f}%, rows={wm['total_rows']})"
+        )
+
+    return lines
 
 
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
@@ -777,14 +774,14 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     strategy = load_strategy_summary()
     money = load_money_manager()
     confidence = load_confidence_scores()
-    script_metrics_df = safe_load_script_performance_metrics(window_days=30)
 
     print_header(bet_date, target_date, mode, strategy, execution, plan)
     print_plan_section(plan, execution, mode, final_plan=final_plan)
     print_pnl_section(pnl)
     print_pattern_section(patterns)
     print_risk_section(strategy, money, execution, confidence)
-    print_script_performance_section(script_metrics_df)
+    for line in _render_script_performance_section(window_days=30):
+        print(line)
     print("=" * 80)
     verdict = "Short verdict: System learning healthy; keep stakes disciplined."
     print(verdict)
