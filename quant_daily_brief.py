@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -146,7 +147,17 @@ def run_script(script_name: str, args: Optional[List[str]] = None, dry_run: bool
     if dry_run:
         print(f"DRY-RUN: would run {' '.join(cmd)}")
         return None
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
     if result.returncode != 0:
         tail = (result.stderr or "").splitlines()[-3:]
         tail_text = " | ".join(tail)
