@@ -1,744 +1,203 @@
-"""Quant Daily Brief orchestrator.
+"""Central daily orchestrator for Precise Predictor.
 
-This script decides between intraday vs next-day workflows, triggers the
-appropriate engines quietly, and prints a concise human-readable daily brief.
+Runs the core daily pipeline and prints a concise briefing
+summarizing performance and the latest bet plan.
 """
 from __future__ import annotations
 
-import argparse
 import json
+import os
+import re
 import subprocess
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional
 
-import pandas as pd
-
-import quant_data_core
-import quant_paths
-from utils_2digit import is_valid_2d_number, to_2d_str
-
-SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
-PERFORMANCE_DIR = quant_paths.get_performance_logs_dir()
-BET_ENGINE_DIR = quant_paths.get_bet_engine_dir()
+SLOTS: tuple[str, ...] = ("FRBD", "GZBD", "GALI", "DSWR")
 
 
-@dataclass
-class PlanSlot:
-    slot: str
-    main_numbers: List[str]
-    andar: Optional[str]
-    andar_stake: float
-    bahar: Optional[str]
-    bahar_stake: float
-    slot_stake: float
-
-
-@dataclass
-class PlanSummary:
-    slots: List[PlanSlot]
-    total_stake: float
-    open_slots: List[str]
-
-
-@dataclass
-class PnLSnapshot:
-    overall_pnl: Optional[float]
-    overall_roi: Optional[float]
-    last7_pnl: Optional[float]
-    last7_roi: Optional[float]
-    last30_pnl: Optional[float]
-    last30_roi: Optional[float]
-    best_slot: Optional[Tuple[str, float]]
-    worst_slot: Optional[Tuple[str, float]]
-
-
-@dataclass
-class ExecutionReadiness:
-    mode: Optional[str]
-    multiplier: Optional[float]
-    base_stake: Optional[float]
-    recommended_stake: Optional[float]
-    environment_score: Optional[float]
-
-
-@dataclass
-class PatternSummary:
-    total_hits: Optional[int]
-    s40: Optional[Dict[str, float]]
-    fam_164950: Optional[Dict[str, float]]
-    notes: List[str]
-
-
-@dataclass
-class StrategySummary:
-    recommended: Optional[str]
-    top_family: Optional[str]
-    confidence: Optional[str]
-    risk_mode: Optional[str]
-
-
-@dataclass
-class MoneyManagerSummary:
-    risk_mode: Optional[str]
-    daily_cap: Optional[float]
-    single_cap: Optional[float]
-
-
-@dataclass
-class ConfidenceSummary:
-    scores: Dict[str, float]
-    labels: Dict[str, str]
-
-
-def parse_date(value: str) -> date:
-    return datetime.strptime(value, "%Y-%m-%d").date()
-
-
-def load_results_df() -> pd.DataFrame:
-    df = quant_data_core.load_results_dataframe()
-    if not df.empty and "DATE" in df.columns:
-        df["DATE_ONLY"] = pd.to_datetime(df["DATE"], errors="coerce").dt.date
-    return df
-
-
-def find_latest_bet_date() -> date:
-    latest = quant_paths.find_latest_bet_plan_master()
-    if latest:
-        parsed = quant_paths.parse_date_from_filename(latest.name)
-        if parsed:
-            return parsed
-    return datetime.now().date()
-
-
-def decide_mode(bet_date: date, explicit_mode: str, results_df: pd.DataFrame) -> Tuple[str, date]:
-    explicit_mode = explicit_mode.lower()
-    if explicit_mode == "intraday":
-        return "INTRADAY", bet_date
-    if explicit_mode == "nextday":
-        return "NEXT_DAY", bet_date + timedelta(days=1)
-
-    # auto
-    if results_df.empty or "DATE_ONLY" not in results_df.columns:
-        return "INTRADAY", bet_date
-
-    day_rows = results_df[results_df["DATE_ONLY"] == bet_date]
-    if day_rows.empty:
-        return "INTRADAY", bet_date
-
-    row = day_rows.iloc[-1]
-    closed = True
-    for slot in SLOTS:
-        value = row.get(slot)
-        if pd.isna(value):
-            closed = False
-            break
-    if closed:
-        return "NEXT_DAY", bet_date + timedelta(days=1)
-    return "INTRADAY", bet_date
-
-
-def run_script(script_name: str, args: Optional[List[str]] = None, dry_run: bool = False) -> Optional[subprocess.CompletedProcess]:
-    cmd = ["py", "-3.12", script_name]
-    if args:
-        cmd.extend(args)
-    if dry_run:
-        print(f"DRY-RUN: would run {' '.join(cmd)}")
-        return None
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        tail = (result.stderr or "").splitlines()[-3:]
-        tail_text = " | ".join(tail)
-        print(f"❌ {script_name} failed (code {result.returncode}): {tail_text}")
-    return result
-
-
-def run_intraday_pipeline(bet_date: date, dry_run: bool = False) -> None:
-    run_script("slot_recalc_engine.py", ["--date", bet_date.isoformat()], dry_run=dry_run)
-    run_script("pattern_intelligence_engine.py", dry_run=dry_run)
-    run_script("pattern_intelligence_enhanced.py", dry_run=dry_run)
-    run_script("pattern_packs_exporter.py", dry_run=dry_run)
-    run_script("pattern_packs_automerge.py", dry_run=dry_run)
-    run_script("bet_pnl_tracker.py", dry_run=dry_run)
-    run_script("quant_pnl_summary.py", dry_run=dry_run)
-
-
-def run_nextday_pipeline(target_date: date, dry_run: bool = False) -> None:
-    run_script("deepseek_scr9.py", ["--speed-mode", "fast"], dry_run=dry_run)
-    run_script("prediction_hit_memory.py", dry_run=dry_run)
-    run_script("pattern_intelligence_engine.py", dry_run=dry_run)
-    run_script("pattern_intelligence_enhanced.py", dry_run=dry_run)
-    run_script("pattern_packs_exporter.py", dry_run=dry_run)
-    run_script("pattern_packs_automerge.py", dry_run=dry_run)
-    run_script("strategy_recommendation_engine.py", dry_run=dry_run)
-    run_script("bet_pnl_tracker.py", dry_run=dry_run)
-    run_script("quant_pnl_summary.py", dry_run=dry_run)
-    run_script("reality_check_engine.py", dry_run=dry_run)
-    run_script("money_manager.py", dry_run=dry_run)
-    run_script("smart_fusion_weights.py", dry_run=dry_run)
-    run_script("execution_readiness_engine.py", dry_run=dry_run)
-    run_script("precise_bet_engine.py", dry_run=dry_run)
-    run_script("bet_plan_enhancer.py", dry_run=dry_run)
-    run_script("final_bet_plan_engine.py", dry_run=dry_run)
-    run_script("live_bet_sheet_engine.py", dry_run=dry_run)
-
-
-def _load_json(path: Path) -> Optional[dict]:
-    if not path.exists():
-        return None
+def run_step(name: str, args: list[str]) -> bool:
+    print(f"\n[QUANT-DAILY] ▶ {name} ...")
     try:
-        return json.loads(path.read_text())
-    except Exception:
-        return None
-
-
-def load_plan_from_excel(plan_path: Path) -> Optional[PlanSummary]:
-    if not plan_path.exists():
-        return None
-    try:
-        xls = pd.ExcelFile(plan_path)
-    except Exception:
-        return None
-
-    sheet_name = "bets" if "bets" in xls.sheet_names else xls.sheet_names[0]
-    df = pd.read_excel(xls, sheet_name=sheet_name)
-    if df.empty:
-        return None
-    df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
-    required_cols = {"slot", "layer_type", "number_or_digit", "tier", "stake"}
-    if not required_cols.issubset(df.columns):
-        return None
-
-    slots: List[PlanSlot] = []
-    open_slots: List[str] = []
-    for slot in SLOTS:
-        slot_df = df[df["slot"].str.upper() == slot]
-        if slot_df.empty:
-            continue
-        open_slots.append(slot)
-        main = slot_df[slot_df["layer_type"].str.upper() == "MAIN"]
-        andar_df = slot_df[slot_df["layer_type"].str.upper() == "ANDAR"]
-        bahar_df = slot_df[slot_df["layer_type"].str.upper() == "BAHAR"]
-
-        main_numbers = []
-        slot_total = 0.0
-        for _, row in main.iterrows():
-            number = row.get("number_or_digit")
-            tier = row.get("tier")
-            stake = float(row.get("stake", 0) or 0)
-            slot_total += stake
-            main_numbers.append(f"{int(number):02d}({tier} ₹{stake:.0f})")
-
-        andar_digit = None
-        andar_stake = 0.0
-        if not andar_df.empty:
-            andar_digit = str(andar_df.iloc[0].get("number_or_digit"))
-            andar_stake = float(andar_df.iloc[0].get("stake", 0) or 0)
-            slot_total += andar_stake
-
-        bahar_digit = None
-        bahar_stake = 0.0
-        if not bahar_df.empty:
-            bahar_digit = str(bahar_df.iloc[0].get("number_or_digit"))
-            bahar_stake = float(bahar_df.iloc[0].get("stake", 0) or 0)
-            slot_total += bahar_stake
-
-        slots.append(
-            PlanSlot(
-                slot=slot,
-                main_numbers=main_numbers,
-                andar=andar_digit,
-                andar_stake=andar_stake,
-                bahar=bahar_digit,
-                bahar_stake=bahar_stake,
-                slot_stake=slot_total,
-            )
+        subprocess.run(
+            args,
+            check=True,
+            capture_output=False,
+            text=True,
         )
-
-    total_stake = sum(slot.slot_stake for slot in slots)
-    return PlanSummary(slots=slots, total_stake=total_stake, open_slots=open_slots)
-
-
-def load_plan_for_mode(mode: str, bet_date: date, target_date: date) -> Optional[PlanSummary]:
-    if mode == "INTRADAY":
-        path = BET_ENGINE_DIR / f"bet_plan_intraday_{bet_date.strftime('%Y%m%d')}.xlsx"
-        return load_plan_from_excel(path)
-    path = quant_paths.get_final_bet_plan_path(target_date.strftime("%Y-%m-%d"))
-    return load_plan_from_excel(path)
+        print(f"[QUANT-DAILY] ✅ {name} completed.")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"[QUANT-DAILY] ❌ {name} failed with code {e.returncode}")
+        return False
 
 
-def _find_column(columns: Iterable[str], keywords: List[str], require_all: bool = False) -> Optional[str]:
-    for col in columns:
-        col_lower = str(col).lower()
-        if require_all:
-            if all(keyword in col_lower for keyword in keywords):
-                return col
-        else:
-            if any(keyword in col_lower for keyword in keywords):
-                return col
+def load_quant_pnl_summary(json_path: Path) -> Dict[str, Any]:
+    if not json_path.exists():
+        return {}
+    try:
+        with json_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data or {}
+    except Exception:
+        return {}
+
+
+def _find_section(data: Dict[str, Any], keys: Iterable[str]) -> Optional[Dict[str, Any]]:
+    for key in keys:
+        section = data.get(key)
+        if isinstance(section, dict):
+            return section
     return None
 
 
-def _format_number(value: object) -> str:
-    """
-    Small helper: for clean display only.
-    Behaviour must remain equivalent to the old version:
-    - 0–99 → zero-padded 2-digit
-    - other values → simple str(value)
-    """
-    try:
-        # First try the 0–99 2-digit world using central helper
-        if is_valid_2d_number(value):
-            return to_2d_str(value)
-
-        # Fallback to old behaviour style for anything else
-        num = float(value)
-        if num.is_integer():
-            return str(int(num))
-        return str(value)
-    except Exception:
-        return str(value)
+def _extract_number(container: Dict[str, Any], *names: str) -> Optional[float]:
+    for name in names:
+        value = container.get(name)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
 
 
-def load_final_bet_plan_for_date(target_date: date) -> Optional[dict]:
-    """
-    Load final bet plan for the given date from predictions\bet_engine.
-    Returns a structured dict with slot-wise info, or None if not found.
-    """
+def _format_amount(value: Optional[float]) -> str:
+    if value is None:
+        return "N/A"
+    return f"₹{value:,.0f}" if abs(value) >= 100 else f"₹{value:,.2f}"
 
-    bet_dir = Path(BET_ENGINE_DIR)
-    if not bet_dir.exists():
-        return None
 
-    exact_file = bet_dir / f"final_bet_plan_{target_date.strftime('%Y%m%d')}.xlsx"
-    candidates: List[Path] = []
-    if exact_file.exists():
-        candidates.append(exact_file)
+def _format_roi(value: Optional[float]) -> str:
+    if value is None:
+        return "N/A"
+    sign = "+" if value > 0 else "" if value < 0 else ""
+    return f"{sign}{value:.2f}%"
+
+
+def parse_pnl_brief(data: Dict[str, Any]) -> dict[str, Any]:
+    overall_section = _find_section(data, ["OVERALL", "overall", "SUMMARY", "summary"])
+    if not overall_section and all(k.isupper() for k in data.keys()):
+        overall_section = data
+
+    totals = {
+        "stake": _extract_number(overall_section or {}, "TOTAL_STAKE", "TOTAL_BET", "TOTAL") if overall_section else None,
+        "return": _extract_number(overall_section or {}, "TOTAL_RETURN", "RETURN") if overall_section else None,
+        "pnl": _extract_number(overall_section or {}, "NET_PNL", "PNL", "TOTAL_PNL") if overall_section else None,
+        "roi": _extract_number(overall_section or {}, "ROI_%", "ROI", "OVERALL_ROI") if overall_section else None,
+        "date_from": None,
+        "date_to": None,
+    }
+
+    date_range = _find_section(data, ["DATE_RANGE", "date_range", "DATES", "dates"])
+    if isinstance(date_range, dict):
+        totals["date_from"] = date_range.get("from") or date_range.get("start")
+        totals["date_to"] = date_range.get("to") or date_range.get("end")
     else:
-        candidates.extend(sorted(bet_dir.glob("final_bet_plan_*.xlsx"), reverse=True))
+        totals["date_from"] = data.get("DATE_FROM") or data.get("START_DATE")
+        totals["date_to"] = data.get("DATE_TO") or data.get("END_DATE")
 
+    slots: dict[str, dict[str, Any]] = {}
+    for slot in SLOTS:
+        slot_data = data.get(slot) if isinstance(data.get(slot), dict) else None
+        slots[slot] = {
+            "roi": _extract_number(slot_data or {}, "ROI_%", "ROI"),
+            "slump": slot_data.get("SLUMP") if isinstance(slot_data, dict) else None,
+        }
+
+    return {"totals": totals, "slots": slots}
+
+
+def find_latest_bet_plan(plan_dir: Path) -> tuple[Optional[Path], Optional[str]]:
+    candidates = list(plan_dir.glob("bet_plan_master_*.xlsx"))
     if not candidates:
-        return None
+        return None, None
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
 
-    for path in candidates:
+    target_date = None
+    match = re.search(r"bet_plan_master_(\d{8})", latest.name)
+    if match:
         try:
-            df = pd.read_excel(path)
-        except Exception as exc:
-            print(f"[WARN] Could not load final bet plan: {exc}")
-            continue
+            target_date = datetime.strptime(match.group(1), "%Y%m%d").date().isoformat()
+        except ValueError:
+            target_date = None
 
-        if df.empty:
-            continue
-
-        df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
-
-        date_col = _find_column(df.columns, ["date"])
-        enforce_date_match = path != exact_file
-        if date_col:
-            df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
-            df = df[df[date_col] == target_date]
-        elif enforce_date_match:
-            continue
-
-        if df.empty:
-            continue
-
-        slot_col = _find_column(df.columns, ["slot"])
-        if not slot_col:
-            continue
-
-        number_col = _find_column(df.columns, ["number", "num"])
-        tier_col = _find_column(df.columns, ["tier", "rank_tier", "tier_label"])
-        stake_col = _find_column(df.columns, ["stake", "bet_stake", "unit_stake"])
-        andar_digit_col = _find_column(df.columns, ["andar", "digit"], require_all=True) or _find_column(
-            df.columns, ["andar", "num"], require_all=True
-        )
-        bahar_digit_col = _find_column(df.columns, ["bahar", "digit"], require_all=True) or _find_column(
-            df.columns, ["bahar", "num"], require_all=True
-        )
-        andar_stake_col = _find_column(df.columns, ["andar", "stake"], require_all=True)
-        bahar_stake_col = _find_column(df.columns, ["bahar", "stake"], require_all=True)
-        slot_total_col = _find_column(df.columns, ["slot", "stake"], require_all=True) or _find_column(
-            df.columns, ["total_stake"]
-        )
-
-        slots: Dict[str, dict] = {}
-
-        for slot in SLOTS:
-            slot_rows = df[df[slot_col].astype(str).str.upper() == slot]
-            if slot_rows.empty:
-                continue
-
-            numbers = []
-            computed_total = 0.0
-
-            if number_col:
-                for _, row in slot_rows.iterrows():
-                    num_val = row.get(number_col)
-                    if pd.isna(num_val):
-                        continue
-                    tier_val = row.get(tier_col) if tier_col else None
-                    tier_label = "?"
-                    if tier_val is not None and not pd.isna(tier_val):
-                        tier_label = str(tier_val)
-                    stake_val = float(row.get(stake_col, 0) or 0) if stake_col else 0.0
-                    computed_total += stake_val
-                    numbers.append({"num": _format_number(num_val), "tier": tier_label, "stake": stake_val})
-
-            andar_digit = None
-            bahar_digit = None
-            andar_stake = None
-            bahar_stake = None
-
-            if andar_digit_col and not slot_rows[andar_digit_col].dropna().empty:
-                andar_digit = _format_number(slot_rows[andar_digit_col].dropna().iloc[0])
-            if bahar_digit_col and not slot_rows[bahar_digit_col].dropna().empty:
-                bahar_digit = _format_number(slot_rows[bahar_digit_col].dropna().iloc[0])
-            if andar_stake_col and not slot_rows[andar_stake_col].dropna().empty:
-                andar_stake = float(slot_rows[andar_stake_col].dropna().iloc[0] or 0)
-                computed_total += andar_stake
-            if bahar_stake_col and not slot_rows[bahar_stake_col].dropna().empty:
-                bahar_stake = float(slot_rows[bahar_stake_col].dropna().iloc[0] or 0)
-                computed_total += bahar_stake
-
-            slot_total = computed_total
-            if slot_total_col and not slot_rows[slot_total_col].dropna().empty:
-                slot_total = float(slot_rows[slot_total_col].dropna().iloc[0] or 0)
-
-            slots[slot] = {
-                "numbers": numbers,
-                "andar_digit": andar_digit,
-                "andar_stake": andar_stake,
-                "bahar_digit": bahar_digit,
-                "bahar_stake": bahar_stake,
-                "slot_stake": slot_total,
-            }
-
-        if not slots:
-            continue
-
-        total_stake = sum(slot_data.get("slot_stake", 0) or 0 for slot_data in slots.values())
-        return {"slots": slots, "total_stake": total_stake}
-
-    return None
+    return latest, target_date
 
 
-def load_execution_readiness() -> ExecutionReadiness:
-    data = _load_json(PERFORMANCE_DIR / "execution_readiness_summary.json") or {}
-    return ExecutionReadiness(
-        mode=data.get("mode"),
-        multiplier=data.get("stake_multiplier"),
-        base_stake=data.get("base_final_total_stake") or data.get("final_plan_stake"),
-        recommended_stake=data.get("recommended_real_total_stake"),
-        environment_score=data.get("environment_score"),
+def print_brief(summary: dict[str, Any], plan_path: Optional[Path], plan_date: Optional[str]) -> None:
+    totals = summary.get("totals", {})
+    date_from = totals.get("date_from") or "N/A"
+    date_to = totals.get("date_to") or "N/A"
+
+    print("=" * 70)
+    print("📊 QUANT DAILY BRIEF")
+    print("=" * 70)
+    print(f"📅 Date Range: {date_from} → {date_to}")
+    print(
+        f"💰 Total Stake: {_format_amount(totals.get('stake'))} | "
+        f"Return: {_format_amount(totals.get('return'))} | "
+        f"P&L: {_format_amount(totals.get('pnl'))} | "
+        f"ROI: {_format_roi(totals.get('roi'))}"
     )
 
+    print("\nSLOT SNAPSHOT:")
+    for slot in SLOTS:
+        slot_info = summary.get("slots", {}).get(slot, {})
+        roi_text = _format_roi(slot_info.get("roi"))
+        slump = slot_info.get("slump")
+        slump_text = "N/A" if slump is None else str(bool(slump))
+        print(f"  {slot}: ROI={roi_text}, slump={slump_text}")
 
-def _roi(pnl: float, stake: float) -> Optional[float]:
-    if stake:
-        return pnl / stake * 100
-    return None
-
-
-def load_pnl_snapshot() -> PnLSnapshot:
-    data = _load_json(PERFORMANCE_DIR / "quant_reality_pnl.json") or {}
-    overall = data.get("overall", {})
-    daily = data.get("daily", [])
-    by_slot = data.get("by_slot", [])
-
-    def _window(days: int) -> Tuple[Optional[float], Optional[float]]:
-        if not daily:
-            return None, None
-        records = []
-        for item in daily:
-            try:
-                d = parse_date(item["date"])
-            except Exception:
-                continue
-            records.append((d, item))
-        if not records:
-            return None, None
-        latest = max(d for d, _ in records)
-        cutoff = latest - timedelta(days=days - 1)
-        window_items = [it for d, it in records if d >= cutoff]
-        stake = sum(it.get("total_stake", 0) or 0 for it in window_items)
-        pnl = sum(it.get("pnl", 0) or 0 for it in window_items)
-        return pnl, _roi(pnl, stake)
-
-    best_slot = None
-    worst_slot = None
-    if by_slot:
-        sorted_slots = sorted(by_slot, key=lambda x: x.get("pnl", 0), reverse=True)
-        best_slot = (sorted_slots[0].get("slot"), sorted_slots[0].get("pnl"))
-        worst_slot = (sorted_slots[-1].get("slot"), sorted_slots[-1].get("pnl"))
-
-    last7_pnl, last7_roi = _window(7)
-    last30_pnl, last30_roi = _window(30)
-
-    return PnLSnapshot(
-        overall_pnl=overall.get("total_pnl"),
-        overall_roi=overall.get("overall_roi"),
-        last7_pnl=last7_pnl,
-        last7_roi=last7_roi,
-        last30_pnl=last30_pnl,
-        last30_roi=last30_roi,
-        best_slot=best_slot,
-        worst_slot=worst_slot,
-    )
-
-
-def load_pattern_summary() -> PatternSummary:
-    data = _load_json(PERFORMANCE_DIR / "pattern_intelligence.json") or {}
-    stats = data.get("pattern_stats", {})
-    notes: List[str] = []
-
-    baseline_note = check_pattern_baseline(set(stats.keys()))
-    if baseline_note:
-        notes.append(baseline_note)
-
-    return PatternSummary(
-        total_hits=data.get("total_hits_processed"),
-        s40=stats.get("S40"),
-        fam_164950=stats.get("PACK_164950"),
-        notes=notes,
-    )
-
-
-def check_pattern_baseline(current_keys: Iterable[str]) -> Optional[str]:
-    baseline_path = PERFORMANCE_DIR / "pattern_baseline.json"
-    current_set = set(current_keys)
-    baseline_data = _load_json(baseline_path)
-    if baseline_data is None:
-        baseline_path.parent.mkdir(parents=True, exist_ok=True)
-        baseline_path.write_text(json.dumps({"baseline_keys": sorted(current_set)}))
-        return "Baseline recorded for pattern families (first run)."
-    baseline_keys = set(baseline_data.get("baseline_keys", []))
-    missing = baseline_keys - current_set
-    new_keys = current_set - baseline_keys
-    if missing:
-        return f"⚠️ Missing baseline families: {', '.join(sorted(missing))}"
-    if new_keys:
-        return f"Existing families preserved; {len(new_keys)} new families added since baseline."
-    return "Existing pattern families preserved."
-
-
-def load_strategy_summary() -> StrategySummary:
-    data = _load_json(PERFORMANCE_DIR / "strategy_recommendation.json") or {}
-    return StrategySummary(
-        recommended=data.get("recommended_strategy"),
-        top_family=data.get("top_family"),
-        confidence=data.get("confidence_level"),
-        risk_mode=data.get("risk_mode"),
-    )
-
-
-def load_money_manager() -> MoneyManagerSummary:
-    data = _load_json(PERFORMANCE_DIR / "money_management_plan.json") or {}
-    bankroll = data.get("bankroll_rules", {})
-    return MoneyManagerSummary(
-        risk_mode=bankroll.get("risk_mode") or data.get("risk_mode"),
-        daily_cap=(bankroll.get("daily_caps") or {}).get("total") or (data.get("daily_limits") or {}).get("max_total_stake"),
-        single_cap=(bankroll.get("daily_caps") or {}).get("single") or (data.get("daily_limits") or {}).get("max_single_stake"),
-    )
-
-
-def load_confidence_scores() -> ConfidenceSummary:
-    data = _load_json(PERFORMANCE_DIR / "prediction_confidence.json") or {}
-    scores = {}
-    labels = {}
-    conf = data.get("confidence_scores", {})
-    for slot, slot_data in conf.items():
-        score = slot_data.get("confidence_score")
-        scores[slot] = score
-        if score is None:
-            continue
-        if score >= 80:
-            labels[slot] = "VERY_HIGH"
-        elif score >= 65:
-            labels[slot] = "HIGH"
-        elif score >= 50:
-            labels[slot] = "MEDIUM"
-        else:
-            labels[slot] = "LOW"
-    return ConfidenceSummary(scores=scores, labels=labels)
-
-
-def currency(value: Optional[float]) -> str:
-    if value is None:
-        return "N/A"
-    return f"₹{value:,.0f}"
-
-
-def pct(value: Optional[float]) -> str:
-    if value is None:
-        return "N/A"
-    return f"{value:.1f}%"
-
-
-def print_plan_section(
-    plan: Optional[PlanSummary], execution: ExecutionReadiness, mode: str, final_plan: Optional[dict] = None
-) -> None:
-    print("1️⃣ PREDICTION SNAPSHOT")
-    if mode == "NEXT_DAY" and final_plan:
-        for slot in SLOTS:
-            if slot not in final_plan.get("slots", {}):
-                continue
-            slot_data = final_plan["slots"][slot]
-            numbers = slot_data.get("numbers") or []
-            mains = (
-                ", ".join(f"{n['num']}({n.get('tier', '?')} ₹{n.get('stake', 0):.0f})" for n in numbers)
-                if numbers
-                else "-"
-            )
-            extras = []
-            if slot_data.get("andar_digit") is not None:
-                stake = slot_data.get("andar_stake")
-                stake_val = stake if stake is not None else 0
-                extras.append(f"ANDAR={slot_data['andar_digit']}(₹{stake_val:.0f})")
-            if slot_data.get("bahar_digit") is not None:
-                stake = slot_data.get("bahar_stake")
-                stake_val = stake if stake is not None else 0
-                extras.append(f"BAHAR={slot_data['bahar_digit']}(₹{stake_val:.0f})")
-            if extras:
-                print(
-                    f"   {slot}: {mains} | {', '.join(extras)} → Slot stake: ₹{slot_data.get('slot_stake', 0):.0f}"
-                )
-            else:
-                print(f"   {slot}: {mains} → Slot stake: ₹{slot_data.get('slot_stake', 0):.0f}")
-
-        total_planned = final_plan.get("total_stake")
-        if total_planned is None:
-            total_planned = sum(s.get("slot_stake", 0) or 0 for s in final_plan.get("slots", {}).values())
-        if execution.recommended_stake:
-            print(
-                f"   TOTAL planned stake: {currency(total_planned)} → Recommended live stake: {currency(execution.recommended_stake)}"
-            )
-        else:
-            print(f"   TOTAL planned stake: {currency(total_planned)}")
-        return
-
-    if not plan or not plan.slots:
-        print("   (Plan data not available)")
-        return
-    for slot in plan.slots:
-        mains = ", ".join(slot.main_numbers) if slot.main_numbers else "-"
-        andar = f"ANDAR={slot.andar}(₹{slot.andar_stake:.0f})" if slot.andar else "ANDAR=NA"
-        bahar = f"BAHAR={slot.bahar}(₹{slot.bahar_stake:.0f})" if slot.bahar else "BAHAR=NA"
-        print(f"   {slot.slot}: {mains} | {andar}, {bahar} → Slot stake: ₹{slot.slot_stake:.0f}")
-    if execution.recommended_stake:
-        print(f"   TOTAL planned stake: {currency(plan.total_stake)} → Recommended live stake: {currency(execution.recommended_stake)}")
+    print("\nNEXT BET PLAN:")
+    if plan_path:
+        print(f"  File : {plan_path.relative_to(Path.cwd())}")
+        if plan_date:
+            print(f"  Target Date: {plan_date}")
     else:
-        print(f"   TOTAL planned stake: {currency(plan.total_stake)}")
-
-
-def print_pnl_section(pnl: PnLSnapshot) -> None:
-    print("\n2️⃣ P&L SNAPSHOT")
-    print(f"   Overall P&L      : {currency(pnl.overall_pnl)} (ROI {pct(pnl.overall_roi)})")
-    print(f"   Last 7 days      : {currency(pnl.last7_pnl)} (ROI {pct(pnl.last7_roi)})")
-    print(f"   Last 30 days     : {currency(pnl.last30_pnl)} (ROI {pct(pnl.last30_roi)})")
-    best = f"{pnl.best_slot[0]} {currency(pnl.best_slot[1])}" if pnl.best_slot else "N/A"
-    worst = f"{pnl.worst_slot[0]} {currency(pnl.worst_slot[1])}" if pnl.worst_slot else "N/A"
-    print(f"   Best slot        : {best}")
-    print(f"   Weak slot        : {worst}")
-
-
-def print_pattern_section(patterns: PatternSummary) -> None:
-    print("\n3️⃣ PATTERN & LEARNING")
-    if patterns.total_hits is not None:
-        print(f"   Hits analyzed    : {patterns.total_hits}")
-    if patterns.s40:
-        hr = patterns.s40.get("hit_rate")
-        hits = patterns.s40.get("hits")
-        print(f"   S40 family       : {pct(hr)} hit rate, {hits} hits")
-    if patterns.fam_164950:
-        hr = patterns.fam_164950.get("hit_rate")
-        hits = patterns.fam_164950.get("hits")
-        print(f"   164950 family    : {pct(hr)} hit rate, {hits} hits")
-    for note in patterns.notes:
-        print(f"   {note}")
-
-
-def print_risk_section(strategy: StrategySummary, money: MoneyManagerSummary, execution: ExecutionReadiness, confidence: ConfidenceSummary) -> None:
-    print("\n4️⃣ RISK & EXECUTION")
-    strat = strategy.recommended or "(strategy data NA)"
-    risk_mode = strategy.risk_mode or money.risk_mode or "UNKNOWN"
-    print(f"   Strategy         : {strat}")
-    print(f"   Risk mode        : {risk_mode}")
-    if execution.mode:
-        mult = execution.multiplier if execution.multiplier is not None else 1.0
-        print(f"   Execution mode   : {execution.mode} (x{mult})")
-    if money.daily_cap or money.single_cap:
-        print(f"   Money manager    : daily cap {currency(money.daily_cap)}, single-slot cap {currency(money.single_cap)}")
-    if confidence.scores:
-        parts = []
-        for slot in SLOTS:
-            if slot in confidence.scores:
-                label = confidence.labels.get(slot, "-")
-                parts.append(f"{slot} {label} ({confidence.scores[slot]:.0f})")
-        if parts:
-            print(f"   Confidence       : {', '.join(parts)}")
-
-
-def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
-    print("=" * 80)
-    print(f"🎯 QUANT DAILY BRIEF – {target_date.isoformat()} (MODE: {mode})")
-    print("=" * 80)
-    print(f"Bet date          : {bet_date.isoformat()}")
-    print(f"Target date       : {target_date.isoformat()}")
-    strat = strategy.recommended or "(strategy NA)"
-    print(f"Strategy          : {strat}")
-    if execution.mode:
-        mult = execution.multiplier if execution.multiplier is not None else 1.0
-        print(f"Execution mode    : {execution.mode} ({mult}x)")
-    if execution.base_stake or execution.recommended_stake or (plan and plan.total_stake):
-        base = execution.base_stake or (plan.total_stake if plan else None)
-        if base is not None:
-            line = f"Final plan stake  : {currency(base)}"
-            if execution.recommended_stake:
-                line += f" → Recommended live stake: {currency(execution.recommended_stake)}"
-            print(line)
-
-
-def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = False) -> None:
-    if mode == "INTRADAY":
-        run_intraday_pipeline(bet_date, dry_run=dry_run)
-    else:
-        run_nextday_pipeline(target_date, dry_run=dry_run)
-
-    plan = load_plan_for_mode(mode, bet_date, target_date)
-    final_plan = load_final_bet_plan_for_date(target_date) if mode == "NEXT_DAY" else None
-    execution = load_execution_readiness()
-    pnl = load_pnl_snapshot()
-    patterns = load_pattern_summary()
-    strategy = load_strategy_summary()
-    money = load_money_manager()
-    confidence = load_confidence_scores()
-
-    print_header(bet_date, target_date, mode, strategy, execution, plan)
-    print_plan_section(plan, execution, mode, final_plan=final_plan)
-    print_pnl_section(pnl)
-    print_pattern_section(patterns)
-    print_risk_section(strategy, money, execution, confidence)
-    print("=" * 80)
-    verdict = "Short verdict: System learning healthy; keep stakes disciplined."
-    print(verdict)
-    print("=" * 80)
+        print("  [QUANT-DAILY] ℹ No bet_plan_master_*.xlsx found yet.")
+    print("=" * 70)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate Quant Daily Brief")
-    parser.add_argument("--date", dest="date_str", help="Bet date (YYYY-MM-DD)")
-    parser.add_argument("--mode", choices=["auto", "intraday", "nextday"], default="auto")
-    parser.add_argument("--dry-run", action="store_true", help="Do not run subprocesses; preview only")
-    args = parser.parse_args()
+    try:
+        project_root = Path(__file__).resolve().parent
+        os.chdir(project_root)
 
-    bet_date = parse_date(args.date_str) if args.date_str else find_latest_bet_date()
-    results_df = load_results_df()
-    mode, target_date = decide_mode(bet_date, args.mode, results_df)
+        steps_ok = True
+        steps_ok &= run_step(
+            "Reality P&L Tracker",
+            ["py", "-3.12", "bet_pnl_tracker.py", "--days", "30"],
+        )
 
-    build_brief(mode, bet_date, target_date, dry_run=args.dry_run)
-    return 0
+        steps_ok &= run_step(
+            "Slot Health Signals",
+            ["py", "-3.12", "quant_pnl_signals.py"],
+        )
+
+        steps_ok &= run_step(
+            "ULTRA v5 Bet Engine",
+            ["py", "-3.12", "precise_bet_engine.py"],
+        )
+
+        if not steps_ok:
+            print("\n[QUANT-DAILY] ⚠ Some steps failed. Daily brief may be incomplete.")
+
+        pnl_path = project_root / "logs" / "performance" / "quant_reality_pnl.json"
+        pnl_data = load_quant_pnl_summary(pnl_path)
+        if not pnl_data:
+            print("[QUANT-DAILY] ℹ quant_reality_pnl.json not found or empty, skipping P&L brief.")
+            summary = {"totals": {}, "slots": {}}
+        else:
+            summary = parse_pnl_brief(pnl_data)
+
+        plan_dir = project_root / "predictions" / "bet_engine"
+        plan_path, plan_date = find_latest_bet_plan(plan_dir)
+        if plan_path is None:
+            print("[QUANT-DAILY] ℹ No bet_plan_master_*.xlsx found yet.")
+
+        print_brief(summary, plan_path, plan_date)
+        return 0 if steps_ok else 1
+    except Exception as exc:  # pragma: no cover - safety net
+        print(f"[QUANT-DAILY] ❌ Unexpected error: {exc}")
+        return 1
 
 
 if __name__ == "__main__":
