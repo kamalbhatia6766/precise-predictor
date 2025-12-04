@@ -8,6 +8,7 @@ import sys
 import time
 import argparse
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 # 🆕 Import central helpers
@@ -83,12 +84,15 @@ def run_scr9_full():
     try:
         print("🎯 RUNNING SCR9 (FULL MODE)...")
         start_time = time.time()
-        
+
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+
         # ✅ FIXED: Use correct arguments for deepseek_scr9.py
         result = subprocess.run([
-            sys.executable, "deepseek_scr9.py", 
+            sys.executable, "deepseek_scr9.py",
             "--speed-mode", "full"  # ✅ ONLY this argument
-        ], capture_output=True, text=True, timeout=5000)
+        ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5000, env=env)
         
         if result.returncode == 0:
             scr9_time = time.time() - start_time
@@ -109,12 +113,15 @@ def run_bet_engine(target_mode, source):
     try:
         print("💰 RUNNING BET ENGINE (Optimized)...")
         start_time = time.time()
-        
+
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+
         result = subprocess.run([
             sys.executable, "precise_bet_engine.py",
             "--target", target_mode,
             "--source", source
-        ], capture_output=True, text=True, timeout=300)
+        ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, env=env)
         
         if result.returncode == 0:
             bet_time = time.time() - start_time
