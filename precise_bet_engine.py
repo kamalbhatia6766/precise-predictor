@@ -1304,9 +1304,9 @@ class PreciseBetEngine:
                 bets_df.loc[potential_mask, "potential_return"] = updated_returns
 
             if not summary_df.empty and "slot" in summary_df.columns:
-                summary_df["slot_multiplier"] = (
-                    summary_df["slot_key"].map(slot_multipliers).fillna(1.0).astype(float)
-                )
+                summary_df["slot_multiplier"] = summary_df["slot_key"].map(
+                    lambda k: slot_multipliers.get(k, 1.0)
+                ).fillna(1.0).astype(float)
 
                 for col in [
                     "main_stake",
