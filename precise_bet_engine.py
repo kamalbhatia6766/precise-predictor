@@ -9,6 +9,7 @@ import warnings
 import argparse
 import json
 import quant_data_core
+from quant_slot_health import get_slot_health, SlotHealth
 from utils_2digit import is_valid_2d_number, to_2d_str
 warnings.filterwarnings('ignore')
 
@@ -1205,7 +1206,31 @@ class PreciseBetEngine:
         quantum_debug_df = pd.DataFrame(quantum_debug_data)
         ultra_debug_df = pd.DataFrame(ultra_debug_data)
         explainability_df = pd.DataFrame(explainability_data)
-        
+
+        slot_health_map = {slot: get_slot_health(slot) for slot in self.slots}
+        for slot, health in slot_health_map.items():
+            print(f"[QUANT-SIGNALS] Slot {slot}: slump={health.slump}, roi_bucket={health.roi_bucket}")
+
+        if not bets_df.empty:
+            bets_df = bets_df.assign(
+                slot_slump_flag=bets_df['slot'].apply(
+                    lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
+                ),
+                slot_roi_bucket=bets_df['slot'].apply(
+                    lambda s: (slot_health_map.get(s) or get_slot_health(s)).roi_bucket
+                ),
+            )
+
+        if not summary_df.empty:
+            summary_df = summary_df.assign(
+                slot_slump_flag=summary_df['slot'].apply(
+                    lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
+                ),
+                slot_roi_bucket=summary_df['slot'].apply(
+                    lambda s: (slot_health_map.get(s) or get_slot_health(s)).roi_bucket
+                ),
+            )
+
         return bets_df, summary_df, diagnostic_df, quantum_debug_df, ultra_debug_df, explainability_df
 
     def save_bet_plan(self, bets_df, summary_df, diagnostic_df, quantum_debug_df, ultra_debug_df, explainability_df, target_date):
