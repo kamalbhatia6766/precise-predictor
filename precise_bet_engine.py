@@ -1227,7 +1227,6 @@ class PreciseBetEngine:
         explainability_df = pd.DataFrame(explainability_data)
 
         slot_health_map = {str(slot).upper(): get_slot_health(slot) for slot in self.slots}
-        slot_multipliers: Dict[str, float] = {}
 
         for slot in self.slots:
             key = str(slot).upper()
@@ -1244,34 +1243,20 @@ class PreciseBetEngine:
                     roi_bucket="UNKNOWN",
                 )
                 slot_health_map[key] = health
-                mult = 1.0
                 slump_flag = False
                 roi_bucket = "UNKNOWN"
             else:
-                mult = self._compute_slot_multiplier(health)
                 slump_flag = health.slump
                 roi_bucket = health.roi_bucket
-
-            slot_multipliers[key] = mult
+            slot_multiplier_val = getattr(health, "slot_multiplier", 1.0)
 
             print(
                 f"[QUANT-SIGNALS] Slot {key}: "
-                f"slump={slump_flag}, roi_bucket={roi_bucket}, slot_multiplier={mult:.2f}"
+                f"slump={slump_flag}, roi_bucket={roi_bucket}, slot_multiplier={slot_multiplier_val}"
             )
 
         if not bets_df.empty:
             bets_df["slot_key"] = bets_df["slot"].astype(str).str.upper()
-            bets_df["slot_multiplier"] = bets_df["slot_key"].map(
-                lambda k: slot_multipliers.get(k, 1.0)
-            ).fillna(1.0)
-            stake_numeric = pd.to_numeric(bets_df["stake"], errors="coerce")
-            numeric_mask = stake_numeric.notna()
-            bets_df.loc[numeric_mask, "stake"] = (
-                stake_numeric[numeric_mask] * bets_df.loc[numeric_mask, "slot_multiplier"]
-            ).round(2)
-            bets_df.loc[numeric_mask, "potential_return"] = (
-                bets_df.loc[numeric_mask, "stake"] * 90
-            ).round(2)
             bets_df = bets_df.assign(
                 slot_slump_flag=bets_df['slot_key'].apply(
                     lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
@@ -1283,21 +1268,6 @@ class PreciseBetEngine:
 
         if not summary_df.empty:
             summary_df["slot_key"] = summary_df["slot"].astype(str).str.upper()
-            summary_df["slot_multiplier"] = summary_df["slot_key"].map(
-                lambda k: slot_multipliers.get(k, 1.0)
-            ).fillna(1.0)
-
-            for col in [
-                "main_stake",
-                "andar_stake",
-                "bahar_stake",
-                "total_stake",
-                "max_total_return",
-                "main_max_return",
-            ]:
-                if col in summary_df.columns:
-                    summary_df[col] = (summary_df[col] * summary_df["slot_multiplier"]).round(2)
-
             summary_df = summary_df.assign(
                 slot_slump_flag=summary_df['slot_key'].apply(
                     lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
@@ -1306,6 +1276,51 @@ class PreciseBetEngine:
                     lambda s: (slot_health_map.get(s) or get_slot_health(s)).roi_bucket
                 ),
             )
+
+        try:
+            slot_multipliers = {}
+            for slot_key, health in slot_health_map.items():
+                key = str(slot_key).upper()
+                try:
+                    slot_multipliers[key] = float(getattr(health, "slot_multiplier", 1.0))
+                except Exception:
+                    slot_multipliers[key] = 1.0
+
+            if not bets_df.empty and "slot" in bets_df.columns:
+                bets_df["slot_multiplier"] = (
+                    bets_df["slot_key"].map(slot_multipliers).fillna(1.0).astype(float)
+                )
+
+                stake_numeric = pd.to_numeric(bets_df["stake"], errors="coerce")
+                numeric_mask = stake_numeric.notna()
+
+                scaled_stake = (stake_numeric[numeric_mask] * bets_df.loc[numeric_mask, "slot_multiplier"]).round(2)
+                bets_df.loc[numeric_mask, "stake"] = scaled_stake
+
+                potential_numeric = pd.to_numeric(bets_df["potential_return"], errors="coerce")
+                potential_mask = potential_numeric.notna() & numeric_mask
+
+                updated_returns = (pd.to_numeric(bets_df.loc[potential_mask, "stake"], errors="coerce") * 90).round(2)
+                bets_df.loc[potential_mask, "potential_return"] = updated_returns
+
+            if not summary_df.empty and "slot" in summary_df.columns:
+                summary_df["slot_multiplier"] = (
+                    summary_df["slot_key"].map(slot_multipliers).fillna(1.0).astype(float)
+                )
+
+                for col in [
+                    "main_stake",
+                    "andar_stake",
+                    "bahar_stake",
+                    "total_stake",
+                    "max_total_return",
+                    "main_max_return",
+                ]:
+                    if col in summary_df.columns:
+                        col_numeric = pd.to_numeric(summary_df[col], errors="coerce").fillna(0.0)
+                        summary_df[col] = (col_numeric * summary_df["slot_multiplier"]).round(2)
+        except Exception as e:
+            print(f"❌ Error in slot-multiplier scaling: {e}")
 
         return bets_df, summary_df, diagnostic_df, quantum_debug_df, ultra_debug_df, explainability_df
 
