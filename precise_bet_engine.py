@@ -1226,12 +1226,17 @@ class PreciseBetEngine:
         ultra_debug_df = pd.DataFrame(ultra_debug_data)
         explainability_df = pd.DataFrame(explainability_data)
 
-        slot_health_map = {str(slot).upper(): get_slot_health(slot) for slot in self.slots}
+        # Build slot health map and per-slot multipliers
+        slot_health_map: Dict[str, SlotHealth] = {}
+        slot_multipliers: Dict[str, float] = {}
 
         for slot in self.slots:
             key = str(slot).upper()
-            health = slot_health_map.get(key)
+            # Always ask quant_slot_health for the latest SlotHealth
+            health = get_slot_health(key)
+
             if health is None:
+                # Fallback neutral health if nothing is available
                 health = SlotHealth(
                     slot=key,
                     roi_percent=0.0,
@@ -1242,71 +1247,65 @@ class PreciseBetEngine:
                     slump=False,
                     roi_bucket="UNKNOWN",
                 )
-                slot_health_map[key] = health
-                slump_flag = False
-                roi_bucket = "UNKNOWN"
-            else:
-                slump_flag = health.slump
-                roi_bucket = health.roi_bucket
-            slot_multiplier_val = getattr(health, "slot_multiplier", 1.0)
+
+            slot_health_map[key] = health
+            mult = self._compute_slot_multiplier(health)
+            slot_multipliers[key] = mult
 
             print(
                 f"[QUANT-SIGNALS] Slot {key}: "
-                f"slump={slump_flag}, roi_bucket={roi_bucket}, slot_multiplier={slot_multiplier_val}"
-            )
-
-        if not bets_df.empty:
-            bets_df["slot_key"] = bets_df["slot"].astype(str).str.upper()
-            bets_df = bets_df.assign(
-                slot_slump_flag=bets_df['slot_key'].apply(
-                    lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
-                ),
-                slot_roi_bucket=bets_df['slot_key'].apply(
-                    lambda s: (slot_health_map.get(s) or get_slot_health(s)).roi_bucket
-                ),
-            )
-
-        if not summary_df.empty:
-            summary_df["slot_key"] = summary_df["slot"].astype(str).str.upper()
-            summary_df = summary_df.assign(
-                slot_slump_flag=summary_df['slot_key'].apply(
-                    lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
-                ),
-                slot_roi_bucket=summary_df['slot_key'].apply(
-                    lambda s: (slot_health_map.get(s) or get_slot_health(s)).roi_bucket
-                ),
+                f"slump={health.slump}, roi_bucket={health.roi_bucket}, slot_multiplier={mult:.2f}"
             )
 
         try:
-            slot_multipliers = {}
-            for slot_key, health in slot_health_map.items():
-                key = str(slot_key).upper()
-                try:
-                    slot_multipliers[key] = float(getattr(health, "slot_multiplier", 1.0))
-                except Exception:
-                    slot_multipliers[key] = 1.0
-
+            # --- Apply multipliers to bets_df (numeric-safe) ---
             if not bets_df.empty and "slot" in bets_df.columns:
+                bets_df["slot_key"] = bets_df["slot"].astype(str).str.upper()
                 bets_df["slot_multiplier"] = (
                     bets_df["slot_key"].map(slot_multipliers).fillna(1.0).astype(float)
                 )
 
+                # Coerce stake to numeric
                 stake_numeric = pd.to_numeric(bets_df["stake"], errors="coerce")
                 numeric_mask = stake_numeric.notna()
 
-                scaled_stake = (stake_numeric[numeric_mask] * bets_df.loc[numeric_mask, "slot_multiplier"]).round(2)
+                # Scale only numeric stakes (leave blanks like S36/Pack rows untouched)
+                scaled_stake = (
+                    stake_numeric[numeric_mask]
+                    * bets_df.loc[numeric_mask, "slot_multiplier"]
+                ).round(2)
                 bets_df.loc[numeric_mask, "stake"] = scaled_stake
 
-                potential_numeric = pd.to_numeric(bets_df["potential_return"], errors="coerce")
+                # Recompute potential_return only where it is numeric
+                potential_numeric = pd.to_numeric(
+                    bets_df["potential_return"], errors="coerce"
+                )
                 potential_mask = potential_numeric.notna() & numeric_mask
 
-                updated_returns = (pd.to_numeric(bets_df.loc[potential_mask, "stake"], errors="coerce") * 90).round(2)
+                updated_returns = (
+                    pd.to_numeric(
+                        bets_df.loc[potential_mask, "stake"], errors="coerce"
+                    )
+                    * 90
+                ).round(2)
                 bets_df.loc[potential_mask, "potential_return"] = updated_returns
 
+                # Attach slot slump / ROI bucket flags
+                bets_df = bets_df.assign(
+                    slot_slump_flag=bets_df["slot_key"].apply(
+                        lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
+                    ),
+                    slot_roi_bucket=bets_df["slot_key"].apply(
+                        lambda s: (slot_health_map.get(s) or get_slot_health(s)).roi_bucket
+                    ),
+                )
+
+            # --- Apply multipliers to summary_df (numeric-safe) ---
             if not summary_df.empty and "slot" in summary_df.columns:
-                summary_df["slot_multiplier"] = summary_df["slot_key"].map(
-                    lambda k: slot_multipliers.get(k, 1.0)
-                ).fillna(1.0).astype(float)
+                summary_df["slot_key"] = summary_df["slot"].astype(str).str.upper()
+                summary_df["slot_multiplier"] = (
+                    summary_df["slot_key"].map(slot_multipliers).fillna(1.0).astype(float)
+                )
 
                 for col in [
                     "main_stake",
@@ -1317,10 +1316,24 @@ class PreciseBetEngine:
                     "main_max_return",
                 ]:
                     if col in summary_df.columns:
-                        col_numeric = pd.to_numeric(summary_df[col], errors="coerce").fillna(0.0)
+                        col_numeric = pd.to_numeric(
+                            summary_df[col], errors="coerce"
+                        ).fillna(0.0)
                         summary_df[col] = (col_numeric * summary_df["slot_multiplier"]).round(2)
+
+                summary_df = summary_df.assign(
+                    slot_slump_flag=summary_df["slot_key"].apply(
+                        lambda s: (slot_health_map.get(s) or get_slot_health(s)).slump
+                    ),
+                    slot_roi_bucket=summary_df["slot_key"].apply(
+                        lambda s: (slot_health_map.get(s) or get_slot_health(s)).roi_bucket
+                    ),
+                )
+
         except Exception as e:
             print(f"❌ Error in slot-multiplier scaling: {e}")
+            # Fail-safe: if anything goes wrong, we keep original bets_df/summary_df
+            # and continue without crashing.
 
         return bets_df, summary_df, diagnostic_df, quantum_debug_df, ultra_debug_df, explainability_df
 
