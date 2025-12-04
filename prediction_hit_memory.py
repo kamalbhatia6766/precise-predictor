@@ -10,7 +10,7 @@ from utils_2digit import is_valid_2d_number, to_2d_str
 from script_hit_memory_utils import (
     append_script_hit_row,
     rebuild_script_hit_memory,
-    load_script_hit_memory,
+    get_script_hit_memory_path,
 )
 import warnings
 warnings.filterwarnings('ignore')
@@ -472,15 +472,22 @@ def _build_final_shortlist_map(target_date):
         return {}
 
 
-def _collect_script_predictions(memory: PredictionHitMemory, target_date):
-    predictions = defaultdict(dict)
+def _load_all_predictions(memory: PredictionHitMemory):
+    cache = {}
     for script_name, pattern in memory.script_patterns.items():
         file_path = memory.find_latest_prediction_file(script_name, pattern)
         if not file_path:
             continue
         rows = memory.load_predictions_file(file_path, script_name)
-        if not rows:
-            continue
+        if rows:
+            cache[script_name] = rows
+    return cache
+
+
+def _collect_script_predictions(memory: PredictionHitMemory, target_date, predictions_cache=None):
+    predictions_cache = predictions_cache or _load_all_predictions(memory)
+    predictions = defaultdict(dict)
+    for script_name, rows in predictions_cache.items():
         for entry in rows:
             pred_date = _parse_date_value(entry.get('date'))
             if pred_date != target_date:
@@ -492,7 +499,7 @@ def _collect_script_predictions(memory: PredictionHitMemory, target_date):
     return predictions
 
 
-def _build_script_hit_rows(memory: PredictionHitMemory, target_date, real_df):
+def _build_script_hit_rows(memory: PredictionHitMemory, target_date, real_df, predictions_cache=None):
     if real_df is None or real_df.empty:
         return []
     real_df['date'] = pd.to_datetime(real_df['date']).dt.date
@@ -501,7 +508,7 @@ def _build_script_hit_rows(memory: PredictionHitMemory, target_date, real_df):
         return []
 
     shortlist_map = _build_final_shortlist_map(target_date)
-    predictions = _collect_script_predictions(memory, target_date)
+    predictions = _collect_script_predictions(memory, target_date, predictions_cache)
     rows = []
 
     for slot in memory.slots:
@@ -548,11 +555,12 @@ def _rebuild_script_hit_memory(window_days: int):
     real_df['date'] = pd.to_datetime(real_df['date']).dt.date
     max_date = real_df['date'].max()
     min_date = max_date - timedelta(days=window_days - 1)
+    predictions_cache = _load_all_predictions(memory)
     rows = []
     for date_val in sorted(real_df['date'].unique()):
         if date_val < min_date:
             continue
-        rows.extend(_build_script_hit_rows(memory, date_val, real_df))
+        rows.extend(_build_script_hit_rows(memory, date_val, real_df, predictions_cache))
     path = rebuild_script_hit_memory(rows)
     print(f"Script hit memory rebuilt at {path}")
 
@@ -562,10 +570,16 @@ def _update_latest_script_hit_memory():
     memory = PredictionHitMemory()
     real_df = memory.load_real_results(Path(__file__).resolve().parent / "number prediction learn.xlsx")
     target_date = memory.get_target_date(real_df)
-    rows = _build_script_hit_rows(memory, target_date, real_df)
-    existing = load_script_hit_memory()
+    predictions_cache = _load_all_predictions(memory)
+    rows = _build_script_hit_rows(memory, target_date, real_df, predictions_cache)
+    memory_path = get_script_hit_memory_path()
+    try:
+        existing = pd.read_csv(memory_path) if memory_path.exists() else pd.DataFrame()
+    except Exception:
+        existing = pd.DataFrame()
     if not existing.empty and 'date' in existing.columns:
-        existing = existing[existing['date'] != target_date.strftime('%Y-%m-%d')]
+        existing_dates = pd.to_datetime(existing['date'], errors='coerce').dt.date
+        existing = existing[existing_dates != target_date]
     updated_rows = existing.to_dict(orient='records') + rows
     path = rebuild_script_hit_memory(updated_rows)
     print(f"Latest script hit memory updated at {path}")

@@ -9,7 +9,7 @@ from batch or rebuild workflows.
 from __future__ import annotations
 
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -127,18 +127,83 @@ def rebuild_script_hit_memory(rows: List[Dict]) -> Path:
     return memory_path
 
 
-def load_script_hit_memory() -> pd.DataFrame:
-    """Load the existing script hit memory as a DataFrame.
+def _normalise_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    """Return the first matching column name from a list of candidates."""
 
-    Returns an empty DataFrame if the file does not exist.
+    normalised = {str(c).strip().lower(): c for c in df.columns}
+    for cand in candidates:
+        key = str(cand).strip().lower()
+        if key in normalised:
+            return normalised[key]
+    return None
+
+
+def load_script_hit_memory(window_days: int | None = None) -> pd.DataFrame:
+    """Load and normalise the script hit memory CSV.
+
+    The on-disk format is treated as canonical and left untouched. The returned
+    DataFrame exposes a consistent schema for downstream consumers. If
+    ``window_days`` is provided, the data is filtered to that trailing window
+    based on the latest available ``date``.
     """
 
     memory_path = get_script_hit_memory_path()
     if not memory_path.exists():
-        return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+        return pd.DataFrame()
+
     try:
-        df = pd.read_csv(memory_path)
-    except Exception:
-        df = pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
-    return df
+        raw_df = pd.read_csv(memory_path)
+    except Exception as exc:
+        print(f"⚠️  Error reading script_hit_memory.csv: {exc}")
+        return pd.DataFrame()
+
+    if raw_df.empty:
+        return pd.DataFrame()
+
+    # Flexible column resolution
+    date_col = _normalise_column(raw_df, ["date", "target_date"])
+    slot_col = _normalise_column(raw_df, ["slot", "real_slot"])
+    script_col = _normalise_column(raw_df, ["script_id", "script", "script_name"])
+    number_col = _normalise_column(raw_df, ["number", "real_number"])
+    hit_type_col = _normalise_column(raw_df, ["hit_type", "hit_flag", "hit"])
+    is_final_col = _normalise_column(raw_df, ["is_final", "is_in_final_shortlist", "final", "final_shortlist"])
+    layer_col = _normalise_column(raw_df, ["layer", "layer_name"])
+    rank_col = _normalise_column(raw_df, ["top_rank", "rank"])
+    source_col = _normalise_column(raw_df, ["source_file", "source", "file"])
+
+    if date_col is None or slot_col is None or script_col is None or number_col is None:
+        return pd.DataFrame()
+
+    df = raw_df.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    df = df[pd.notna(df[date_col])]
+    df[slot_col] = df[slot_col].astype(str).str.upper()
+    df[script_col] = df[script_col].astype(str).str.upper()
+    df[number_col] = df[number_col].apply(lambda x: to_2d_str(x) if pd.notna(x) else None)
+    if hit_type_col:
+        df[hit_type_col] = df[hit_type_col].astype(str).str.upper()
+
+    canonical = pd.DataFrame(
+        {
+            "date": df[date_col],
+            "slot": df[slot_col],
+            "script_id": df[script_col],
+            "number": df[number_col],
+            "hit_type": df[hit_type_col] if hit_type_col else None,
+            "is_final": df[is_final_col].astype(bool) if is_final_col else False,
+            "layer": df[layer_col] if layer_col else None,
+            "top_rank": pd.to_numeric(df[rank_col], errors="coerce") if rank_col else pd.NA,
+            "source_file": df[source_col] if source_col else None,
+        }
+    )
+
+    if window_days:
+        valid_dates = canonical["date"][pd.notna(canonical["date"])]
+        if not valid_dates.empty:
+            max_date = valid_dates.max()
+            cutoff = max_date - timedelta(days=window_days - 1)
+            canonical = canonical[canonical["date"] >= cutoff]
+
+    canonical = canonical.reset_index(drop=True)
+    return canonical
 

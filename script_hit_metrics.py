@@ -1,101 +1,89 @@
-"""Script-level hit metrics and lightweight ROI proxies.
-
-This module reads the unified ``logs/performance/script_hit_memory.csv``
-and produces per-script, per-slot performance windows. It is designed to
-operate in preview-only mode so existing behaviours remain unchanged.
-"""
+"""Script-level hit metrics and lightweight ROI proxies."""
 
 from __future__ import annotations
 
 import argparse
 import json
-from collections import defaultdict
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from datetime import datetime
+from typing import Dict, List
 
 import pandas as pd
 
 import quant_paths
-from script_hit_memory_utils import get_script_hit_memory_path
+from script_hit_memory_utils import load_script_hit_memory
+
+DEFAULT_WINDOW_DAYS = 30
 
 
-def _load_memory_df() -> pd.DataFrame:
-    path = get_script_hit_memory_path()
-    if not path.exists():
-        return pd.DataFrame()
-    try:
-        df = pd.read_csv(path)
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-        return df
-    except Exception:
-        return pd.DataFrame()
+def _safe_rate(num: float, denom: float) -> float:
+    return num / denom if denom else 0.0
 
 
-def compute_script_metrics(window_days: int = 30) -> pd.DataFrame:
+def _score_row(hit_rate_final: float, coverage_rate: float, blind_miss_rate: float) -> float:
+    score = 1.0
+    score += 0.6 * hit_rate_final
+    score += 0.3 * coverage_rate
+    score -= 0.4 * blind_miss_rate
+    return max(0.0, min(2.0, score))
+
+
+def compute_script_metrics(window_days: int = DEFAULT_WINDOW_DAYS) -> pd.DataFrame:
     """Compute per-script metrics for the trailing window."""
 
-    df = _load_memory_df()
+    df = load_script_hit_memory(window_days=window_days)
     if df.empty:
         return pd.DataFrame()
 
-    if "date" not in df.columns:
+    if "script_id" not in df.columns or "hit_type" not in df.columns:
         return pd.DataFrame()
 
-    latest_date = max([d for d in df["date"] if pd.notna(d)], default=None)
-    if latest_date is None:
-        return pd.DataFrame()
+    records: List[Dict] = []
+    for script_id, group in df.groupby("script_id"):
+        total_rows = len(group)
+        hit_types = group["hit_type"].fillna("").astype(str).str.upper()
+        final_hits = int((hit_types == "FINAL_HIT").sum())
+        script_hits_not_final = int((hit_types == "SCRIPT_HIT_BUT_NOT_FINAL").sum())
+        blind_misses = int((hit_types == "BLIND_MISS").sum())
 
-    cutoff = latest_date - timedelta(days=window_days - 1)
-    df_window = df[df["date"] >= cutoff]
+        coverage = final_hits + script_hits_not_final
+        hit_rate_final = _safe_rate(final_hits, total_rows)
+        coverage_rate = _safe_rate(coverage, total_rows)
+        blind_miss_rate = _safe_rate(blind_misses, total_rows)
+        score = _score_row(hit_rate_final, coverage_rate, blind_miss_rate)
 
-    required_cols = ["script_name", "slot", "hit_flag"]
-    for col in required_cols:
-        if col not in df_window.columns:
-            return pd.DataFrame()
+        approx_roi_pct = None
+        if total_rows:
+            stake = total_rows
+            returns = final_hits * 90
+            approx_roi_pct = (returns - stake) * 100 / stake
 
-    groups = []
-    for (script, slot), group in df_window.groupby(["script_name", "slot"]):
-        n_rows = len(group)
-        n_final_hits = int((group["hit_flag"] == "FINAL_HIT").sum())
-        n_script_hits_only = int((group["hit_flag"] == "SCRIPT_HIT_BUT_NOT_FINAL").sum())
-        n_blind_miss = int((group["hit_flag"] == "BLIND_MISS").sum())
-
-        hit_rate_final = n_final_hits / n_rows if n_rows else 0.0
-        hit_rate_any = (n_final_hits + n_script_hits_only) / n_rows if n_rows else 0.0
-        blind_miss_rate = n_blind_miss / n_rows if n_rows else 0.0
-
-        virtual_total_bet = n_rows * 10
-        virtual_return = n_final_hits * 90
-        roi_proxy_pct = (
-            (virtual_return - virtual_total_bet) / max(virtual_total_bet, 1) * 100.0
-        )
-
-        groups.append(
+        records.append(
             {
-                "script_name": script,
-                "slot": slot,
-                "n_rows": n_rows,
-                "n_final_hits": n_final_hits,
-                "n_script_hits_only": n_script_hits_only,
-                "n_blind_miss": n_blind_miss,
+                "script_id": str(script_id).upper(),
+                "window_days": window_days,
+                "total_rows": total_rows,
+                "final_hits": final_hits,
+                "script_hits_not_final": script_hits_not_final,
+                "blind_misses": blind_misses,
                 "hit_rate_final": round(hit_rate_final, 4),
-                "hit_rate_any": round(hit_rate_any, 4),
+                "coverage_rate": round(coverage_rate, 4),
                 "blind_miss_rate": round(blind_miss_rate, 4),
-                "roi_proxy_pct": round(roi_proxy_pct, 2),
+                "score": round(score, 4),
+                "approx_roi_pct": round(approx_roi_pct, 2) if approx_roi_pct is not None else None,
+                "slot": "ALL",
             }
         )
 
-    return pd.DataFrame(groups)
+    metrics_df = pd.DataFrame(records)
+    return metrics_df.sort_values(["score", "total_rows"], ascending=[False, False]).reset_index(drop=True)
 
 
 def _save_metrics_outputs(metrics_df: pd.DataFrame, window_days: int) -> None:
     perf_dir = quant_paths.get_performance_logs_dir()
     perf_dir.mkdir(parents=True, exist_ok=True)
 
-    csv_path = perf_dir / f"script_metrics_{window_days}d.csv"
-    json_path = perf_dir / f"script_metrics_{window_days}d.json"
+    csv_path = perf_dir / "script_hit_metrics.csv"
+    json_path = perf_dir / "script_hit_metrics.json"
 
     metrics_df.to_csv(csv_path, index=False)
 
@@ -109,72 +97,81 @@ def _save_metrics_outputs(metrics_df: pd.DataFrame, window_days: int) -> None:
         json.dump(payload, f, indent=2)
 
 
-def load_script_metrics(window_days: int = 30) -> Dict[str, Dict[str, Dict[str, float]]]:
-    """Return metrics as slot → script → metrics mapping."""
+def load_script_metrics(window_days: int = DEFAULT_WINDOW_DAYS) -> Dict[str, Dict[str, float]]:
+    """Return metrics keyed by script_id."""
 
-    df = compute_script_metrics(window_days=window_days)
-    result: Dict[str, Dict[str, Dict[str, float]]] = defaultdict(dict)
-    if df.empty:
+    metrics_df = compute_script_metrics(window_days=window_days)
+    result: Dict[str, Dict[str, float]] = {}
+    if metrics_df.empty:
         return result
 
-    for _, row in df.iterrows():
-        slot = str(row["slot"]).upper()
-        script = str(row["script_name"]).upper()
-        result[slot][script] = {
-            "hit_rate_any": float(row.get("hit_rate_any", 0.0)),
+    for _, row in metrics_df.iterrows():
+        script_id = str(row.get("script_id", "")).upper()
+        if not script_id:
+            continue
+        result[script_id] = {
+            "hit_rate_final": float(row.get("hit_rate_final", 0.0)),
+            "coverage_rate": float(row.get("coverage_rate", 0.0)),
             "blind_miss_rate": float(row.get("blind_miss_rate", 0.0)),
-            "roi_proxy_pct": float(row.get("roi_proxy_pct", 0.0)),
-            "n_rows": float(row.get("n_rows", 0)),
+            "score": float(row.get("score", 0.0)),
+            "total_rows": float(row.get("total_rows", 0)),
         }
     return result
 
 
-def compute_slot_heroes_and_weak(
-    metrics_df: pd.DataFrame, min_rows: int = 10
-) -> Dict[str, Dict[str, List[str]]]:
-    """Compute hero/weak script suggestions for brief printing."""
+def compute_slot_heroes_and_weak(metrics_df: pd.DataFrame, min_rows: int = 10) -> Dict[str, Dict[str, List[str]]]:
+    """Provide a lightweight hero/weak summary for previews."""
 
     summary: Dict[str, Dict[str, List[str]]] = {}
-    if metrics_df.empty:
+    if metrics_df is None or metrics_df.empty:
         return summary
 
-    for slot, group in metrics_df.groupby("slot"):
-        eligible = group[group["n_rows"] >= min_rows]
-        if eligible.empty:
-            summary[slot] = {"heroes": [], "weak": []}
-            continue
-        heroes = (
-            eligible.sort_values("hit_rate_any", ascending=False)
-            .head(2)["script_name"]
-            .tolist()
-        )
-        weak = (
-            eligible.sort_values("blind_miss_rate", ascending=False)
-            .head(1)["script_name"]
-            .tolist()
-        )
-        summary[slot] = {"heroes": heroes, "weak": weak}
+    eligible = metrics_df[metrics_df["total_rows"] >= min_rows]
+    heroes = eligible.sort_values("score", ascending=False).head(3)["script_id"].tolist()
+    weak = eligible.sort_values("blind_miss_rate", ascending=False).head(3)["script_id"].tolist()
+    summary["ALL"] = {"heroes": heroes, "weak": weak}
     return summary
 
 
 def _print_console_summary(metrics_df: pd.DataFrame, window_days: int) -> None:
     if metrics_df.empty:
-        print("No script hit memory available for metrics.")
+        print("No metrics generated (script_hit_memory empty for this window)")
         return
 
-    summary = compute_slot_heroes_and_weak(metrics_df)
-    print(f"SCRIPT WEIGHT PREVIEW (last {window_days} days):")
-    for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
-        slot_summary = summary.get(slot, {"heroes": [], "weak": []})
-        hero_str = ",".join(slot_summary.get("heroes") or []) or "n/a"
-        weak_str = ",".join(slot_summary.get("weak") or []) or "n/a"
-        print(f"  {slot}: hero=[{hero_str}] weak=[{weak_str}] window={window_days}d")
+    cols = [
+        "script_id",
+        "total_rows",
+        "final_hits",
+        "script_hits_not_final",
+        "coverage_rate",
+        "blind_misses",
+        "hit_rate_final",
+        "blind_miss_rate",
+        "score",
+    ]
+    metrics_df = metrics_df[cols]
+
+    print("SCRIPT  ROWS  FINAL  COV  BLIND  HIT%   COV%   BLIND%  SCORE")
+    for _, row in metrics_df.iterrows():
+        script = row["script_id"]
+        rows = int(row["total_rows"])
+        final_hits = int(row["final_hits"])
+        script_hits_not_final = int(row["script_hits_not_final"])
+        coverage = float(row["coverage_rate"])
+        blind = int(row["blind_misses"])
+        hit_rate = float(row["hit_rate_final"])
+        blind_rate = float(row["blind_miss_rate"])
+        score = float(row["score"])
+        print(
+            f"{script:<6} {rows:>4}  {final_hits:>5}  {(final_hits + script_hits_not_final):>3}  {blind:>5}  "
+            f"{hit_rate*100:>5.1f}%  {coverage*100:>5.1f}%  {blind_rate*100:>6.1f}%  {score:>5.2f}"
+        )
 
 
 def _run_cli(window: int, verbose: bool) -> None:
     metrics_df = compute_script_metrics(window_days=window)
     if metrics_df.empty:
-        print("No metrics generated (missing or empty script_hit_memory.csv)")
+        print("No metrics generated (script_hit_memory empty for this window)")
         return
 
     _save_metrics_outputs(metrics_df, window)
@@ -185,9 +182,8 @@ def _run_cli(window: int, verbose: bool) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compute script hit metrics")
-    parser.add_argument("--window", type=int, default=30, help="Window in days")
+    parser.add_argument("--window", type=int, default=DEFAULT_WINDOW_DAYS, help="Window in days")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
 
     _run_cli(args.window, args.verbose)
-
