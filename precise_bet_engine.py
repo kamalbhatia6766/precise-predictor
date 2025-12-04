@@ -1264,8 +1264,11 @@ class PreciseBetEngine:
             bets_df["slot_multiplier"] = bets_df["slot_key"].map(
                 lambda k: slot_multipliers.get(k, 1.0)
             ).fillna(1.0)
-            bets_df["stake"] = (bets_df["stake"] * bets_df["slot_multiplier"]).round(2)
-            numeric_mask = pd.to_numeric(bets_df["stake"], errors="coerce").notna()
+            stake_numeric = pd.to_numeric(bets_df["stake"], errors="coerce")
+            numeric_mask = stake_numeric.notna()
+            bets_df.loc[numeric_mask, "stake"] = (
+                stake_numeric[numeric_mask] * bets_df.loc[numeric_mask, "slot_multiplier"]
+            ).round(2)
             bets_df.loc[numeric_mask, "potential_return"] = (
                 bets_df.loc[numeric_mask, "stake"] * 90
             ).round(2)
