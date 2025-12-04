@@ -20,7 +20,7 @@ import pandas as pd
 import quant_data_core
 import quant_paths
 from utils_2digit import is_valid_2d_number, to_2d_str
-from script_hit_metrics import compute_script_metrics, compute_slot_heroes_and_weak
+from script_hit_metrics import compute_script_metrics
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 PERFORMANCE_DIR = quant_paths.get_performance_logs_dir()
@@ -104,6 +104,23 @@ def load_results_df() -> pd.DataFrame:
     if not df.empty and "DATE" in df.columns:
         df["DATE_ONLY"] = pd.to_datetime(df["DATE"], errors="coerce").dt.date
     return df
+
+
+def load_script_performance_metrics(window_days: int = 30) -> pd.DataFrame:
+    perf_dir = quant_paths.get_performance_logs_dir()
+    metrics_path = perf_dir / "script_hit_metrics.csv"
+    if metrics_path.exists():
+        try:
+            df = pd.read_csv(metrics_path)
+            if not df.empty:
+                if "window_days" in df.columns:
+                    filtered = df[df["window_days"] == window_days]
+                    if not filtered.empty:
+                        df = filtered
+                return df
+        except Exception:
+            pass
+    return compute_script_metrics(window_days=window_days)
 
 
 def find_latest_bet_date() -> date:
@@ -699,16 +716,22 @@ def print_script_performance_section(metrics_df: pd.DataFrame) -> None:
     if metrics_df is None or metrics_df.empty:
         print("   No script performance data available.")
         return
-    slot_summary = compute_slot_heroes_and_weak(metrics_df)
-    for slot in SLOTS:
-        eligible = metrics_df[(metrics_df["slot"] == slot) & (metrics_df["n_rows"] >= 10)]
-        if eligible.empty:
-            print(f"   {slot}: insufficient data (N<10)")
-            continue
-        summary_row = slot_summary.get(slot, {"heroes": [], "weak": []})
-        heroes = ", ".join(summary_row.get("heroes") or []) or "n/a"
-        weak = ", ".join(summary_row.get("weak") or []) or "n/a"
-        print(f"   {slot}: heroes = {heroes} | weak = {weak}")
+    metrics_df = metrics_df.copy()
+    metrics_df["script_id"] = metrics_df["script_id"].astype(str)
+    top_scripts = metrics_df.sort_values("score", ascending=False).head(5)
+    for _, row in top_scripts.iterrows():
+        script = row.get("script_id", "?")
+        rows = int(row.get("total_rows", 0))
+        final_hits = int(row.get("final_hits", 0))
+        cov = int(row.get("script_hits_not_final", 0)) + final_hits
+        blind = int(row.get("blind_misses", 0))
+        hit_pct = float(row.get("hit_rate_final", 0.0)) * 100
+        blind_pct = float(row.get("blind_miss_rate", 0.0)) * 100
+        score = float(row.get("score", 0.0))
+        print(
+            f"   {script}: rows={rows}, final={final_hits}, cov={cov}, blind={blind}, "
+            f"hit%={hit_pct:.1f}%, blind%={blind_pct:.1f}%, score={score:.2f}"
+        )
 
 
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
@@ -745,7 +768,7 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     strategy = load_strategy_summary()
     money = load_money_manager()
     confidence = load_confidence_scores()
-    script_metrics_df = compute_script_metrics(window_days=30)
+    script_metrics_df = load_script_performance_metrics(window_days=30)
 
     print_header(bet_date, target_date, mode, strategy, execution, plan)
     print_plan_section(plan, execution, mode, final_plan=final_plan)

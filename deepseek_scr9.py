@@ -37,10 +37,12 @@ class UltimatePredictionEngine:
         self.slot_script_weights = None
         self.script_weight_metrics = None
         self.script_weight_metrics_df = None
+        self.metrics_weight_map = {}
         # Cache to avoid rerunning heavy scripts (e.g., SCR6) for the same date/mode within a run
         self.script_prediction_cache = {}
         self.setup_directories()
         self.load_script_weight_preview()
+        self.metrics_weight_map = self.load_metrics_weight_map()
 
     def setup_directories(self):
         """Create output folders"""
@@ -121,6 +123,49 @@ class UltimatePredictionEngine:
             self.slot_script_weights = None
             self.script_weight_metrics = None
             self.script_weight_metrics_df = None
+
+    def load_metrics_weight_map(self):
+        metrics_path = os.path.join(self.base_dir, "logs", "performance", "script_hit_metrics.csv")
+        if not os.path.exists(metrics_path):
+            print("SCRIPT WEIGHTS: metrics not available; using 1.0 for all scripts.")
+            return {}
+        try:
+            df = pd.read_csv(metrics_path)
+        except Exception as e:
+            print(f"SCRIPT WEIGHTS: metrics not available; using 1.0 for all scripts. ({e})")
+            return {}
+        if df.empty:
+            print("SCRIPT WEIGHTS: metrics not available; using 1.0 for all scripts.")
+            return {}
+
+        weights = {}
+        window = int(df["window_days"].max()) if "window_days" in df.columns else None
+        header = f"SCRIPT WEIGHTS (from metrics{f', window={window}' if window else ''}):"
+        lines = [header]
+        for _, row in df.iterrows():
+            script_id = str(row.get("script_id", "")).upper()
+            if not script_id:
+                continue
+            hit_rate = float(row.get("hit_rate_final", 0.0))
+            blind_rate = float(row.get("blind_miss_rate", 0.0))
+            score = float(row.get("score", 0.0))
+
+            weight = 1.0
+            if score >= 1.2 and hit_rate >= 0.2:
+                weight = max(1.1, min(1.3, 1.0 + (score - 1.0)))
+            elif score <= 0.8 and blind_rate >= 0.4:
+                weight = min(0.9, max(0.7, 1.0 - (1.0 - score)))
+            weight = max(0.7, min(1.3, weight))
+            weights[script_id] = weight
+            lines.append(
+                f"   {script_id}: {weight:.2f} (hit% {hit_rate:.2%}, blind% {blind_rate:.2%}, score {score:.2f})"
+            )
+
+        if weights:
+            print("\n".join(lines))
+        else:
+            print("SCRIPT WEIGHTS: metrics not available; using 1.0 for all scripts.")
+        return weights
 
     def _compute_slot_weights(self, metrics_for_slot):
         weights = {}
@@ -394,6 +439,8 @@ class UltimatePredictionEngine:
                 weight = self.slot_script_weights.get(slot_key, {}).get(
                     self._script_key(script_name), weight
                 )
+            metric_weight = self.metrics_weight_map.get(self._script_key(script_name), 1.0)
+            weight *= metric_weight
 
             for rank, number in enumerate(predictions, 1):
                 if rank == 1:
