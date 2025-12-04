@@ -1,11 +1,17 @@
 # prediction_hit_memory.py - UPDATED WITH FULL PACK UNIVERSE TAGS
 import pandas as pd
 import numpy as np
+import argparse
 from pathlib import Path
 from datetime import datetime, timedelta
 import re
 from collections import defaultdict
 from utils_2digit import is_valid_2d_number, to_2d_str
+from script_hit_memory_utils import (
+    append_script_hit_row,
+    rebuild_script_hit_memory,
+    load_script_hit_memory,
+)
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -418,39 +424,190 @@ class PredictionHitMemory:
             
             print(f"   {script}: {', '.join(hit_details)}")
 
+
+def _parse_date_value(val):
+    try:
+        return pd.to_datetime(val).date()
+    except Exception:
+        return None
+
+
+def _build_final_shortlist_map(target_date):
+    import quant_paths
+
+    try:
+        bet_plan_path = quant_paths.get_bet_plan_master_path(target_date.strftime("%Y-%m-%d"))
+        if not bet_plan_path.exists():
+            return {}
+        sheets = pd.read_excel(bet_plan_path, sheet_name=None)
+        bets_df = None
+        if isinstance(sheets, dict):
+            bets_df = sheets.get("bets") or next(iter(sheets.values()))
+        else:
+            bets_df = sheets
+        if bets_df is None or bets_df.empty:
+            return {}
+        bets_df.columns = [str(c).strip().lower() for c in bets_df.columns]
+        slot_col = next((c for c in bets_df.columns if "slot" in c), None)
+        num_col = next((c for c in bets_df.columns if "number" in c), None)
+        layer_col = next((c for c in bets_df.columns if "layer" in c), None)
+        if slot_col is None or num_col is None:
+            return {}
+        filtered = bets_df.copy()
+        if layer_col and "main" in set(filtered[layer_col].astype(str).str.lower()):
+            filtered = filtered[filtered[layer_col].astype(str).str.lower() == "main"]
+        shortlist_map = defaultdict(list)
+        for _, row in filtered.iterrows():
+            slot_val = str(row.get(slot_col, "")).strip().upper()
+            number_val = row.get(num_col)
+            if pd.isna(number_val):
+                continue
+            try:
+                number_int = int(float(str(number_val).strip())) % 100
+                shortlist_map[slot_val].append(number_int)
+            except Exception:
+                continue
+        return shortlist_map
+    except Exception:
+        return {}
+
+
+def _collect_script_predictions(memory: PredictionHitMemory, target_date):
+    predictions = defaultdict(dict)
+    for script_name, pattern in memory.script_patterns.items():
+        file_path = memory.find_latest_prediction_file(script_name, pattern)
+        if not file_path:
+            continue
+        rows = memory.load_predictions_file(file_path, script_name)
+        if not rows:
+            continue
+        for entry in rows:
+            pred_date = _parse_date_value(entry.get('date'))
+            if pred_date != target_date:
+                continue
+            slot = str(entry.get('slot', '')).upper()
+            nums = entry.get('numbers') or []
+            if slot and nums:
+                predictions[script_name][slot] = nums
+    return predictions
+
+
+def _build_script_hit_rows(memory: PredictionHitMemory, target_date, real_df):
+    if real_df is None or real_df.empty:
+        return []
+    real_df['date'] = pd.to_datetime(real_df['date']).dt.date
+    date_df = real_df[real_df['date'] == target_date]
+    if date_df.empty:
+        return []
+
+    shortlist_map = _build_final_shortlist_map(target_date)
+    predictions = _collect_script_predictions(memory, target_date)
+    rows = []
+
+    for slot in memory.slots:
+        slot_real = date_df[date_df['slot'] == slot]
+        if slot_real.empty:
+            continue
+        real_number = int(slot_real['number'].iloc[0]) % 100
+        slot_preds = {k: v.get(slot, []) for k, v in predictions.items() if slot in v}
+        real_in_any = any(real_number in vals for vals in slot_preds.values())
+        final_shortlist = shortlist_map.get(slot, [])
+
+        for script_name, pred_list in slot_preds.items():
+            is_in_shortlist = bool(set([n % 100 for n in pred_list]) & set(final_shortlist))
+            has_hit = real_number in [n % 100 for n in pred_list]
+            if not real_in_any:
+                hit_flag = "BLIND_MISS"
+            elif has_hit and real_number in final_shortlist:
+                hit_flag = "FINAL_HIT"
+            elif has_hit:
+                hit_flag = "SCRIPT_HIT_BUT_NOT_FINAL"
+            else:
+                hit_flag = "BLIND_MISS"
+
+            hit_type = "EXACT" if has_hit else "NONE"
+            rows.append({
+                'date': target_date.strftime('%Y-%m-%d'),
+                'slot': slot,
+                'script_name': script_name,
+                'real_number': to_2d_str(real_number),
+                'top_predictions': '|'.join([to_2d_str(n) for n in pred_list]),
+                'is_in_final_shortlist': is_in_shortlist,
+                'hit_flag': hit_flag,
+                'hit_type': hit_type,
+                'created_at': datetime.now().isoformat(),
+            })
+
+    return rows
+
+
+def _rebuild_script_hit_memory(window_days: int):
+    print(f"Rebuilding script hit memory CSV for last {window_days} days...")
+    memory = PredictionHitMemory()
+    real_df = memory.load_real_results(Path(__file__).resolve().parent / "number prediction learn.xlsx")
+    real_df['date'] = pd.to_datetime(real_df['date']).dt.date
+    max_date = real_df['date'].max()
+    min_date = max_date - timedelta(days=window_days - 1)
+    rows = []
+    for date_val in sorted(real_df['date'].unique()):
+        if date_val < min_date:
+            continue
+        rows.extend(_build_script_hit_rows(memory, date_val, real_df))
+    path = rebuild_script_hit_memory(rows)
+    print(f"Script hit memory rebuilt at {path}")
+
+
+def _update_latest_script_hit_memory():
+    print("Updating script hit memory for latest completed date...")
+    memory = PredictionHitMemory()
+    real_df = memory.load_real_results(Path(__file__).resolve().parent / "number prediction learn.xlsx")
+    target_date = memory.get_target_date(real_df)
+    rows = _build_script_hit_rows(memory, target_date, real_df)
+    existing = load_script_hit_memory()
+    if not existing.empty and 'date' in existing.columns:
+        existing = existing[existing['date'] != target_date.strftime('%Y-%m-%d')]
+    updated_rows = existing.to_dict(orient='records') + rows
+    path = rebuild_script_hit_memory(updated_rows)
+    print(f"Latest script hit memory updated at {path}")
+
 def main():
+    parser = argparse.ArgumentParser(description="Prediction hit memory toolkit")
+    parser.add_argument("--mode", choices=["legacy", "rebuild", "update-latest"], default="legacy")
+    parser.add_argument("--window", type=int, default=30, help="Window in days for rebuild mode")
+    args = parser.parse_args()
+
+    if args.mode == "rebuild":
+        _rebuild_script_hit_memory(args.window)
+        return 0
+    if args.mode == "update-latest":
+        _update_latest_script_hit_memory()
+        return 0
+
     try:
         print("=== PREDICTION HIT MEMORY - FULL PACK UNIVERSE ===")
         print("📊 Loading real results with full central pack registry (168,129 packs, legacy 837-pack subset included)...")
-        
+
         memory = PredictionHitMemory()
-        
-        # Step 1: Load real results using the same parsing logic as other scripts
+
         real_file = Path(__file__).resolve().parent / "number prediction learn.xlsx"
         real_df = memory.load_real_results(real_file)
-        
-        # Step 2: Get target date (latest complete date)
         target_date = memory.get_target_date(real_df)
         print(f"🎯 Target date: {target_date}")
-        
-        # Step 3: Analyze hits across all scripts with time-shift tracking
+
         hits_data = memory.analyze_hits(real_df, target_date)
-        
-        # Step 4: Save to memory file with new columns
         output_file = memory.save_hits_to_memory(hits_data)
-        
-        # Step 5: Print enhanced summary
         memory.print_summary(hits_data)
-        
+
         print(f"\n✅ Enhanced hit memory analysis completed! (Central pack registry: 168,129 packs; legacy 837-pack subset included)")
-        
+
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
         return 1
-    
+
     return 0
+
 
 if __name__ == "__main__":
     exit(main())

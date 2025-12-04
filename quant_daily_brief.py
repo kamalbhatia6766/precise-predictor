@@ -20,6 +20,7 @@ import pandas as pd
 import quant_data_core
 import quant_paths
 from utils_2digit import is_valid_2d_number, to_2d_str
+from script_hit_metrics import compute_script_metrics, compute_slot_heroes_and_weak
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 PERFORMANCE_DIR = quant_paths.get_performance_logs_dir()
@@ -693,6 +694,23 @@ def print_risk_section(strategy: StrategySummary, money: MoneyManagerSummary, ex
             print(f"   Confidence       : {', '.join(parts)}")
 
 
+def print_script_performance_section(metrics_df: pd.DataFrame) -> None:
+    print("\n5️⃣ SCRIPT PERFORMANCE (last 30 days)")
+    if metrics_df is None or metrics_df.empty:
+        print("   No script performance data available.")
+        return
+    slot_summary = compute_slot_heroes_and_weak(metrics_df)
+    for slot in SLOTS:
+        eligible = metrics_df[(metrics_df["slot"] == slot) & (metrics_df["n_rows"] >= 10)]
+        if eligible.empty:
+            print(f"   {slot}: insufficient data (N<10)")
+            continue
+        summary_row = slot_summary.get(slot, {"heroes": [], "weak": []})
+        heroes = ", ".join(summary_row.get("heroes") or []) or "n/a"
+        weak = ", ".join(summary_row.get("weak") or []) or "n/a"
+        print(f"   {slot}: heroes = {heroes} | weak = {weak}")
+
+
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
     print("=" * 80)
     print(f"🎯 QUANT DAILY BRIEF – {target_date.isoformat()} (MODE: {mode})")
@@ -727,12 +745,14 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     strategy = load_strategy_summary()
     money = load_money_manager()
     confidence = load_confidence_scores()
+    script_metrics_df = compute_script_metrics(window_days=30)
 
     print_header(bet_date, target_date, mode, strategy, execution, plan)
     print_plan_section(plan, execution, mode, final_plan=final_plan)
     print_pnl_section(pnl)
     print_pattern_section(patterns)
     print_risk_section(strategy, money, execution, confidence)
+    print_script_performance_section(script_metrics_df)
     print("=" * 80)
     verdict = "Short verdict: System learning healthy; keep stakes disciplined."
     print(verdict)

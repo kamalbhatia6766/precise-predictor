@@ -11,7 +11,16 @@ import re
 import time
 import json
 import quant_data_core
+from script_hit_metrics import (
+    compute_script_metrics,
+    compute_slot_heroes_and_weak,
+    load_script_metrics,
+)
 warnings.filterwarnings('ignore')
+
+USE_SCRIPT_WEIGHTS = False
+SCRIPT_WEIGHTS_WINDOW_DAYS = 30
+SCRIPT_WEIGHTS_MIN_SCORE = 0.01
 
 class UltimatePredictionEngine:
     """
@@ -25,9 +34,13 @@ class UltimatePredictionEngine:
         self.speed_mode = speed_mode  # 'full' or 'fast'
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.script_weights = self.load_script_weights()
+        self.slot_script_weights = None
+        self.script_weight_metrics = None
+        self.script_weight_metrics_df = None
         # Cache to avoid rerunning heavy scripts (e.g., SCR6) for the same date/mode within a run
         self.script_prediction_cache = {}
         self.setup_directories()
+        self.load_script_weight_preview()
 
     def setup_directories(self):
         """Create output folders"""
@@ -89,6 +102,51 @@ class UltimatePredictionEngine:
         if not loaded:
             print("⚠️  Script weight file missing; using uniform weights.")
         return weights
+
+    def load_script_weight_preview(self):
+        """Load script metrics and build preview weights when enabled."""
+
+        try:
+            metrics_df = compute_script_metrics(window_days=SCRIPT_WEIGHTS_WINDOW_DAYS)
+            metrics_map = load_script_metrics(window_days=SCRIPT_WEIGHTS_WINDOW_DAYS)
+            self.script_weight_metrics_df = metrics_df
+            self.script_weight_metrics = metrics_map
+            if USE_SCRIPT_WEIGHTS and metrics_map:
+                self.slot_script_weights = {}
+                for slot, slot_metrics in metrics_map.items():
+                    self.slot_script_weights[slot] = self._compute_slot_weights(slot_metrics)
+            self._print_weight_preview()
+        except Exception as e:
+            print(f"⚠️  Script weight preview unavailable: {e}")
+            self.slot_script_weights = None
+            self.script_weight_metrics = None
+            self.script_weight_metrics_df = None
+
+    def _compute_slot_weights(self, metrics_for_slot):
+        weights = {}
+        scores = {}
+        for script, metrics in metrics_for_slot.items():
+            base = metrics.get("hit_rate_any", 0.0)
+            penalty = 0.5 * metrics.get("blind_miss_rate", 0.0)
+            score = base - penalty
+            if score < SCRIPT_WEIGHTS_MIN_SCORE:
+                score = SCRIPT_WEIGHTS_MIN_SCORE
+            scores[script] = score
+        total = sum(scores.values()) or 1.0
+        for script, score in scores.items():
+            weights[script] = score / total
+        return weights
+
+    def _print_weight_preview(self):
+        if self.script_weight_metrics_df is None or self.script_weight_metrics_df.empty:
+            return
+        summary = compute_slot_heroes_and_weak(self.script_weight_metrics_df)
+        print(f"SCRIPT WEIGHT PREVIEW (last {SCRIPT_WEIGHTS_WINDOW_DAYS} days):")
+        for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
+            slot_summary = summary.get(slot, {"heroes": [], "weak": []})
+            hero_str = ",".join(slot_summary.get("heroes") or []) or "n/a"
+            weak_str = ",".join(slot_summary.get("weak") or []) or "n/a"
+            print(f"  {slot}: hero=[{hero_str}] weak=[{weak_str}] window={SCRIPT_WEIGHTS_WINDOW_DAYS}d")
 
     def _script_key(self, script_name: str) -> str:
         match = re.search(r"scr(\d+)", script_name, re.IGNORECASE)
@@ -324,13 +382,18 @@ class UltimatePredictionEngine:
         
         return all_predictions
     
-    def build_slot_scores(self, all_preds_for_slot, history_df_for_slot):
+    def build_slot_scores(self, all_preds_for_slot, history_df_for_slot, slot_name=None):
         """Build ensemble scores for a slot - OPTIMIZED"""
         scores = Counter()
-        
+
         # Process each script's predictions
         for script_name, predictions in all_preds_for_slot.items():
             weight = self.script_weights.get(self._script_key(script_name), 1.0)
+            slot_key = slot_name.upper() if slot_name else None
+            if self.slot_script_weights and slot_key:
+                weight = self.slot_script_weights.get(slot_key, {}).get(
+                    self._script_key(script_name), weight
+                )
 
             for rank, number in enumerate(predictions, 1):
                 if rank == 1:
@@ -399,7 +462,7 @@ class UltimatePredictionEngine:
                 final_predictions[slot_name] = [num for num, count in freq.most_common(15)]
             else:
                 # Use ensemble scoring
-                scores = self.build_slot_scores(slot_predictions[slot_name], slot_data)
+                scores = self.build_slot_scores(slot_predictions[slot_name], slot_data, slot_name=slot_name)
                 
                 # Dynamic top-k selection (optimized)
                 if scores:
