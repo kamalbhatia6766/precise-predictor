@@ -867,6 +867,38 @@ class BetPnLTracker:
 
         return diagnostics
 
+    def _merge_slump_into_summary(self, summary_data: Dict, forensic_data: Dict) -> Dict:
+        """Embed streak/slump signals into the per-slot summary for JSON persistence"""
+        if not summary_data or not summary_data.get('by_slot'):
+            return summary_data
+
+        per_slot_diag = forensic_data.get('per_slot_diag', {}) if forensic_data else {}
+        if not per_slot_diag:
+            return summary_data
+
+        slot_map = {
+            str(entry.get('slot')).upper(): entry
+            for entry in summary_data.get('by_slot', [])
+            if isinstance(entry, dict) and entry.get('slot')
+        }
+
+        for slot, diag in per_slot_diag.items():
+            entry = slot_map.get(slot)
+            if not entry:
+                continue
+
+            current_streak = int(diag.get('current_losing_streak', 0) or 0)
+            longest_streak = int(diag.get('longest_losing_streak', 0) or 0)
+            roi_pct = float(diag.get('roi_percent', entry.get('roi_percent', entry.get('roi_pct', 0.0))))
+
+            in_slump = (roi_pct <= -30.0) and (current_streak >= 2)
+
+            entry['current_losing_streak'] = current_streak
+            entry['longest_losing_streak'] = longest_streak
+            entry['in_slump'] = in_slump
+
+        return summary_data
+
     def _compute_slot_streaks(self, slot_df: pd.DataFrame) -> Dict:
         """Compute slot streak metrics for any slot"""
         if slot_df.empty:
@@ -1232,6 +1264,7 @@ class BetPnLTracker:
         forensic_data = self.compute_slot_forensics(slot_pnl_df, days_window=forensic_days)
         if forensic_data:
             summary_data['slot_slump_diagnostics'] = self.build_slot_slump_diagnostics(forensic_data)
+            summary_data = self._merge_slump_into_summary(summary_data, forensic_data)
 
         # Step 7: Save master file
         self.save_pnl_master_file(slot_pnl_df, layer_pnl_df, summary_data)
