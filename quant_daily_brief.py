@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -141,7 +142,7 @@ def decide_mode(bet_date: date, explicit_mode: str, results_df: pd.DataFrame) ->
 
 
 def run_script(script_name: str, args: Optional[List[str]] = None, dry_run: bool = False) -> Optional[subprocess.CompletedProcess]:
-    cmd = ["py", "-3.12", script_name]
+    cmd = [sys.executable, script_name]
     if args:
         cmd.extend(args)
     if dry_run:
@@ -149,6 +150,7 @@ def run_script(script_name: str, args: Optional[List[str]] = None, dry_run: bool
         return None
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
 
     result = subprocess.run(
         cmd,
