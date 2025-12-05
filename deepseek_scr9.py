@@ -11,11 +11,7 @@ import re
 import time
 import json
 import quant_data_core
-from script_hit_metrics import (
-    compute_script_metrics,
-    compute_slot_heroes_and_weak,
-    load_script_metrics,
-)
+from script_hit_metrics import compute_slot_heroes_and_weak, load_script_metrics
 warnings.filterwarnings('ignore')
 
 USE_SCRIPT_WEIGHTS = False
@@ -109,14 +105,44 @@ class UltimatePredictionEngine:
         """Load script metrics and build preview weights when enabled."""
 
         try:
-            metrics_df = compute_script_metrics(window_days=SCRIPT_WEIGHTS_WINDOW_DAYS)
-            metrics_map = load_script_metrics(window_days=SCRIPT_WEIGHTS_WINDOW_DAYS)
+            metrics_df, metrics_summary = load_script_metrics(
+                window_days=SCRIPT_WEIGHTS_WINDOW_DAYS, fallback=True
+            )
+            if metrics_df is None:
+                print("Script metrics warming up – skipping script-wise performance overlay.")
+                self.slot_script_weights = None
+                self.script_weight_metrics = None
+                self.script_weight_metrics_df = None
+                return
+
             self.script_weight_metrics_df = metrics_df
-            self.script_weight_metrics = metrics_map
-            if USE_SCRIPT_WEIGHTS and metrics_map:
+            self.script_weight_metrics = metrics_summary
+
+            if not metrics_df.empty and "hit_rate" in metrics_df.columns:
+                top_row = metrics_df.sort_values("hit_rate", ascending=False).iloc[0]
+                effective_days = (
+                    metrics_summary.get("effective_window_days")
+                    if isinstance(metrics_summary, dict)
+                    else SCRIPT_WEIGHTS_WINDOW_DAYS
+                )
+                print(
+                    f"Best script (last {effective_days}d): "
+                    f"{top_row.get('script_name')} with {top_row.get('hit_rate', 0):.1%} hit rate"
+                )
+
+            if USE_SCRIPT_WEIGHTS:
                 self.slot_script_weights = {}
-                for slot, slot_metrics in metrics_map.items():
-                    self.slot_script_weights[slot] = self._compute_slot_weights(slot_metrics)
+                for slot in metrics_df["slot"].dropna().unique():
+                    slot_metrics = metrics_df[metrics_df["slot"] == slot]
+                    slot_map = {
+                        str(row["script_name"]): {
+                            "hit_rate_any": float(row.get("hit_rate", 0.0)),
+                            "blind_miss_rate": 0.0,
+                        }
+                        for _, row in slot_metrics.iterrows()
+                    }
+                    self.slot_script_weights[slot] = self._compute_slot_weights(slot_map)
+
             self._print_weight_preview()
         except Exception as e:
             print(f"⚠️  Script weight preview unavailable: {e}")
@@ -185,13 +211,18 @@ class UltimatePredictionEngine:
     def _print_weight_preview(self):
         if self.script_weight_metrics_df is None or self.script_weight_metrics_df.empty:
             return
-        summary = compute_slot_heroes_and_weak(self.script_weight_metrics_df)
-        print(f"SCRIPT WEIGHT PREVIEW (last {SCRIPT_WEIGHTS_WINDOW_DAYS} days):")
+        slot_bands = compute_slot_heroes_and_weak(self.script_weight_metrics_df)
+        window_used = (
+            self.script_weight_metrics.get("effective_window_days")
+            if isinstance(self.script_weight_metrics, dict)
+            else SCRIPT_WEIGHTS_WINDOW_DAYS
+        )
+        print(f"SCRIPT WEIGHT PREVIEW (last {window_used} days):")
         for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
-            slot_summary = summary.get(slot, {"heroes": [], "weak": []})
+            slot_summary = slot_bands.get(slot, {"heroes": [], "weak": []})
             hero_str = ",".join(slot_summary.get("heroes") or []) or "n/a"
             weak_str = ",".join(slot_summary.get("weak") or []) or "n/a"
-            print(f"  {slot}: hero=[{hero_str}] weak=[{weak_str}] window={SCRIPT_WEIGHTS_WINDOW_DAYS}d")
+            print(f"  {slot}: hero=[{hero_str}] weak=[{weak_str}] window={window_used}d")
 
     def _script_key(self, script_name: str) -> str:
         match = re.search(r"scr(\d+)", script_name, re.IGNORECASE)
