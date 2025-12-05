@@ -137,11 +137,11 @@ class UltimatePredictionEngine:
         weights = {}
         scores = {}
         for script, metrics in metrics_for_slot.items():
-            base = metrics.get("hit_rate_any", 0.0)
-            penalty = 0.5 * metrics.get("blind_miss_rate", 0.0)
-            score = base - penalty
-            if score < SCRIPT_WEIGHTS_MIN_SCORE:
-                score = SCRIPT_WEIGHTS_MIN_SCORE
+            hit_rate = metrics.get("hit_rate", 0.0)
+            blind_miss_rate = metrics.get("blind_miss_rate", 1.0)
+            base = max(0.1, hit_rate)
+            penalty = max(0.0, blind_miss_rate - 0.5) * 0.5
+            score = max(SCRIPT_WEIGHTS_MIN_SCORE, base - penalty)
             scores[script] = score
         total = sum(scores.values()) or 1.0
         for script, score in scores.items():
@@ -158,11 +158,14 @@ class UltimatePredictionEngine:
             else SCRIPT_WEIGHTS_WINDOW_DAYS
         )
         print(f"SCRIPT WEIGHT PREVIEW (last {window_used} days):")
-        for _, row in slot_bands.iterrows():
-            hero = row.get("hero_script") or "n/a"
-            weak = row.get("weak_script") or "n/a"
-            slot = row.get("slot")
-            print(f"  {slot}: hero=[{hero}] weak=[{weak}] window={window_used}d")
+        if slot_bands is None or slot_bands.empty:
+            print("  Hero/weak data unavailable (n/a)")
+        else:
+            for _, row in slot_bands.iterrows():
+                hero = row.get("hero_script") or "n/a"
+                weak = row.get("weak_script") or "n/a"
+                slot = row.get("slot")
+                print(f"  {slot}: hero=[{hero}] weak=[{weak}] window={window_used}d")
         league = build_script_league(self.script_weight_metrics_df, min_predictions=5)
         if league.get("heroes") or league.get("weak"):
             heroes = ",".join([h.get("script") for h in league.get("heroes", [])]) or "n/a"
