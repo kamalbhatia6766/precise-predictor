@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from quant_core import hit_core
 from script_hit_memory_utils import load_script_hit_memory
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -350,7 +351,8 @@ def main() -> None:
     parser.add_argument("--mode", choices=["overall", "per_slot"], default="per_slot")
     args = parser.parse_args()
 
-    metrics_df, summary = compute_script_metrics(mode=args.mode, window_days=args.window, fallback=True)
+    metrics_df = hit_core.compute_script_metrics(window_days=args.window)
+    summary = {"requested_window_days": args.window, "effective_window_days": args.window, "total_rows": len(metrics_df)}
     _print_metrics(metrics_df, summary, args.mode)
     if args.mode == "per_slot":
         heroes_df = hero_weak_table(metrics_df)

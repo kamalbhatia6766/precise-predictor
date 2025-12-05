@@ -12,6 +12,7 @@ import time
 import json
 from pathlib import Path
 import quant_data_core
+from quant_core import execution_core, hit_core
 from script_hit_metrics import (
     build_script_league,
     build_script_weights_by_slot,
@@ -110,12 +111,8 @@ class UltimatePredictionEngine:
         """Load script metrics and build preview weights when enabled."""
 
         try:
-            metrics_df, metrics_summary = compute_script_metrics(
-                mode="per_slot",
-                window_days=SCRIPT_WEIGHTS_WINDOW_DAYS,
-                base_dir=Path(self.base_dir),
-                fallback=True,
-            )
+            hit_df = hit_core.rebuild_hit_memory(window_days=90, base_dir=Path(self.base_dir))
+            metrics_df = hit_core.compute_script_metrics(hit_df, window_days=SCRIPT_WEIGHTS_WINDOW_DAYS, base_dir=Path(self.base_dir))
             if metrics_df is None or metrics_df.empty:
                 print("Script metrics warming up – skipping script-wise performance overlay.")
                 self.slot_script_weights = None
@@ -124,8 +121,8 @@ class UltimatePredictionEngine:
                 return
 
             self.script_weight_metrics_df = metrics_df
-            self.script_weight_metrics = metrics_summary
-            self.slot_script_weights = build_script_weights_by_slot(metrics_df)
+            self.script_weight_metrics = {"rows": len(metrics_df)}
+            self.slot_script_weights = execution_core.build_weighted_script_weights(metrics_df, window_days=SCRIPT_WEIGHTS_WINDOW_DAYS)
             self._print_weight_preview()
         except Exception as e:
             print(f"⚠️  Script weight preview unavailable: {e}")
@@ -166,6 +163,11 @@ class UltimatePredictionEngine:
                 weak = row.get("weak_script") or "n/a"
                 slot = row.get("slot")
                 print(f"  {slot}: hero=[{hero}] weak=[{weak}] window={window_used}d")
+                if self.slot_script_weights and slot in self.slot_script_weights:
+                    weight_line = ", ".join(
+                        f"{k}={v:.2f}" for k, v in self.slot_script_weights.get(slot, {}).items()
+                    )
+                    print(f"     weights: {weight_line}")
         league = build_script_league(self.script_weight_metrics_df, min_predictions=5)
         if league:
             overall = league.get("overall") or {}
