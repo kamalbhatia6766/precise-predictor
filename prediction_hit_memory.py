@@ -16,6 +16,7 @@ from script_hit_memory_utils import (
     get_script_hit_memory_path,
     load_script_hit_memory,
     rebuild_script_hit_memory,
+    update_latest_script_hit_memory,
 )
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -427,10 +428,7 @@ def _update_latest_script_hit_memory() -> None:
     dates_to_update = [d for d in completed_dates if last_result_date is None or d > last_result_date]
     predictions_map = load_predictions_map(base_dir)
     rows = build_script_hit_rows_for_dates(real_df, predictions_map, dates_to_update)
-    for row in rows:
-        append_script_hit_row(row, base_dir=base_dir)
-
-    memory_path = get_script_hit_memory_path(base_dir)
+    memory_path = update_latest_script_hit_memory(rows, base_dir=base_dir)
     if rows:
         print(f"Appended {len(rows)} rows for dates {dates_to_update} to {memory_path}")
     else:
