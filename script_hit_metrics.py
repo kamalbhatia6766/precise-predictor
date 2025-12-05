@@ -232,6 +232,26 @@ def load_script_metrics(
     return metrics_df, summary
 
 
+def get_metrics_table(
+    window_days: int = 30,
+    fallback: bool = True,
+) -> Tuple[Optional[pd.DataFrame], Optional[Dict[str, object]]]:
+    """
+    Backwards-compatible shim for older callers.
+
+    Returns (metrics_df, summary_dict), or (None, None) if no data is available
+    even after applying the fallback logic.
+    """
+    metrics_df, summary = load_script_metrics(window_days=window_days, fallback=fallback)
+
+    # Mirror the CLI behaviour: if no data, print a clear message
+    if metrics_df is None or summary is None:
+        print("No script hit memory data available (even after fallback up to ALL history).")
+        return None, None
+
+    return metrics_df, summary
+
+
 def _format_header(summary: Dict[str, object]) -> str:
     return (
         "Script hit metrics – requested "
