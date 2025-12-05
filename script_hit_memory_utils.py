@@ -44,6 +44,13 @@ def _normalise_slot(value: Optional[str]) -> Optional[str]:
     return mapping.get(text, text)
 
 
+def _clean_script(value: Optional[str]) -> Optional[str]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).replace(" ", "").strip().upper()
+    return text if text else None
+
+
 def get_script_hit_memory_path(base_dir: Optional[Path] = None) -> Path:
     """
     Return the absolute path to script_hit_memory.csv inside the project's logs/performance folder.
@@ -58,140 +65,169 @@ def get_script_hit_memory_path(base_dir: Optional[Path] = None) -> Path:
 
 
 def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
+    """
+    Normalise a raw hit-memory frame into SCRIPT_HIT_MEMORY_HEADERS.
+
+    This function is deliberately defensive:
+    - Never relies on the truth value of a Series (to avoid "truth value is ambiguous").
+    - Accepts a variety of upstream column name variants.
+    - Always returns a frame with exactly SCRIPT_HIT_MEMORY_HEADERS (in that order).
+    """
+    if df is None or len(df) == 0:
         return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
 
     df = df.copy()
-    # normalise column names
-    df.columns = [str(c).strip().lower() for c in df.columns]
 
-    rename_map = {
-        "date": "date",
-        "result_date": "result_date",
-        "slot": "slot",
-        "script_id": "script_id",
-        "script_name": "script_name",
-        "scriptid": "script_id",
-        "script": "script_name",
-        "predicted": "predicted",
-        "predict": "predicted",
-        "actual": "actual",
-        "result": "result",
-        "hit_flag": "hit_flag",
-        "hit": "hit_flag",
-        "hit_type": "hit_type",
-        "rank": "rank",
-        "predict_date": "predict_date",
-        "predict_day": "predict_date",
-        "source_file": "source_file",
-        "is_near_miss": "is_near_miss",
-        "near_miss": "is_near_miss",
-        "pack_family": "pack_family",
-    }
-    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+    # Map lower-case column name -> original name
+    col_map = {c.lower(): c for c in df.columns if isinstance(c, str)}
 
-    # ensure all expected columns exist
-    for col in SCRIPT_HIT_MEMORY_HEADERS:
-        if col not in df.columns:
-            df[col] = None
+    def _take_series(*names: str):
+        """Return first matching column as Series, or None if none exist."""
+        for name in names:
+            key = name.lower()
+            if key in col_map:
+                return df[col_map[key]]
+        return None
 
-    # collapse duplicate "result" / "actual" columns if they exist
-    for col in ("result", "actual"):
-        if col in df.columns:
-            mask = df.columns == col
-            if mask.sum() > 1:
-                # merge duplicate columns by row-wise backfill and keep the first
-                merged = df.loc[:, mask]
-                series = merged.bfill(axis=1).iloc[:, 0]
-                # drop all duplicates
-                df = df.loc[:, ~mask]
-                # re-attach a single canonical column
-                df[col] = series
+    out = pd.DataFrame(index=df.index)
 
-    # fill result from actual where result is missing
-    if "result" in df.columns and "actual" in df.columns:
-        result_series = df["result"]
-        actual_series = df["actual"]
-        df["result"] = result_series.where(result_series.notna(), actual_series)
-
-    # enforce final column order
-    df = df[SCRIPT_HIT_MEMORY_HEADERS]
-
-    def _clean_script(value):
-        if value is None or (isinstance(value, float) and pd.isna(value)):
-            return None
-        text = str(value).replace(" ", "").strip().upper()
-        return text if text else None
-
-    df["slot"] = df.get("slot").apply(_normalise_slot)
-    df["script_name"] = df.get("script_name").apply(_clean_script)
-    df["script_id"] = df.get("script_id").apply(_clean_script)
-    if "hit_type" in df.columns:
-        mask = df.columns == "hit_type"
-        if mask.sum() > 1:
-            merged = df.loc[:, mask]
-            series = merged.bfill(axis=1).iloc[:, 0]
-            df = df.loc[:, ~mask]
-            df["hit_type"] = series
-        df["hit_type"] = df["hit_type"].astype(str).str.strip().str.lower()
+    # --- date / result_date / predict_date ---------------------------------
+    s_date = _take_series("date")
+    if s_date is not None:
+        out["date"] = pd.to_datetime(s_date, errors="coerce").dt.date
     else:
-        df["hit_type"] = "exact"
-    flag_cols = [
-        "hit_flag",
-        "is_s40",
-        "is_164950",
-        "is_family_164950",
-        "is_mirror",
-        "is_neighbor",
-        "is_exact_hit",
-        "is_near_miss",
-        "is_blind_miss",
-        "is_cross_slot",
-        "is_cross_day",
-    ]
+        out["date"] = pd.NaT
 
-    for flag_col in flag_cols:
-        if flag_col in df.columns:
-            col = df[flag_col]
+    s_res_date = _take_series("result_date")
+    if s_res_date is not None:
+        out["result_date"] = pd.to_datetime(s_res_date, errors="coerce").dt.date
+    else:
+        out["result_date"] = out["date"]
 
-            # If duplicate columns produced a DataFrame, select one Series
-            if isinstance(col, pd.DataFrame):
-                chosen = None
-                for name in col.columns:
-                    s = col[name]
-                    # pick the first column that has any non-null values
-                    if s.notna().any():
-                        chosen = s
-                        break
-                if chosen is None:
-                    # all columns are NaN; just fall back to the first column
-                    chosen = col.iloc[:, 0]
-                col = chosen
+    s_pred_date = _take_series("predict_date", "bet_date")
+    if s_pred_date is not None:
+        out["predict_date"] = pd.to_datetime(s_pred_date, errors="coerce").dt.date
+    else:
+        out["predict_date"] = out["date"]
 
-            # Now normalise to 0/1 integers
-            series = pd.to_numeric(col, errors="coerce").fillna(0).astype(int)
-            df[flag_col] = series
-        else:
-            df[flag_col] = 0
+    # --- slot ---------------------------------------------------------------
+    s_slot = _take_series("slot", "slot_name", "clock", "slot_id")
+    if s_slot is not None:
+        out["slot"] = s_slot.astype(str).map(_normalise_slot)
+    else:
+        out["slot"] = "NONE"
 
-    for key_col in ("script_id", "slot"):
-        if key_col in df.columns:
-            col = df[key_col]
-            if isinstance(col, pd.DataFrame):
-                chosen = None
-                for name in col.columns:
-                    s = col[name]
-                    if s.notna().any():
-                        chosen = s
-                        break
-                if chosen is None:
-                    chosen = col.iloc[:, 0]
-                col = chosen
-            cleaned = col.astype(str).str.strip().str.upper()
-            cleaned = cleaned.where(~cleaned.isin(["", "NONE", "NAN"]), None)
-            df[key_col] = cleaned
+    # --- script_id / script_name -------------------------------------------
+    s_script_id = _take_series("script_id", "script", "script_name",
+                               "script_file", "scriptid", "script_id")
+    if s_script_id is not None:
+        out["script_id"] = s_script_id.map(_clean_script)
+    else:
+        out["script_id"] = "NONE"
 
-    return df
+    s_script_name = _take_series("script_name")
+    if s_script_name is not None:
+        out["script_name"] = s_script_name.astype(str)
+    else:
+        out["script_name"] = out["script_id"]
+
+    # --- predicted / actual -------------------------------------------------
+    s_pred = _take_series("predicted", "prediction", "number",
+                          "num", "top1", "top_1")
+    if s_pred is not None:
+        out["predicted"] = s_pred.astype(str).str.zfill(2)
+    else:
+        out["predicted"] = ""
+
+    s_actual = _take_series("actual", "result", "outcome")
+    if s_actual is not None:
+        out["actual"] = s_actual.astype(str).str.zfill(2)
+    else:
+        out["actual"] = ""
+
+    # --- result / hit flags -------------------------------------------------
+    s_hit_flag = _take_series("hit_flag", "hit")
+    if s_hit_flag is not None:
+        out["hit_flag"] = s_hit_flag.astype(str)
+    else:
+        out["hit_flag"] = ""
+
+    s_hit_type = _take_series("hit_type")
+    if s_hit_type is not None:
+        out["hit_type"] = s_hit_type.astype(str)
+    else:
+        out["hit_type"] = ""
+
+    # For convenience, mirror overall "result" as a simple text flag
+    out["result"] = out["hit_flag"]
+
+    # Neighbor / mirror flags
+    s_is_neighbor = _take_series("is_neighbor", "neighbor_hit")
+    if s_is_neighbor is not None:
+        out["is_neighbor"] = s_is_neighbor.fillna(False).astype(bool)
+    else:
+        out["is_neighbor"] = False
+
+    s_is_mirror = _take_series("is_mirror", "mirror_hit")
+    if s_is_mirror is not None:
+        out["is_mirror"] = s_is_mirror.fillna(False).astype(bool)
+    else:
+        out["is_mirror"] = False
+
+    # S40 / 164950 family flags
+    s_is_s40 = _take_series("is_s40")
+    if s_is_s40 is not None:
+        out["is_s40"] = s_is_s40.fillna(False).astype(bool)
+    else:
+        out["is_s40"] = False
+
+    s_is_family = _take_series("is_family_164950", "is_164950")
+    if s_is_family is not None:
+        out["is_family_164950"] = s_is_family.fillna(False).astype(bool)
+    else:
+        out["is_family_164950"] = False
+
+    # Rank (may be float / string)
+    s_rank = _take_series("rank", "position", "pos")
+    if s_rank is not None:
+        out["rank"] = pd.to_numeric(s_rank, errors="coerce")
+    else:
+        out["rank"] = pd.NA
+
+    # Source file
+    s_src = _take_series("source_file", "file", "file_name", "filename")
+    if s_src is not None:
+        out["source_file"] = s_src.astype(str)
+    else:
+        out["source_file"] = ""
+
+    # Near-miss flag
+    s_near = _take_series("is_near_miss", "near_miss")
+    if s_near is not None:
+        out["is_near_miss"] = s_near.fillna(False).astype(bool)
+    else:
+        out["is_near_miss"] = out["is_neighbor"] | out["is_mirror"]
+
+    # Pack family + free-form note
+    s_pack = _take_series("pack_family")
+    if s_pack is not None:
+        out["pack_family"] = s_pack.astype(str)
+    else:
+        out["pack_family"] = ""
+
+    s_note = _take_series("note")
+    if s_note is not None:
+        out["note"] = s_note.astype(str)
+    else:
+        out["note"] = ""
+
+    # Finally, enforce column order
+    for col in SCRIPT_HIT_MEMORY_HEADERS:
+        if col not in out.columns:
+            # If any new header was added later and not handled above
+            out[col] = pd.NA
+
+    return out[SCRIPT_HIT_MEMORY_HEADERS]
 
 
 def ensure_script_hit_memory_exists(base_dir: Optional[Path] = None) -> Path:
