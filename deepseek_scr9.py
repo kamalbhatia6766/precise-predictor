@@ -14,11 +14,10 @@ from pathlib import Path
 import quant_data_core
 from script_hit_metrics import (
     build_script_league,
-    build_script_weight_map,
-    compute_slot_heroes_and_weak,
-    load_script_metrics,
+    build_script_weights_by_slot,
+    compute_script_metrics,
+    hero_weak_table,
 )
-from script_hit_memory_utils import load_script_weights
 warnings.filterwarnings('ignore')
 
 USE_SCRIPT_WEIGHTS = False
@@ -36,7 +35,7 @@ class UltimatePredictionEngine:
         self.slot_names = {1: "FRBD", 2: "GZBD", 3: "GALI", 4: "DSWR"}
         self.speed_mode = speed_mode  # 'full' or 'fast'
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.script_weights = self.load_script_weights()
+        self.script_weights = {}
         self.slot_script_weights = None
         self.script_weight_metrics = None
         self.script_weight_metrics_df = None
@@ -45,7 +44,6 @@ class UltimatePredictionEngine:
         self.script_prediction_cache = {}
         self.setup_directories()
         self.load_script_weight_preview()
-        self.metrics_weight_map = self.load_metrics_weight_map()
 
     def setup_directories(self):
         """Create output folders"""
@@ -112,12 +110,13 @@ class UltimatePredictionEngine:
         """Load script metrics and build preview weights when enabled."""
 
         try:
-            metrics_df, metrics_summary = load_script_metrics(
+            metrics_df, metrics_summary = compute_script_metrics(
+                mode="per_slot",
                 window_days=SCRIPT_WEIGHTS_WINDOW_DAYS,
+                base_dir=Path(self.base_dir),
                 fallback=True,
-                project_root=Path(self.base_dir),
             )
-            if metrics_df is None:
+            if metrics_df is None or metrics_df.empty:
                 print("Script metrics warming up – skipping script-wise performance overlay.")
                 self.slot_script_weights = None
                 self.script_weight_metrics = None
@@ -126,78 +125,13 @@ class UltimatePredictionEngine:
 
             self.script_weight_metrics_df = metrics_df
             self.script_weight_metrics = metrics_summary
-
-            if not metrics_df.empty and "hit_rate" in metrics_df.columns:
-                top_row = metrics_df.sort_values("hit_rate", ascending=False).iloc[0]
-                effective_days = (
-                    metrics_summary.get("effective_window_days")
-                    if isinstance(metrics_summary, dict)
-                    else SCRIPT_WEIGHTS_WINDOW_DAYS
-                )
-                print(
-                    f"Best script (last {effective_days}d): "
-                    f"{top_row.get('script_name')} with {top_row.get('hit_rate', 0):.1%} hit rate"
-                )
-
-            if USE_SCRIPT_WEIGHTS:
-                self.slot_script_weights = {}
-                for slot in metrics_df["slot"].dropna().unique():
-                    slot_metrics = metrics_df[metrics_df["slot"] == slot]
-                    slot_map = {
-                        str(row["script_name"]): {
-                            "hit_rate_any": float(row.get("hit_rate", 0.0)),
-                            "blind_miss_rate": 0.0,
-                        }
-                        for _, row in slot_metrics.iterrows()
-                    }
-                    self.slot_script_weights[slot] = self._compute_slot_weights(slot_map)
-
+            self.slot_script_weights = build_script_weights_by_slot(metrics_df)
             self._print_weight_preview()
         except Exception as e:
             print(f"⚠️  Script weight preview unavailable: {e}")
             self.slot_script_weights = None
             self.script_weight_metrics = None
             self.script_weight_metrics_df = None
-
-    def load_metrics_weight_map(self):
-        try:
-            weight_map = build_script_weight_map(
-                window_days=SCRIPT_WEIGHTS_WINDOW_DAYS,
-                project_root=Path(self.base_dir),
-            )
-            slot_weights = load_script_weights(
-                window_days=SCRIPT_WEIGHTS_WINDOW_DAYS, base_dir=Path(self.base_dir)
-            )
-        except Exception as exc:
-            print(f"SCRIPT WEIGHTS: metrics not available; using 1.0 for all scripts. ({exc})")
-            return {}
-
-        if not weight_map:
-            print("SCRIPT WEIGHTS: metrics not available; using 1.0 for all scripts.")
-            return {}
-
-        if slot_weights:
-            grouped = defaultdict(dict)
-            for (script, slot), wt in slot_weights.items():
-                grouped[slot][script] = wt
-            self.slot_script_weights = grouped
-            print("SCRIPT WEIGHTS (last 30d):")
-            for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
-                entries = grouped.get(slot, {})
-                if not entries:
-                    continue
-                preview = ", ".join(f"{k}={v:.2f}" for k, v in sorted(entries.items()))
-                print(f"  {slot}: {preview}")
-
-        parts = []
-        for script in sorted(weight_map.keys()):
-            weight = float(weight_map[script].get("weight", 1.0) or 1.0)
-            parts.append(f"{script}={weight:.2f}")
-        if parts:
-            preview = ", ".join(parts)
-            print(f"SCRIPT WEIGHTS (last {SCRIPT_WEIGHTS_WINDOW_DAYS}d): {preview}")
-
-        return weight_map
 
     def _compute_slot_weights(self, metrics_for_slot):
         weights = {}
@@ -217,18 +151,18 @@ class UltimatePredictionEngine:
     def _print_weight_preview(self):
         if self.script_weight_metrics_df is None or self.script_weight_metrics_df.empty:
             return
-        slot_bands = compute_slot_heroes_and_weak(self.script_weight_metrics_df)
+        slot_bands = hero_weak_table(self.script_weight_metrics_df)
         window_used = (
             self.script_weight_metrics.get("effective_window_days")
             if isinstance(self.script_weight_metrics, dict)
             else SCRIPT_WEIGHTS_WINDOW_DAYS
         )
         print(f"SCRIPT WEIGHT PREVIEW (last {window_used} days):")
-        for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
-            slot_summary = slot_bands.get(slot, {"heroes": [], "weak": []})
-            hero_str = ",".join(slot_summary.get("heroes") or []) or "n/a"
-            weak_str = ",".join(slot_summary.get("weak") or []) or "n/a"
-            print(f"  {slot}: hero=[{hero_str}] weak=[{weak_str}] window={window_used}d")
+        for _, row in slot_bands.iterrows():
+            hero = row.get("hero_script") or "n/a"
+            weak = row.get("weak_script") or "n/a"
+            slot = row.get("slot")
+            print(f"  {slot}: hero=[{hero}] weak=[{weak}] window={window_used}d")
         league = build_script_league(self.script_weight_metrics_df, min_predictions=5)
         if league.get("heroes") or league.get("weak"):
             heroes = ",".join([h.get("script") for h in league.get("heroes", [])]) or "n/a"
@@ -475,16 +409,14 @@ class UltimatePredictionEngine:
 
         # Process each script's predictions
         for script_name, predictions in all_preds_for_slot.items():
-            weight = self.script_weights.get(self._script_key(script_name), 1.0)
             slot_key = slot_name.upper() if slot_name else None
+            default_weight = 1.0 if not self.slot_script_weights else 0.5
+            script_weight = default_weight
             if self.slot_script_weights and slot_key:
-                weight = self.slot_script_weights.get(slot_key, {}).get(
-                    self._script_key(script_name), weight
+                script_weight = self.slot_script_weights.get(slot_key, {}).get(
+                    self._script_key(script_name), default_weight
                 )
-            metric_entry = self.metrics_weight_map.get(self._script_key(script_name), {})
-            metric_weight = float(metric_entry.get("weight", 1.0) or 1.0)
-            metric_weight = max(0.5, min(1.5, metric_weight))
-            weight *= metric_weight
+            weight = script_weight
 
             for rank, number in enumerate(predictions, 1):
                 if rank == 1:

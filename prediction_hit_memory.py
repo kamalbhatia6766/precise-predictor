@@ -305,7 +305,7 @@ def build_script_hit_rows_for_dates(
 
     def classify_hit(predicted: Optional[str], actual: Optional[str]) -> Dict[str, Any]:
         result = {
-            "hit_type": "MISS",
+            "hit_type": "none",
             "is_neighbor": False,
             "is_mirror": False,
             "is_s40": False,
@@ -327,17 +327,17 @@ def build_script_hit_rows_for_dates(
         is_family = _is_family_164950(pred_num)
 
         if is_exact:
-            hit_type = "EXACT"
+            hit_type = "exact"
         elif is_neighbor:
-            hit_type = "NEIGHBOR"
+            hit_type = "neighbor"
         elif is_mirror:
-            hit_type = "MIRROR"
+            hit_type = "mirror"
         elif is_s40:
-            hit_type = "S40"
+            hit_type = "s40"
         elif is_family:
-            hit_type = "FAMILY_164950"
+            hit_type = "family_164950"
         else:
-            hit_type = "MISS"
+            hit_type = "none"
 
         result.update(
             {
@@ -413,7 +413,7 @@ def build_script_hit_rows_for_dates(
                     row["ACTUAL"] = actual_val
                     row["result"] = actual_val
                     row["HIT_TYPE"] = hit_type
-                    row["HIT_FLAG"] = int(hit_type != "MISS")
+                    row["HIT_FLAG"] = int(hit_type != "none")
                     row["is_neighbor"] = int(bool(hit_info.get("is_neighbor")))
                     row["is_mirror"] = int(bool(hit_info.get("is_mirror")))
                     row["is_s40"] = int(bool(hit_info.get("is_s40")))
@@ -421,7 +421,7 @@ def build_script_hit_rows_for_dates(
                     row["RANK"] = int(rank_val) if not pd.isna(rank_val) else None
                     row["PREDICT_DATE"] = pred_row.get("predict_date") or pred_row.get("predict_day")
                     row["SOURCE_FILE"] = pred_row.get("source_file")
-                    row["is_near_miss"] = int(hit_type in {"MIRROR", "NEIGHBOR"})
+                    row["is_near_miss"] = int(hit_type in {"mirror", "neighbor"})
                     row["pack_family"] = pack_family or pred_row.get("pack_family")
                     rows.append(row)
     return rows
