@@ -124,6 +124,15 @@ def get_metrics_table(window_days: int) -> Tuple[pd.DataFrame, Dict]:
     return metrics_df, summary
 
 
+def compute_script_metrics(window_days: int = 30):
+    """
+    Backwards-compatible wrapper for older scripts (e.g. deepseek_scr9.py).
+
+    Returns the same (metrics_df, summary) tuple as get_metrics_table.
+    """
+    return get_metrics_table(window_days=window_days)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Script-wise hit metrics for Precise Predictor.")
     parser.add_argument("--window", type=int, default=30, help="Number of days to look back from the latest date.")
