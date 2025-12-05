@@ -167,10 +167,13 @@ class UltimatePredictionEngine:
                 slot = row.get("slot")
                 print(f"  {slot}: hero=[{hero}] weak=[{weak}] window={window_used}d")
         league = build_script_league(self.script_weight_metrics_df, min_predictions=5)
-        if league.get("heroes") or league.get("weak"):
-            heroes = ",".join([h.get("script") for h in league.get("heroes", [])]) or "n/a"
-            weak = ",".join([w.get("script") for w in league.get("weak", [])]) or "n/a"
-            print(f"  Overall heroes=[{heroes}] weak=[{weak}] window_rows={league.get('window_rows')}")
+        if league:
+            overall = league.get("overall") or {}
+            hero_overall = overall.get("hero", {}) if isinstance(overall, dict) else {}
+            weak_overall = overall.get("weak", {}) if isinstance(overall, dict) else {}
+            hero_label = hero_overall.get("script_id") or "n/a"
+            weak_label = weak_overall.get("script_id") or "n/a"
+            print(f"  Overall heroes=[{hero_label}] weak=[{weak_label}] window_rows={league.get('window_rows')}")
 
     def _script_key(self, script_name: str) -> str:
         match = re.search(r"scr(\d+)", script_name, re.IGNORECASE)

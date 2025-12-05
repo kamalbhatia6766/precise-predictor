@@ -856,37 +856,57 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
         print("   No script hit metrics available yet (script_hit_memory is empty).")
         return
 
-    def fmt_row(row) -> str:
-        name = str(row.get("script_id", "")).strip()
-        slot = row.get("slot", "")
-        total = int(row.get("total_predictions", 0) or 0)
-        exact_hits = int(row.get("exact_hits", 0) or 0)
-        near_hits = int(row.get("near_hits", 0) or 0)
-        hit_rate_exact = float(row.get("hit_rate_exact", 0.0) or 0.0)
-        near_rate = float(row.get("near_miss_rate", 0.0) or 0.0)
-        hit_rate = float(row.get("hit_rate", 0.0) or 0.0)
+    total_hits = 0
+    for col in ("exact_hits", "mirror_hits", "neighbor_hits"):
+        if col in metrics.columns:
+            total_hits += int(metrics[col].sum())
 
-        return (
-            "   "
-            + f"{name}@{slot}: EXACT {exact_hits}/{total}, NEAR {near_hits}/{total} "
-            + f"→ exact {hit_rate_exact*100:.1f}%, near {near_rate*100:.1f}%, weighted {hit_rate*100:.1f}%"
+    if total_hits == 0:
+        print(f"   No script-level hits in the last {window_days} days – league not meaningful yet.")
+        return
+
+    league = build_script_league(metrics, min_predictions=1, min_hits_for_hero=1)
+    if not league:
+        print(f"   No script-level hits in the last {window_days} days – league not meaningful yet.")
+        return
+
+    def _fmt_scores(score: Optional[float], rate: Optional[float]) -> str:
+        if score is None:
+            return "score n/a"
+        rate_val = rate if rate is not None else 0.0
+        return f"score {score:+.2f} exact {rate_val:.1%}"
+
+    for slot in SLOTS:
+        entry = league.get("by_slot", {}).get(slot) if isinstance(league, dict) else None
+        if not entry:
+            continue
+        hero = entry.get("hero") if isinstance(entry, dict) else None
+        weak = entry.get("weak") if isinstance(entry, dict) else None
+        hero_id = (hero or {}).get("script_id") or "n/a"
+        weak_id = (weak or {}).get("script_id") or "n/a"
+        hero_score = (hero or {}).get("score")
+        weak_score = (weak or {}).get("score")
+        hero_rate = (hero or {}).get("hit_rate_exact")
+        weak_rate = (weak or {}).get("hit_rate_exact")
+        print(
+            f"   {slot}: hero {hero_id} ({_fmt_scores(hero_score, hero_rate)}) "
+            f"| weak {weak_id} ({_fmt_scores(weak_score, weak_rate)})"
         )
 
-    for _, row in metrics.iterrows():
-        print(fmt_row(row))
-
-    heroes_df = hero_weak_table(metrics)
-    if heroes_df is not None and not heroes_df.empty:
-        print("   Hero/Weak per slot:")
-        for _, row in heroes_df.iterrows():
-            hero = row.get("hero_script") or "n/a"
-            weak = row.get("weak_script") or "n/a"
-            print(f"     {row.get('slot')}: hero {hero} (hit {row.get('hero_hit_rate_exact')}) | weak {weak} (hit {row.get('weak_hit_rate_exact')})")
-
-    league = build_script_league(metrics)
-    league_text = format_script_league(league)
-    for line in league_text.splitlines():
-        print(f"   {line}")
+    overall = league.get("overall") if isinstance(league, dict) else None
+    if overall:
+        hero = overall.get("hero", {})
+        weak = overall.get("weak", {})
+        hero_id = hero.get("script_id") or "n/a"
+        weak_id = weak.get("script_id") or "n/a"
+        hero_score = hero.get("score")
+        weak_score = weak.get("score")
+        hero_rate = hero.get("hit_rate_exact")
+        weak_rate = weak.get("hit_rate_exact")
+        print(
+            f"   Overall hero: {hero_id} ({_fmt_scores(hero_score, hero_rate)}) "
+            f"| overall weak: {weak_id} ({_fmt_scores(weak_score, weak_rate)})"
+        )
 
 
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):

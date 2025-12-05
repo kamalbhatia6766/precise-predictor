@@ -136,16 +136,53 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["hit_type"] = df["hit_type"].astype(str).str.strip().str.lower()
     else:
         df["hit_type"] = "exact"
-    for flag_col in [
+    flag_cols = [
         "hit_flag",
-        "is_near_miss",
-        "is_neighbor",
-        "is_mirror",
         "is_s40",
+        "is_164950",
         "is_family_164950",
-    ]:
+        "is_mirror",
+        "is_neighbor",
+        "is_exact_hit",
+        "is_near_miss",
+        "is_blind_miss",
+        "is_cross_slot",
+        "is_cross_day",
+    ]
+
+    for flag_col in flag_cols:
         if flag_col in df.columns:
-            df[flag_col] = pd.to_numeric(df.get(flag_col), errors="coerce").fillna(0).astype(int)
+            col = df[flag_col]
+
+            # If duplicate columns produced a DataFrame, select one Series
+            if isinstance(col, pd.DataFrame):
+                # Prefer a column that is not all-NaN
+                non_null_cols = [c for c in col.columns if not col[c].isna().all()]
+                if non_null_cols:
+                    col = col[non_null_cols[0]]
+                else:
+                    # fall back to the first column
+                    col = col.iloc[:, 0]
+
+            # Now normalise to 0/1 integers
+            series = pd.to_numeric(col, errors="coerce").fillna(0).astype(int)
+            df[flag_col] = series
+        else:
+            df[flag_col] = 0
+
+    for key_col in ("script_id", "slot"):
+        if key_col in df.columns:
+            col = df[key_col]
+            if isinstance(col, pd.DataFrame):
+                non_null_cols = [c for c in col.columns if not col[c].isna().all()]
+                if non_null_cols:
+                    col = col[non_null_cols[0]]
+                else:
+                    col = col.iloc[:, 0]
+            cleaned = col.astype(str).str.strip().str.upper()
+            cleaned = cleaned.where(~cleaned.isin(["", "NONE", "NAN"]), None)
+            df[key_col] = cleaned
+
     return df
 
 
