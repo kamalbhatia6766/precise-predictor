@@ -175,6 +175,109 @@ def compute_slot_heroes_and_weak(metrics_df: pd.DataFrame) -> Dict[str, Dict[str
     return default
 
 
+def build_script_league(
+    df: pd.DataFrame, min_predictions: int = 10, min_hits_for_hero: int = 1
+) -> Dict[str, object]:
+    """Aggregate metrics into a simple hero/weak league."""
+
+    window_rows = len(df) if df is not None else 0
+    if df is None or df.empty:
+        return {"heroes": [], "weak": [], "window_rows": window_rows}
+
+    working_df = df.copy()
+    working_df = working_df.dropna(subset=["script_name"]) if "script_name" in working_df.columns else pd.DataFrame()
+    if working_df.empty:
+        return {"heroes": [], "weak": [], "window_rows": window_rows}
+
+    working_df["script_name"] = working_df["script_name"].astype(str).str.strip()
+    working_df = working_df[working_df["script_name"] != ""]
+    if working_df.empty:
+        return {"heroes": [], "weak": [], "window_rows": window_rows}
+
+    agg_df = (
+        working_df.groupby("script_name", as_index=False)
+        .agg(
+            total_predictions=("total_predictions", "sum"),
+            total_hits=("total_hits", "sum"),
+            last_hit_date=("last_hit_date", "max"),
+        )
+    )
+
+    if agg_df.empty:
+        return {"heroes": [], "weak": [], "window_rows": window_rows}
+
+    agg_df["hit_rate"] = agg_df.apply(
+        lambda row: (row["total_hits"] / row["total_predictions"]) if row["total_predictions"] else 0.0,
+        axis=1,
+    )
+
+    filtered = agg_df[agg_df["total_predictions"] >= min_predictions]
+    if filtered.empty:
+        return {"heroes": [], "weak": [], "window_rows": window_rows}
+
+    heroes_df = filtered[filtered["total_hits"] >= min_hits_for_hero]
+    heroes_df = heroes_df.sort_values(["hit_rate", "total_predictions"], ascending=[False, False])
+
+    weak_df = filtered[filtered["total_hits"] == 0]
+    weak_df = weak_df.sort_values(["total_predictions"], ascending=[False])
+
+    heroes = [
+        {
+            "script": row["script_name"],
+            "total_predictions": int(row["total_predictions"]),
+            "total_hits": int(row["total_hits"]),
+            "hit_rate": float(row["hit_rate"]),
+        }
+        for _, row in heroes_df.iterrows()
+    ]
+
+    weak = [
+        {
+            "script": row["script_name"],
+            "total_predictions": int(row["total_predictions"]),
+            "total_hits": int(row["total_hits"]),
+            "hit_rate": float(row["hit_rate"]),
+        }
+        for _, row in weak_df.iterrows()
+    ]
+
+    return {"heroes": heroes, "weak": weak, "window_rows": window_rows}
+
+
+def format_script_league(league: Dict[str, object]) -> str:
+    """Return a compact, printable summary of the league."""
+
+    if not league or league.get("window_rows", 0) == 0:
+        return "Script league: no data in this window."
+
+    heroes = league.get("heroes") or []
+    weak = league.get("weak") or []
+
+    if not heroes and not weak:
+        return "Script league: warming up (no strong signals yet in this window)."
+
+    lines = [f"Script league (window rows: {league.get('window_rows')})"]
+
+    if heroes:
+        lines.append("  Heroes (by hit-rate):")
+        for entry in heroes:
+            lines.append(
+                "    - "
+                + f"{entry['script']}: hits={entry['total_hits']} / preds={entry['total_predictions']} "
+                + f"(hit_rate={entry['hit_rate']:.2f})"
+            )
+
+    if weak:
+        lines.append("  Under watch (0-hit, high volume):")
+        for entry in weak:
+            lines.append(
+                "    - "
+                + f"{entry['script']}: hits={entry['total_hits']} / preds={entry['total_predictions']}"
+            )
+
+    return "\n".join(lines)
+
+
 def load_script_metrics(
     window_days: int = 30, fallback: bool = True
 ) -> Tuple[Optional[pd.DataFrame], Optional[Dict[str, object]]]:
@@ -293,3 +396,5 @@ if __name__ == "__main__":
         print("No script hit memory data available (even after fallback up to ALL history).")
     else:
         _print_metrics(metrics_df, summary)
+        league = build_script_league(metrics_df)
+        print(format_script_league(league))

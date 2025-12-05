@@ -19,7 +19,7 @@ import pandas as pd
 
 import quant_data_core
 import quant_paths
-from script_hit_metrics import get_metrics_table
+from script_hit_metrics import get_metrics_table, build_script_league, format_script_league
 from utils_2digit import is_valid_2d_number, to_2d_str
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -746,6 +746,11 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
 
     for _, row in metrics.iterrows():
         print(fmt_row(row))
+
+    league = build_script_league(metrics)
+    league_text = format_script_league(league)
+    for line in league_text.splitlines():
+        print(f"   {line}")
 
 
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
