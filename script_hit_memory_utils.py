@@ -46,6 +46,7 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
 
     df = df.copy()
+    # normalise column names
     df.columns = [str(c).strip().lower() for c in df.columns]
 
     rename_map = {
@@ -73,13 +74,31 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
     }
     df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
+    # ensure all expected columns exist
     for col in SCRIPT_HIT_MEMORY_HEADERS:
         if col not in df.columns:
             df[col] = None
 
-    if "result" in df.columns and "actual" in df.columns:
-        df["result"] = df["result"].where(df["result"].notna(), df["actual"])
+    # collapse duplicate "result" / "actual" columns if they exist
+    for col in ("result", "actual"):
+        if col in df.columns:
+            mask = df.columns == col
+            if mask.sum() > 1:
+                # merge duplicate columns by row-wise backfill and keep the first
+                merged = df.loc[:, mask]
+                series = merged.bfill(axis=1).iloc[:, 0]
+                # drop all duplicates
+                df = df.loc[:, ~mask]
+                # re-attach a single canonical column
+                df[col] = series
 
+    # fill result from actual where result is missing
+    if "result" in df.columns and "actual" in df.columns:
+        result_series = df["result"]
+        actual_series = df["actual"]
+        df["result"] = result_series.where(result_series.notna(), actual_series)
+
+    # enforce final column order
     df = df[SCRIPT_HIT_MEMORY_HEADERS]
     return df
 
