@@ -33,6 +33,16 @@ def _resolve_base_dir(base_dir: Optional[Path] = None) -> Path:
     return Path(base_dir) if base_dir else quant_paths.get_project_root()
 
 
+def _normalise_slot(value: Optional[str]) -> Optional[str]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).strip().upper()
+    if not text or text == "NAN":
+        return None
+    mapping = {"1": "FRBD", "2": "GZBD", "3": "GALI", "4": "DSWR"}
+    return mapping.get(text, text)
+
+
 def get_script_hit_memory_path(base_dir: Optional[Path] = None) -> Path:
     """
     Return the absolute path to script_hit_memory.csv inside the project's logs/performance folder.
@@ -105,6 +115,16 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     # enforce final column order
     df = df[SCRIPT_HIT_MEMORY_HEADERS]
+
+    def _clean_script(value):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        text = str(value).replace(" ", "").strip().upper()
+        return text if text else None
+
+    df["slot"] = df.get("slot").apply(_normalise_slot)
+    df["script_name"] = df.get("script_name").apply(_clean_script)
+    df["script_id"] = df.get("script_id").apply(_clean_script)
     return df
 
 
@@ -197,12 +217,8 @@ def load_script_weights(window_days: int = 30, base_dir: Optional[Path] = None) 
         return _neutral_weight_map()
 
     df = df.copy()
-    df.columns = [str(c).lower() for c in df.columns]
-    if "script_name" not in df.columns:
-        df["script_name"] = df.get("script_id")
-    df["script_name"] = df["script_name"].astype(str).str.upper()
-    if "slot" in df.columns:
-        df["slot"] = df["slot"].astype(str).str.upper()
+    df["slot"] = df.get("slot").apply(_normalise_slot)
+    df["script_name"] = df.get("script_name").astype(str).str.upper()
 
     date_col = _choose_date_column(df)
     if date_col is None:
@@ -223,28 +239,23 @@ def load_script_weights(window_days: int = 30, base_dir: Optional[Path] = None) 
         slot_df = window_df[window_df["slot"] == slot]
         if slot_df.empty:
             for script in window_df["script_name"].unique():
-                weights[(script, slot)] = 1.0
+                if not script:
+                    continue
+                weights[(str(script), slot)] = 1.0
             continue
-        stats: Dict[str, float] = {}
         for script, group in slot_df.groupby("script_name"):
-            total = len(group)
-            exact_hits = (group.get("hit_type", "").str.upper() == "EXACT").sum()
-            ext_hits = (group.get("hit_type", "").str.upper().isin(["NEIGHBOR", "MIRROR"])).sum()
-            if total < 5:
-                stats[script] = 0.0
-                weights[(script, slot)] = 1.0
+            if not script:
                 continue
-            exact_rate = exact_hits / total
-            ext_rate = ext_hits / total
-            stats[script] = exact_rate + 0.5 * ext_rate
-        non_zero = [v for v in stats.values() if v > 0]
-        baseline = sum(non_zero) / len(non_zero) if non_zero else 0.0
-        for script, score in stats.items():
-            if score == 0 or baseline == 0:
-                weight = 1.0
-            else:
-                weight = score / baseline
-            weight = max(0.4, min(1.8, weight))
+            script = str(script)
+            total = len(group)
+            hit_types = group.get("hit_type", "").astype(str).str.upper()
+            exact_hits = (hit_types == "EXACT").sum()
+            ext_hits = hit_types.isin({"NEIGHBOR", "MIRROR", "S40", "FAMILY_164950"}).sum()
+            hit_rate_ext = (exact_hits + ext_hits) / total if total else 0.0
+            base_weight = 0.8 + 1.2 * hit_rate_ext
+            weight = max(0.4, min(1.8, base_weight))
+            if total < 8:
+                weight = 1.0 + (weight - 1.0) * 0.5
             weights[(script, slot)] = weight
 
     neutral = _neutral_weight_map()

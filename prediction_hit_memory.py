@@ -375,44 +375,55 @@ def build_script_hit_rows_for_dates(
             if date_df.empty:
                 continue
             for slot in SLOTS:
-                slot_df = date_df[date_df["slot"] == slot]
+                slot_df = date_df[date_df["slot"] == slot].copy()
                 if slot_df.empty:
                     continue
                 key = (current_date, slot)
                 if key not in real_lookup:
                     continue
-                top_row = pick_top_row(slot_df)
-                predicted_val = _format_two_digit(top_row.get("predicted"))
-                if predicted_val is None:
-                    continue
+
+                slot_df["rank"] = pd.to_numeric(slot_df.get("rank"), errors="coerce")
+                fallback_rank = pd.Series(range(1, len(slot_df) + 1), index=slot_df.index)
+                slot_df["rank"] = slot_df["rank"].fillna(fallback_rank)
+                slot_df = slot_df.sort_values("rank")
+                slot_df = slot_df.head(5)
+
                 actual_val = _format_two_digit(real_lookup[key])
-                hit_info = classify_hit(predicted_val, actual_val)
-                hit_type = hit_info["hit_type"]
-                rank_val = top_row.get("rank")
-                if pd.isna(rank_val):
-                    rank_val = 1
-                row: Dict[str, Any] = {key: None for key in SCRIPT_HIT_MEMORY_HEADERS}
-                script_id = script_name.upper()
-                row["DATE"] = current_date
-                row["result_date"] = current_date
-                row["SLOT"] = slot
-                row["SCRIPT_ID"] = script_id
-                row["script_name"] = script_id
-                row["PREDICTED"] = predicted_val
-                row["ACTUAL"] = actual_val
-                row["result"] = actual_val
-                row["HIT_TYPE"] = hit_type
-                row["HIT_FLAG"] = int(hit_type != "MISS")
-                row["is_neighbor"] = bool(hit_info.get("is_neighbor"))
-                row["is_mirror"] = bool(hit_info.get("is_mirror"))
-                row["is_s40"] = bool(hit_info.get("is_s40"))
-                row["is_family_164950"] = bool(hit_info.get("is_family_164950"))
-                row["RANK"] = int(rank_val) if not pd.isna(rank_val) else None
-                row["PREDICT_DATE"] = top_row.get("predict_date") or top_row.get("predict_day")
-                row["SOURCE_FILE"] = top_row.get("source_file")
-                row["is_near_miss"] = int(hit_type in {"MIRROR", "NEIGHBOR"})
-                row["pack_family"] = top_row.get("pack_family")
-                rows.append(row)
+                for _, pred_row in slot_df.iterrows():
+                    predicted_val = _format_two_digit(pred_row.get("predicted"))
+                    if predicted_val is None:
+                        continue
+                    hit_info = classify_hit(predicted_val, actual_val)
+                    hit_type = hit_info["hit_type"]
+                    rank_val = pred_row.get("rank")
+                    pack_family = None
+                    if predicted_val in s40_set:
+                        pack_family = "S40"
+                    elif hit_info.get("is_family_164950"):
+                        pack_family = "FAMILY_164950"
+
+                    row: Dict[str, Any] = {key: None for key in SCRIPT_HIT_MEMORY_HEADERS}
+                    script_id = script_name.upper()
+                    row["DATE"] = current_date
+                    row["result_date"] = current_date
+                    row["SLOT"] = slot
+                    row["SCRIPT_ID"] = script_id
+                    row["script_name"] = script_id
+                    row["PREDICTED"] = predicted_val
+                    row["ACTUAL"] = actual_val
+                    row["result"] = actual_val
+                    row["HIT_TYPE"] = hit_type
+                    row["HIT_FLAG"] = int(hit_type != "MISS")
+                    row["is_neighbor"] = int(bool(hit_info.get("is_neighbor")))
+                    row["is_mirror"] = int(bool(hit_info.get("is_mirror")))
+                    row["is_s40"] = int(bool(hit_info.get("is_s40")))
+                    row["is_family_164950"] = int(bool(hit_info.get("is_family_164950")))
+                    row["RANK"] = int(rank_val) if not pd.isna(rank_val) else None
+                    row["PREDICT_DATE"] = pred_row.get("predict_date") or pred_row.get("predict_day")
+                    row["SOURCE_FILE"] = pred_row.get("source_file")
+                    row["is_near_miss"] = int(hit_type in {"MIRROR", "NEIGHBOR"})
+                    row["pack_family"] = pack_family or pred_row.get("pack_family")
+                    rows.append(row)
     return rows
 
 
