@@ -9,11 +9,14 @@ import quant_paths
 SCRIPT_HIT_MEMORY_HEADERS: List[str] = [
     "date",
     "result_date",
+    "real_slot",
     "slot",
     "script_id",
     "script_name",
     "predicted",
+    "predicted_number",
     "actual",
+    "real_number",
     "result",
     "hit_flag",
     "hit_type",
@@ -22,6 +25,7 @@ SCRIPT_HIT_MEMORY_HEADERS: List[str] = [
     "is_s40",
     "is_family_164950",
     "rank",
+    "rank_in_script",
     "predict_date",
     "source_file",
     "is_near_miss",
@@ -62,6 +66,15 @@ def get_script_hit_memory_path(base_dir: Optional[Path] = None) -> Path:
     logs_dir = project_root / "logs" / "performance"
     logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir / "script_hit_memory.csv"
+
+
+def get_script_hit_memory_xlsx_path(base_dir: Optional[Path] = None) -> Path:
+    """Return the path to the canonical script_hit_memory.xlsx file."""
+
+    project_root = _resolve_base_dir(base_dir)
+    logs_dir = project_root / "logs" / "performance"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    return logs_dir / "script_hit_memory.xlsx"
 
 
 def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -111,11 +124,12 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
         out["predict_date"] = out["date"]
 
     # --- slot ---------------------------------------------------------------
-    s_slot = _take_series("slot", "slot_name", "clock", "slot_id")
+    s_slot = _take_series("slot", "slot_name", "clock", "slot_id", "real_slot")
     if s_slot is not None:
         out["slot"] = s_slot.astype(str).map(_normalise_slot)
     else:
         out["slot"] = "NONE"
+    out["real_slot"] = out["slot"]
 
     # --- script_id / script_name -------------------------------------------
     s_script_id = _take_series("script_id", "script", "script_name",
@@ -132,18 +146,20 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
         out["script_name"] = out["script_id"]
 
     # --- predicted / actual -------------------------------------------------
-    s_pred = _take_series("predicted", "prediction", "number",
+    s_pred = _take_series("predicted_number", "predicted", "prediction", "number",
                           "num", "top1", "top_1")
     if s_pred is not None:
         out["predicted"] = s_pred.astype(str).str.zfill(2)
     else:
         out["predicted"] = ""
+    out["predicted_number"] = out["predicted"]
 
-    s_actual = _take_series("actual", "result", "outcome")
+    s_actual = _take_series("real_number", "actual", "result", "outcome")
     if s_actual is not None:
         out["actual"] = s_actual.astype(str).str.zfill(2)
     else:
         out["actual"] = ""
+    out["real_number"] = out["actual"]
 
     # --- result / hit flags -------------------------------------------------
     s_hit_flag = _take_series("hit_flag", "hit")
@@ -152,9 +168,9 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
     else:
         out["hit_flag"] = ""
 
-    s_hit_type = _take_series("hit_type")
+    s_hit_type = _take_series("HIT_TYPE", "hit_type")
     if s_hit_type is not None:
-        out["hit_type"] = s_hit_type.astype(str)
+        out["hit_type"] = s_hit_type.astype(str).str.upper()
     else:
         out["hit_type"] = ""
 
@@ -188,11 +204,12 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
         out["is_family_164950"] = False
 
     # Rank (may be float / string)
-    s_rank = _take_series("rank", "position", "pos")
+    s_rank = _take_series("rank_in_script", "rank", "position", "pos")
     if s_rank is not None:
         out["rank"] = pd.to_numeric(s_rank, errors="coerce")
     else:
         out["rank"] = pd.NA
+    out["rank_in_script"] = out["rank"]
 
     # Source file
     s_src = _take_series("source_file", "file", "file_name", "filename")
@@ -238,24 +255,50 @@ def ensure_script_hit_memory_exists(base_dir: Optional[Path] = None) -> Path:
 
     csv_path = get_script_hit_memory_path(base_dir=base_dir)
 
+    xlsx_path = get_script_hit_memory_xlsx_path(base_dir=base_dir)
+
     if not csv_path.exists() or csv_path.stat().st_size == 0:
-        pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS).to_csv(csv_path, index=False)
+        empty_df = pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+        empty_df.to_csv(csv_path, index=False)
+        empty_df.to_excel(xlsx_path, index=False)
         return csv_path
 
     df = pd.read_csv(csv_path, dtype=str)
     df = _align_columns(df)
     df.to_csv(csv_path, index=False)
+    df.to_excel(xlsx_path, index=False)
     return csv_path
 
 
 def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
-    """
-    Load script_hit_memory.csv as a DataFrame with columns exactly SCRIPT_HIT_MEMORY_HEADERS.
-    """
+    """Load script hit memory, preferring the Excel source of truth."""
 
-    ensure_script_hit_memory_exists(base_dir=base_dir)
-    df = pd.read_csv(get_script_hit_memory_path(base_dir=base_dir), dtype=str)
+    base = _resolve_base_dir(base_dir)
+    xlsx_path = get_script_hit_memory_xlsx_path(base_dir=base)
+    csv_path = get_script_hit_memory_path(base_dir=base)
+
+    if xlsx_path.exists():
+        df = pd.read_excel(xlsx_path, dtype=str)
+    elif csv_path.exists():
+        df = pd.read_csv(csv_path, dtype=str)
+    else:
+        return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+
     df = _align_columns(df)
+
+    def _to_bool(series: pd.Series, default: bool = False) -> pd.Series:
+        return series.fillna(default).astype(str).str.lower().isin({"true", "1", "yes", "y"})
+
+    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
+    df["slot"] = df.get("slot").astype(str)
+    df["script_id"] = df.get("script_id").astype(str)
+    df["HIT_TYPE"] = df.get("hit_type").astype(str).str.upper()
+    df["is_exact_hit"] = df["HIT_TYPE"].eq("DIRECT") | df["HIT_TYPE"].eq("EXACT")
+    df["is_mirror_hit"] = df["HIT_TYPE"].eq("MIRROR")
+    df["is_neighbor_hit"] = df["HIT_TYPE"].eq("NEIGHBOR")
+    df["is_near_miss"] = _to_bool(df.get("is_near_miss", False)) | df["HIT_TYPE"].isin(
+        ["MIRROR", "NEIGHBOR", "CROSS_SLOT", "CROSS_DAY"]
+    )
     return df
 
 
@@ -265,14 +308,16 @@ def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = Non
     """
 
     csv_path = get_script_hit_memory_path(base_dir=base_dir)
+    xlsx_path = get_script_hit_memory_xlsx_path(base_dir=base_dir)
 
     if df is None or df.empty:
-        pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS).to_csv(csv_path, index=False)
-        return csv_path
+        aligned_df = pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+    else:
+        aligned_df = _align_columns(df)
 
-    aligned_df = _align_columns(df)
     aligned_df.to_csv(csv_path, index=False)
-    return csv_path
+    aligned_df.to_excel(xlsx_path, index=False)
+    return xlsx_path
 
 
 def append_script_hit_row(row: Dict[str, object], base_dir: Optional[Path] = None) -> None:
@@ -351,8 +396,8 @@ def load_script_weights(window_days: int = 30, base_dir: Optional[Path] = None) 
             script = str(script)
             total = len(group)
             hit_types = group.get("hit_type", "").astype(str).str.upper()
-            exact_hits = (hit_types == "EXACT").sum()
-            ext_hits = hit_types.isin({"NEIGHBOR", "MIRROR", "S40", "FAMILY_164950"}).sum()
+            exact_hits = hit_types.isin({"EXACT", "DIRECT"}).sum()
+            ext_hits = hit_types.isin({"NEIGHBOR", "MIRROR", "S40", "FAMILY_164950", "CROSS_SLOT", "CROSS_DAY"}).sum()
             hit_rate_ext = (exact_hits + ext_hits) / total if total else 0.0
             base_weight = 0.8 + 1.2 * hit_rate_ext
             weight = max(0.4, min(1.8, base_weight))
