@@ -19,6 +19,7 @@ import pandas as pd
 
 import quant_data_core
 import quant_paths
+from quant_core import pattern_core
 from script_hit_metrics import (
     compute_pack_hit_stats,
     get_metrics_table,
@@ -971,6 +972,10 @@ def main() -> int:
 
     if not args.dry_run:
         refresh_script_hit_memory_and_metrics(window_days=SCRIPT_METRICS_WINDOW_DAYS)
+        try:
+            pattern_core.build_pattern_config(window_days=120)
+        except Exception:
+            pass
 
     build_brief(mode, bet_date, target_date, dry_run=args.dry_run)
     return 0

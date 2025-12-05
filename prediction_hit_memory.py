@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 
 import quant_data_core
+from quant_core import hit_core
 import pattern_packs
 from script_hit_memory_utils import (
     SCRIPT_HIT_MEMORY_HEADERS,
@@ -504,7 +505,7 @@ def main() -> int:
 
     try:
         if args.mode == "rebuild":
-            _rebuild_script_hit_memory(args.window)
+            hit_core.rebuild_hit_memory(window_days=args.window)
             return 0
         if args.mode == "update-latest":
             _update_latest_script_hit_memory()

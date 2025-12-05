@@ -7,6 +7,7 @@ from typing import Dict
 
 import pandas as pd
 
+from quant_core import hit_core, pattern_core
 from script_hit_memory_utils import load_script_hit_memory
 
 WINDOW_DAYS = 120
@@ -98,14 +99,16 @@ class PatternIntelligenceEnhanced:
             )
 
     def run(self) -> bool:
+        hit_core.rebuild_hit_memory(window_days=self.window_days)
         df = self.load_window()
         if df.empty:
             print(
                 f"[PatternIntel+] Not enough hit data in the last {self.window_days} days (found 0 rows). Skipping enhanced analysis."
             )
             return True
-        scripts = self.summarise_scripts(df)
-        slots = self.summarise_slots(df)
+        enhanced = pattern_core.run_enhanced_pattern_intel(hit_df=df, window_days=self.window_days)
+        scripts = enhanced.get("scripts", {}) if isinstance(enhanced, dict) else {}
+        slots = enhanced.get("slots", {}) if isinstance(enhanced, dict) else {}
         payload = {
             "timestamp": datetime.now().isoformat(),
             "window_days": self.window_days,

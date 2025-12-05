@@ -8,6 +8,7 @@ from typing import Dict, List
 import pandas as pd
 
 import pattern_packs
+from quant_core import hit_core, pattern_core
 from script_hit_memory_utils import load_script_hit_memory
 
 WINDOW_DAYS = 90
@@ -132,11 +133,12 @@ class PatternIntelligenceEngine:
             print(line)
 
     def run(self) -> bool:
+        hit_core.rebuild_hit_memory(window_days=self.window_days)
         df = self.load_window()
         if df.empty:
             print(f"[PatternIntel] Not enough hit data in the last {self.window_days} days (found 0 rows). Skipping pattern analysis.")
             return True
-        stats = self.analyse(df)
+        stats = pattern_core.run_basic_pattern_intel(hit_df=df, window_days=self.window_days) or {}
         self.save_stats(stats)
         self.print_summary(df, stats)
         return True
