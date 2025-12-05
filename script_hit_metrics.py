@@ -62,9 +62,25 @@ def get_metrics_table(window_days: int) -> Tuple[pd.DataFrame, Dict]:
         return pd.DataFrame(), summary
 
     df_window = df_window.copy()
-    df_window["SCRIPT_ID"] = df_window.get("script_id") or df_window.get("script_name")
-    df_window["SCRIPT_ID"] = df_window["SCRIPT_ID"].fillna(df_window.get("script_name"))
+    # derive a canonical SCRIPT_ID from script_id / script_name
+    if "script_id" in df_window.columns and df_window["script_id"].notna().any():
+        df_window["SCRIPT_ID"] = df_window["script_id"].astype(str).str.strip()
+    elif "script_name" in df_window.columns:
+        df_window["SCRIPT_ID"] = df_window["script_name"].astype(str).str.strip()
+    else:
+        df_window["SCRIPT_ID"] = None
+
+    # if script_id had gaps but script_name is present, backfill from script_name
+    if "script_name" in df_window.columns:
+        name_series = df_window["script_name"].astype(str).str.strip()
+        df_window["SCRIPT_ID"] = df_window["SCRIPT_ID"].where(
+            df_window["SCRIPT_ID"].notna() & (df_window["SCRIPT_ID"] != ""),
+            name_series,
+        )
+
+    # drop rows that still do not have any identifier
     df_window = df_window.dropna(subset=["SCRIPT_ID"])
+    df_window = df_window[df_window["SCRIPT_ID"].astype(str).str.strip() != ""]
     if df_window.empty:
         return pd.DataFrame(), summary
 
@@ -131,6 +147,53 @@ def compute_script_metrics(window_days: int = 30):
     Returns the same (metrics_df, summary) tuple as get_metrics_table.
     """
     return get_metrics_table(window_days=window_days)
+
+
+def compute_slot_heroes_and_weak(window_days: int = 30):
+    """
+    Backwards-compatible helper for older scripts (e.g. deepseek_scr9.py).
+
+    Returns:
+        slot_heroes: dict[slot -> list of "hero" SCRIPT_IDs]
+        slot_weak:   dict[slot -> list of "weak" SCRIPT_IDs]
+        metrics_df:  DataFrame from get_metrics_table()
+        summary:     summary dict from get_metrics_table()
+    """
+    metrics_df, summary = get_metrics_table(window_days=window_days)
+
+    # default slot structure
+    slots = ["FRBD", "GZBD", "GALI", "DSWR"]
+    empty_map = {slot: [] for slot in slots}
+
+    # if there is no data in this window, return empty structures
+    if (not summary.get("has_data")) or metrics_df is None or metrics_df.empty:
+        return empty_map, empty_map, metrics_df, summary
+
+    # hero scripts = those with SIGNAL == "HIGH"
+    heroes = (
+        metrics_df.loc[metrics_df["SIGNAL"] == "HIGH", "SCRIPT_ID"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .tolist()
+    )
+
+    # weak scripts = those with SIGNAL == "LOW"
+    weak = (
+        metrics_df.loc[metrics_df["SIGNAL"] == "LOW", "SCRIPT_ID"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .tolist()
+    )
+
+    # use the same hero/weak lists for all slots for now.
+    # (If in future we track per-slot contributions separately,
+    #  this function can be extended without breaking the signature.)
+    slot_heroes = {slot: list(heroes) for slot in slots}
+    slot_weak = {slot: list(weak) for slot in slots}
+
+    return slot_heroes, slot_weak, metrics_df, summary
 
 
 if __name__ == "__main__":
