@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -36,10 +37,10 @@ def _format_date(value: object) -> Optional[str]:
     return str(value)
 
 
-def _prepare_memory_df() -> pd.DataFrame:
+def _prepare_memory_df(base_dir: Optional[Path] = None) -> pd.DataFrame:
     """Load and normalise script hit memory for downstream metrics."""
 
-    df = load_script_hit_memory()
+    df = load_script_hit_memory(base_dir=base_dir)
     if df.empty:
         return pd.DataFrame(columns=df.columns)
 
@@ -279,7 +280,7 @@ def format_script_league(league: Dict[str, object]) -> str:
 
 
 def load_script_metrics(
-    window_days: int = 30, fallback: bool = True
+    window_days: int = 30, fallback: bool = True, project_root: Optional[Path] = None
 ) -> Tuple[Optional[pd.DataFrame], Optional[Dict[str, object]]]:
     """
     Load script hit memory, apply windowing with fallback, and compute metrics.
@@ -287,7 +288,7 @@ def load_script_metrics(
     Returns (metrics_df, summary_dict) or (None, None) if no data is available.
     """
 
-    memory_df = _prepare_memory_df()
+    memory_df = _prepare_memory_df(base_dir=project_root)
     if memory_df.empty:
         return None, None
 
@@ -335,6 +336,139 @@ def load_script_metrics(
     return metrics_df, summary
 
 
+def build_script_weight_map(
+    window_days: int = 30, project_root: Optional[Path] = None
+) -> Dict[str, Dict[str, Any]]:
+    """Build a conservative script weight map from hit metrics.
+
+    Returns a dict keyed by script name (e.g., "SCR1") with fields:
+    weight, hit_rate, extended_hit_rate, blind_miss_rate, total_predictions,
+    total_hits, last_hit_date.
+    """
+
+    def _neutral_weights() -> Dict[str, Dict[str, Any]]:
+        return {
+            f"SCR{i}": {
+                "weight": 1.0,
+                "hit_rate": 0.0,
+                "extended_hit_rate": 0.0,
+                "blind_miss_rate": 1.0,
+                "total_predictions": 0,
+                "total_hits": 0,
+                "last_hit_date": None,
+            }
+            for i in range(1, 10)
+        }
+
+    metrics_df, summary = load_script_metrics(
+        window_days=window_days, fallback=True, project_root=project_root
+    )
+
+    if metrics_df is None or summary is None or metrics_df.empty:
+        return _neutral_weights()
+
+    agg_df = (
+        metrics_df.copy()
+        .fillna({
+            "total_predictions": 0,
+            "total_hits": 0,
+            "primary_hits": 0,
+            "neighbor_hits": 0,
+            "mirror_hits": 0,
+        })
+        .groupby("script_name", as_index=False)
+        .agg(
+            total_predictions=("total_predictions", "sum"),
+            total_hits=("total_hits", "sum"),
+            primary_hits=("primary_hits", "sum"),
+            last_hit_date=("last_hit_date", "max"),
+        )
+    )
+
+    reference_date = None
+    latest_date = summary.get("latest_date") if isinstance(summary, dict) else None
+    if latest_date:
+        try:
+            reference_date = pd.to_datetime(latest_date).date()
+        except Exception:
+            reference_date = None
+
+    raw_scores: List[float] = []
+    weight_entries: Dict[str, Dict[str, Any]] = {}
+    for _, row in agg_df.iterrows():
+        script_name = str(row.get("script_name", "")).strip()
+        if not script_name:
+            continue
+        script_name = script_name.upper()
+
+        total_predictions = int(row.get("total_predictions", 0) or 0)
+        total_hits = int(row.get("total_hits", 0) or 0)
+        primary_hits = int(row.get("primary_hits", 0) or 0)
+
+        exact_hit_rate = primary_hits / max(1, total_predictions)
+        extended_hit_rate = total_hits / max(1, total_predictions)
+        blind_miss_rate = 1.0 - extended_hit_rate
+
+        recency_penalty = 0.0
+        last_hit_raw = row.get("last_hit_date")
+        if pd.notna(last_hit_raw):
+            try:
+                last_hit = pd.to_datetime(str(last_hit_raw)).date()
+                anchor = reference_date or datetime.utcnow().date()
+                days_since = max(0, (anchor - last_hit).days)
+                recency_penalty = min(0.1, (days_since / max(1, window_days)) * 0.05)
+            except Exception:
+                recency_penalty = 0.0
+
+        base_score = extended_hit_rate
+        bonus_exact = 0.3 * exact_hit_rate
+        penalty_blind = 0.2 * blind_miss_rate
+        raw_score = base_score + bonus_exact - penalty_blind - recency_penalty
+        raw_score = float(raw_score)
+        if raw_score < 0:
+            raw_score = 0.0
+
+        weight_entries[script_name] = {
+            "hit_rate": exact_hit_rate,
+            "extended_hit_rate": extended_hit_rate,
+            "blind_miss_rate": blind_miss_rate,
+            "total_predictions": total_predictions,
+            "total_hits": total_hits,
+            "last_hit_date": row.get("last_hit_date"),
+            "raw_score": raw_score,
+        }
+        raw_scores.append(raw_score)
+
+    if not raw_scores or all(score == raw_scores[0] for score in raw_scores):
+        for entry in weight_entries.values():
+            entry["weight"] = 1.0
+        for name, neutral_entry in _neutral_weights().items():
+            if name not in weight_entries:
+                weight_entries[name] = neutral_entry
+        return weight_entries
+
+    adjusted_scores = [score if score > 0 else 0.001 for score in raw_scores]
+    mean_score = sum(adjusted_scores) / len(adjusted_scores)
+    if mean_score == 0:
+        for entry in weight_entries.values():
+            entry["weight"] = 1.0
+        for name, neutral_entry in _neutral_weights().items():
+            if name not in weight_entries:
+                weight_entries[name] = neutral_entry
+        return weight_entries
+
+    for script, entry in weight_entries.items():
+        weight = entry["raw_score"] / mean_score if mean_score else 1.0
+        weight = max(0.5, min(1.5, weight))
+        entry["weight"] = weight
+
+    for name, neutral_entry in _neutral_weights().items():
+        if name not in weight_entries:
+            weight_entries[name] = neutral_entry
+
+    return weight_entries
+
+
 def get_metrics_table(
     window_days: int = 30,
     fallback: bool = True,
@@ -345,7 +479,9 @@ def get_metrics_table(
     Returns (metrics_df, summary_dict), or (None, None) if no data is available
     even after applying the fallback logic.
     """
-    metrics_df, summary = load_script_metrics(window_days=window_days, fallback=fallback)
+    metrics_df, summary = load_script_metrics(
+        window_days=window_days, fallback=fallback
+    )
 
     # Mirror the CLI behaviour: if no data, print a clear message
     if metrics_df is None or summary is None:
