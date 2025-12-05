@@ -156,13 +156,17 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
 
             # If duplicate columns produced a DataFrame, select one Series
             if isinstance(col, pd.DataFrame):
-                # Prefer a column that is not all-NaN
-                non_null_cols = [c for c in col.columns if not col[c].isna().all()]
-                if non_null_cols:
-                    col = col[non_null_cols[0]]
-                else:
-                    # fall back to the first column
-                    col = col.iloc[:, 0]
+                chosen = None
+                for name in col.columns:
+                    s = col[name]
+                    # pick the first column that has any non-null values
+                    if s.notna().any():
+                        chosen = s
+                        break
+                if chosen is None:
+                    # all columns are NaN; just fall back to the first column
+                    chosen = col.iloc[:, 0]
+                col = chosen
 
             # Now normalise to 0/1 integers
             series = pd.to_numeric(col, errors="coerce").fillna(0).astype(int)
@@ -174,11 +178,15 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
         if key_col in df.columns:
             col = df[key_col]
             if isinstance(col, pd.DataFrame):
-                non_null_cols = [c for c in col.columns if not col[c].isna().all()]
-                if non_null_cols:
-                    col = col[non_null_cols[0]]
-                else:
-                    col = col.iloc[:, 0]
+                chosen = None
+                for name in col.columns:
+                    s = col[name]
+                    if s.notna().any():
+                        chosen = s
+                        break
+                if chosen is None:
+                    chosen = col.iloc[:, 0]
+                col = chosen
             cleaned = col.astype(str).str.strip().str.upper()
             cleaned = cleaned.where(~cleaned.isin(["", "NONE", "NAN"]), None)
             df[key_col] = cleaned
