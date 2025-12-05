@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import quant_data_core
 from script_hit_metrics import (
+    build_script_league,
     build_script_weight_map,
     compute_slot_heroes_and_weak,
     load_script_metrics,
@@ -228,6 +229,11 @@ class UltimatePredictionEngine:
             hero_str = ",".join(slot_summary.get("heroes") or []) or "n/a"
             weak_str = ",".join(slot_summary.get("weak") or []) or "n/a"
             print(f"  {slot}: hero=[{hero_str}] weak=[{weak_str}] window={window_used}d")
+        league = build_script_league(self.script_weight_metrics_df, min_predictions=5)
+        if league.get("heroes") or league.get("weak"):
+            heroes = ",".join([h.get("script") for h in league.get("heroes", [])]) or "n/a"
+            weak = ",".join([w.get("script") for w in league.get("weak", [])]) or "n/a"
+            print(f"  Overall heroes=[{heroes}] weak=[{weak}] window_rows={league.get('window_rows')}")
 
     def _script_key(self, script_name: str) -> str:
         match = re.search(r"scr(\d+)", script_name, re.IGNORECASE)

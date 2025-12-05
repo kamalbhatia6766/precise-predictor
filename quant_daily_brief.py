@@ -21,11 +21,12 @@ import quant_data_core
 import quant_paths
 from script_hit_metrics import (
     build_script_weight_map,
+    compute_pack_hit_stats,
     get_metrics_table,
     build_script_league,
     format_script_league,
 )
-from script_hit_memory_utils import load_script_hit_memory, load_script_weights
+from script_hit_memory_utils import load_script_weights
 from utils_2digit import is_valid_2d_number, to_2d_str
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -542,77 +543,53 @@ def load_pnl_snapshot() -> PnLSnapshot:
     )
 
 
-def load_pattern_summary() -> PatternSummary:
-    data = _load_json(PERFORMANCE_DIR / "pattern_intelligence.json") or {}
-    stats = data.get("pattern_stats", {})
+def load_pattern_summary(window_days: int = 90) -> PatternSummary:
+    stats = compute_pack_hit_stats(window_days=window_days, base_dir=quant_paths.get_project_root())
     notes: List[str] = []
+    if not stats:
+        return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
 
-    baseline_note = check_pattern_baseline(set(stats.keys()))
-    if baseline_note:
-        notes.append(baseline_note)
+    per_slot = stats.get("per_slot", {})
+    best_s40 = None
+    worst_s40 = None
+    if per_slot:
+        ordered = sorted(per_slot.items(), key=lambda kv: kv[1].get("s40_rate", 0), reverse=True)
+        best_s40 = ordered[0][0] if ordered else None
+        worst_s40 = ordered[-1][0] if ordered else None
+    if best_s40 and worst_s40:
+        notes.append(f"S40 best={best_s40}, weak={worst_s40} (window {window_days}d)")
 
     return PatternSummary(
-        total_hits=data.get("total_hits_processed"),
+        total_hits=stats.get("total_rows"),
         s40=stats.get("S40"),
-        fam_164950=stats.get("PACK_164950"),
+        fam_164950=stats.get("FAMILY_164950"),
         notes=notes,
     )
 
 
 def _pattern_slot_stats(window_days: int = 30) -> Dict[str, Dict[str, float]]:
-    df = load_script_hit_memory()
-    if df is None or df.empty:
+    stats = compute_pack_hit_stats(window_days=window_days, base_dir=quant_paths.get_project_root())
+    if not stats:
         return {}
-
-    df = df.copy()
-    df.columns = [str(c).lower() for c in df.columns]
-    date_col = _choose_date_column(df)
-    if date_col is None:
-        return {}
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
-    latest = df[date_col].max()
-    if pd.isna(latest):
-        return {}
-    cutoff = latest - timedelta(days=window_days - 1)
-    window_df = df[df[date_col] >= cutoff]
-    if window_df.empty:
-        return {}
-
-    # Baseline over full history per slot for labelling
-    baseline: Dict[str, Dict[str, float]] = {}
-    for slot in SLOTS:
-        slot_hist = df[df["slot"].astype(str).str.upper() == slot]
-        total_hist = len(slot_hist)
-        if total_hist == 0:
-            baseline[slot] = {"s40": 0.0, "fam": 0.0}
-            continue
-        s40_series = slot_hist["is_s40"] if "is_s40" in slot_hist.columns else pd.Series([0] * len(slot_hist))
-        fam_series = slot_hist["is_family_164950"] if "is_family_164950" in slot_hist.columns else pd.Series([0] * len(slot_hist))
-        hit_type_series = slot_hist["hit_type"].astype(str).str.upper() if "hit_type" in slot_hist.columns else pd.Series([""] * len(slot_hist))
-        s40_hist = ((s40_series.astype(float) > 0) | (hit_type_series == "S40")).sum()
-        fam_hist = ((fam_series.astype(float) > 0) | (hit_type_series == "FAMILY_164950")).sum()
-        baseline[slot] = {"s40": s40_hist / total_hist, "fam": fam_hist / total_hist}
-
+    baseline_s40 = stats.get("S40", {}).get("hit_rate", 0.0)
+    baseline_fam = stats.get("FAMILY_164950", {}).get("hit_rate", 0.0)
+    per_slot = stats.get("per_slot", {})
     summary: Dict[str, Dict[str, float]] = {}
     for slot in SLOTS:
-        slot_df = window_df[window_df["slot"].astype(str).str.upper() == slot]
-        total = len(slot_df)
-        if total == 0:
+        slot_stats = per_slot.get(slot)
+        if not slot_stats:
             continue
-        s40_series = slot_df["is_s40"] if "is_s40" in slot_df.columns else pd.Series([0] * len(slot_df))
-        fam_series = slot_df["is_family_164950"] if "is_family_164950" in slot_df.columns else pd.Series([0] * len(slot_df))
-        hit_type_series = slot_df["hit_type"].astype(str).str.upper() if "hit_type" in slot_df.columns else pd.Series([""] * len(slot_df))
-        s40_hits = ((s40_series.astype(float) > 0) | (hit_type_series == "S40")).sum()
-        fam_hits = ((fam_series.astype(float) > 0) | (hit_type_series == "FAMILY_164950")).sum()
         summary[slot] = {
-            "total": total,
-            "s40_hits": int(s40_hits),
-            "fam_hits": int(fam_hits),
-            "s40_rate": s40_hits / total,
-            "fam_rate": fam_hits / total,
-            "s40_baseline": baseline.get(slot, {}).get("s40", 0.0),
-            "fam_baseline": baseline.get(slot, {}).get("fam", 0.0),
+            "total": slot_stats.get("total", 0),
+            "s40_hits": slot_stats.get("s40_hits", 0),
+            "fam_hits": slot_stats.get("fam_hits", 0),
+            "s40_rate": slot_stats.get("s40_rate", 0.0),
+            "fam_rate": slot_stats.get("fam_rate", 0.0),
+            "s40_baseline": baseline_s40,
+            "fam_baseline": baseline_fam,
         }
+    summary["baseline_s40"] = baseline_s40
+    summary["baseline_fam"] = baseline_fam
     return summary
 
 
@@ -833,8 +810,20 @@ def print_regime_snapshot(window_days: int = 30) -> None:
     for slot in SLOTS:
         patterns = slot_pattern_stats.get(slot, {})
         pnl_label = _pnl_regime(roi_map.get(slot))
-        s40_label = _temperature(patterns.get("s40_rate", 0.0), patterns.get("s40_baseline", 0.0))
-        fam_label = _temperature(patterns.get("fam_rate", 0.0), patterns.get("fam_baseline", 0.0))
+        baseline_s40 = slot_pattern_stats.get("baseline_s40", 0.0)
+        baseline_fam = slot_pattern_stats.get("baseline_fam", 0.0)
+        s40_rate = patterns.get("s40_rate", 0.0)
+        fam_rate = patterns.get("fam_rate", 0.0)
+
+        def _regime_label(rate: float, baseline: float) -> str:
+            if pnl_label == "STRONG" and rate >= baseline + 0.10:
+                return "HOT"
+            if pnl_label == "SLUMP" and rate <= max(0.0, baseline - 0.10):
+                return "COOL"
+            return "NORMAL"
+
+        s40_label = _regime_label(s40_rate, baseline_s40)
+        fam_label = _regime_label(fam_rate, baseline_fam)
         print(f"   {slot}: P&L={pnl_label}, S40={s40_label}, 164950={fam_label}")
 
 

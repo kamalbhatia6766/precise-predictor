@@ -48,18 +48,19 @@ def _prepare_memory_df(base_dir: Optional[Path] = None) -> pd.DataFrame:
     for col in ("date", "result_date"):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col].astype(str).str.strip(), errors="coerce").dt.date
-    if "hit_flag" in df.columns:
-        df["hit_flag"] = pd.to_numeric(df.get("hit_flag"), errors="coerce").fillna(0).astype(int)
-    if "is_near_miss" in df.columns:
-        df["is_near_miss"] = pd.to_numeric(df.get("is_near_miss"), errors="coerce").fillna(0).astype(int)
+    for col in ("hit_flag", "is_near_miss", "is_neighbor", "is_mirror", "is_s40", "is_family_164950"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df.get(col), errors="coerce").fillna(0).astype(int)
     if "slot" in df.columns:
         df["slot"] = df["slot"].apply(_normalise_slot)
+    if "script_name" in df.columns:
+        df["script_name"] = df["script_name"].astype(str).str.replace(" ", "", regex=False).str.upper()
     return df
 
 
 def _normalise_slot(slot_value: object) -> str:
     mapping = {"1": "FRBD", "2": "GZBD", "3": "GALI", "4": "DSWR"}
-    slot_str = str(slot_value).strip()
+    slot_str = str(slot_value).strip().upper()
     return mapping.get(slot_str, slot_str)
 
 
@@ -81,7 +82,7 @@ def _build_script_identifier(df: pd.DataFrame) -> pd.DataFrame:
     if script_series is None:
         df["script_name"] = None
     else:
-        df["script_name"] = script_series.astype(str).str.strip()
+        df["script_name"] = script_series.astype(str).str.replace(" ", "", regex=False).str.upper()
     df = df.dropna(subset=["script_name"])
     df = df[df["script_name"].astype(str).str.strip() != ""]
     return df
@@ -121,13 +122,14 @@ def compute_script_metrics(
     records: List[Dict[str, object]] = []
     for (script_name, slot), group in working_df.groupby(["script_name", "slot"], dropna=False):
         total_predictions = len(group)
-        total_hits = int((group["hit_type"] != "MISS").sum())
-        primary_hits = int((group["hit_type"] == "EXACT").sum())
-        neighbor_hits = int((group["hit_type"] == "NEIGHBOR").sum())
-        mirror_hits = int((group["hit_type"] == "MIRROR").sum())
-        s40_hits = int(((group["hit_type"] == "S40") | (group["is_s40"] == 1)).sum())
+        hit_type_series = group["hit_type"]
+        total_hits = int((hit_type_series != "MISS").sum())
+        primary_hits = int((hit_type_series == "EXACT").sum())
+        neighbor_hits = int((hit_type_series == "NEIGHBOR").sum())
+        mirror_hits = int((hit_type_series == "MIRROR").sum())
+        s40_hits = int(((hit_type_series == "S40") | (group["is_s40"] == 1)).sum())
         family_hits = int(
-            ((group["hit_type"] == "FAMILY_164950") | (group["is_family_164950"] == 1)).sum()
+            ((hit_type_series == "FAMILY_164950") | (group["is_family_164950"] == 1)).sum()
         )
         hit_rate = (total_hits / total_predictions) if total_predictions else 0.0
         last_hit_raw = group.loc[group["_is_hit"], date_col].max() if total_hits else None
@@ -179,6 +181,56 @@ def compute_slot_heroes_and_weak(metrics_df: pd.DataFrame) -> Dict[str, Dict[str
         default[slot] = {"heroes": heroes, "weak": weak}
 
     return default
+
+
+def compute_pack_hit_stats(
+    window_days: int = 90, base_dir: Optional[Path] = None
+) -> Dict[str, Any]:
+    df = _prepare_memory_df(base_dir=base_dir)
+    if df.empty:
+        return {}
+
+    date_col = _choose_date_column(df)
+    if date_col is None:
+        return {}
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    latest = df[date_col].max()
+    if pd.isna(latest):
+        return {}
+    cutoff = latest - timedelta(days=window_days - 1)
+    window_df = df[df[date_col] >= cutoff]
+    if window_df.empty:
+        return {}
+
+    def _pack_stats(sub_df: pd.DataFrame) -> Dict[str, float]:
+        total = len(sub_df)
+        hit_types = sub_df.get("hit_type", "").astype(str).str.upper()
+        s40_hits = ((hit_types == "S40") | (sub_df.get("is_s40", 0) == 1)).sum()
+        fam_hits = ((hit_types == "FAMILY_164950") | (sub_df.get("is_family_164950", 0) == 1)).sum()
+        return {
+            "total": total,
+            "s40_hits": int(s40_hits),
+            "fam_hits": int(fam_hits),
+            "s40_rate": (s40_hits / total) if total else 0.0,
+            "fam_rate": (fam_hits / total) if total else 0.0,
+        }
+
+    overall = _pack_stats(window_df)
+    per_slot: Dict[str, Dict[str, float]] = {}
+    for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
+        slot_df = window_df[window_df.get("slot") == slot]
+        if slot_df.empty:
+            continue
+        per_slot[slot] = _pack_stats(slot_df)
+
+    return {
+        "window_days": window_days,
+        "total_rows": len(window_df),
+        "S40": {"hits": overall["s40_hits"], "hit_rate": overall["s40_rate"]},
+        "FAMILY_164950": {"hits": overall["fam_hits"], "hit_rate": overall["fam_rate"]},
+        "per_slot": per_slot,
+    }
 
 
 def build_script_league(
