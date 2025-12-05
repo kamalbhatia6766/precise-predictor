@@ -1,5 +1,6 @@
+from datetime import timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import quant_paths
@@ -16,6 +17,10 @@ SCRIPT_HIT_MEMORY_HEADERS: List[str] = [
     "result",
     "hit_flag",
     "hit_type",
+    "is_neighbor",
+    "is_mirror",
+    "is_s40",
+    "is_family_164950",
     "rank",
     "predict_date",
     "source_file",
@@ -164,6 +169,87 @@ def append_script_hit_row(row: Dict[str, object], base_dir: Optional[Path] = Non
     current_df = load_script_hit_memory(base_dir=base_dir)
     combined_df = pd.concat([current_df, new_df], ignore_index=True)
     overwrite_script_hit_memory(combined_df, base_dir=base_dir)
+
+
+def _choose_date_column(df: pd.DataFrame) -> Optional[str]:
+    for col in ("result_date", "date"):
+        if col in df.columns and not df[col].isna().all():
+            return col
+    return None
+
+
+def _neutral_weight_map() -> Dict[Tuple[str, str], float]:
+    scripts = [f"SCR{i}" for i in range(1, 10)]
+    slots = ["FRBD", "GZBD", "GALI", "DSWR"]
+    return {(script, slot): 1.0 for script in scripts for slot in slots}
+
+
+def load_script_weights(window_days: int = 30, base_dir: Optional[Path] = None) -> Dict[Tuple[str, str], float]:
+    """Lightweight slot-aware script weights based on recent hit memory.
+
+    The output is a dict keyed by (script_name, slot) with conservative weights
+    clipped to [0.4, 1.8]. If there is insufficient data, a neutral map of 1.0
+    weights is returned.
+    """
+
+    df = load_script_hit_memory(base_dir=base_dir)
+    if df is None or df.empty:
+        return _neutral_weight_map()
+
+    df = df.copy()
+    df.columns = [str(c).lower() for c in df.columns]
+    if "script_name" not in df.columns:
+        df["script_name"] = df.get("script_id")
+    df["script_name"] = df["script_name"].astype(str).str.upper()
+    if "slot" in df.columns:
+        df["slot"] = df["slot"].astype(str).str.upper()
+
+    date_col = _choose_date_column(df)
+    if date_col is None:
+        return _neutral_weight_map()
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    latest_date = df[date_col].max()
+    if pd.isna(latest_date):
+        return _neutral_weight_map()
+    cutoff = latest_date - timedelta(days=window_days - 1)
+    window_df = df[df[date_col] >= cutoff]
+    if window_df.empty:
+        return _neutral_weight_map()
+
+    weights: Dict[Tuple[str, str], float] = {}
+    slots = ["FRBD", "GZBD", "GALI", "DSWR"]
+    for slot in slots:
+        slot_df = window_df[window_df["slot"] == slot]
+        if slot_df.empty:
+            for script in window_df["script_name"].unique():
+                weights[(script, slot)] = 1.0
+            continue
+        stats: Dict[str, float] = {}
+        for script, group in slot_df.groupby("script_name"):
+            total = len(group)
+            exact_hits = (group.get("hit_type", "").str.upper() == "EXACT").sum()
+            ext_hits = (group.get("hit_type", "").str.upper().isin(["NEIGHBOR", "MIRROR"])).sum()
+            if total < 5:
+                stats[script] = 0.0
+                weights[(script, slot)] = 1.0
+                continue
+            exact_rate = exact_hits / total
+            ext_rate = ext_hits / total
+            stats[script] = exact_rate + 0.5 * ext_rate
+        non_zero = [v for v in stats.values() if v > 0]
+        baseline = sum(non_zero) / len(non_zero) if non_zero else 0.0
+        for script, score in stats.items():
+            if score == 0 or baseline == 0:
+                weight = 1.0
+            else:
+                weight = score / baseline
+            weight = max(0.4, min(1.8, weight))
+            weights[(script, slot)] = weight
+
+    neutral = _neutral_weight_map()
+    neutral.update(weights)
+    return neutral
 
 
 def rebuild_script_hit_memory(rows: List[Dict[str, object]], base_dir: Optional[Path] = None) -> Path:
