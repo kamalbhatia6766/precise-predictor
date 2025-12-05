@@ -26,6 +26,7 @@ SCRIPT_HIT_MEMORY_HEADERS: List[str] = [
     "source_file",
     "is_near_miss",
     "pack_family",
+    "note",
 ]
 
 
@@ -126,7 +127,15 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
     df["script_name"] = df.get("script_name").apply(_clean_script)
     df["script_id"] = df.get("script_id").apply(_clean_script)
     if "hit_type" in df.columns:
+        mask = df.columns == "hit_type"
+        if mask.sum() > 1:
+            merged = df.loc[:, mask]
+            series = merged.bfill(axis=1).iloc[:, 0]
+            df = df.loc[:, ~mask]
+            df["hit_type"] = series
         df["hit_type"] = df["hit_type"].astype(str).str.strip().str.lower()
+    else:
+        df["hit_type"] = "exact"
     for flag_col in [
         "hit_flag",
         "is_near_miss",

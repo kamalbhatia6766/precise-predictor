@@ -20,13 +20,12 @@ import pandas as pd
 import quant_data_core
 import quant_paths
 from script_hit_metrics import (
-    build_script_weight_map,
     compute_pack_hit_stats,
     get_metrics_table,
     build_script_league,
     format_script_league,
+    hero_weak_table,
 )
-from script_hit_memory_utils import load_script_weights
 from utils_2digit import is_valid_2d_number, to_2d_str
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -851,55 +850,43 @@ def print_risk_section(strategy: StrategySummary, money: MoneyManagerSummary, ex
 def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DAYS) -> None:
     print()
     print(f"5️⃣ SCRIPT PERFORMANCE (last {window_days} days)")
-    metrics, summary = get_metrics_table(window_days=window_days)
+    metrics, summary = get_metrics_table(window_days=window_days, mode="per_slot")
 
-    # Guard: if we truly have no usable data, show warming-up message
     if metrics is None or summary is None or metrics.empty:
-        print("   Script performance layer warming up (no window data yet).")
+        print("   No script hit metrics available yet (script_hit_memory is empty).")
         return
 
     def fmt_row(row) -> str:
-        name = str(row.get("SCRIPT_ID", "") or row.get("script_name", "")).strip()
-        total = int(row.get("EVENTS", row.get("total_predictions", 0)) or 0)
-        exact_hits = int(row.get("EXACT", row.get("primary_hits", 0)) or 0)
-        extended_hits = int(row.get("EXTENDED", row.get("total_hits", 0)) or 0)
-        exact_rate = float(row.get("EXACT_PCT", row.get("hit_rate", 0.0)) or 0.0)
-        extended_rate = float(row.get("EXTENDED_PCT", 0.0 if "EXTENDED_PCT" in row else extended_hits / total * 100 if total else 0.0) or 0.0)
-        signal = str(row.get("SIGNAL", "-") or "-")
+        name = str(row.get("script_id", "")).strip()
+        slot = row.get("slot", "")
+        total = int(row.get("total_predictions", 0) or 0)
+        exact_hits = int(row.get("exact_hits", 0) or 0)
+        near_hits = int(row.get("near_hits", 0) or 0)
+        hit_rate_exact = float(row.get("hit_rate_exact", 0.0) or 0.0)
+        near_rate = float(row.get("near_miss_rate", 0.0) or 0.0)
+        hit_rate = float(row.get("hit_rate", 0.0) or 0.0)
 
         return (
             "   "
-            + f"{name}: EXACT {exact_hits}/{total}, EXT {extended_hits}/{total} "
-            + f"→ EXACT {exact_rate:.1f}%, EXT {extended_rate:.1f}% (Signal: {signal})"
+            + f"{name}@{slot}: EXACT {exact_hits}/{total}, NEAR {near_hits}/{total} "
+            + f"→ exact {hit_rate_exact*100:.1f}%, near {near_rate*100:.1f}%, weighted {hit_rate*100:.1f}%"
         )
 
-    # Print one line per script from the metrics table
     for _, row in metrics.iterrows():
         print(fmt_row(row))
 
-    # Build and print the league summary (heroes / weak scripts)
+    heroes_df = hero_weak_table(metrics)
+    if heroes_df is not None and not heroes_df.empty:
+        print("   Hero/Weak per slot:")
+        for _, row in heroes_df.iterrows():
+            hero = row.get("hero_script") or "n/a"
+            weak = row.get("weak_script") or "n/a"
+            print(f"     {row.get('slot')}: hero {hero} (hit {row.get('hero_hit_rate_exact')}) | weak {weak} (hit {row.get('weak_hit_rate_exact')})")
+
     league = build_script_league(metrics)
     league_text = format_script_league(league)
     for line in league_text.splitlines():
         print(f"   {line}")
-
-    weight_map = build_script_weight_map(window_days=window_days)
-    if not weight_map:
-        print("   Script weights (30d): neutral (all 1.00).")
-    else:
-        slot_weights = load_script_weights(window_days=window_days)
-        grouped: Dict[str, List[str]] = {slot: [] for slot in SLOTS}
-        for (script, slot), wt in slot_weights.items():
-            if slot not in grouped:
-                continue
-            grouped[slot].append(f"{script}={wt:.2f}")
-        print("   Script weights (30d):")
-        for slot in SLOTS:
-            entries = grouped.get(slot) or []
-            if not entries:
-                continue
-            preview = ", ".join(sorted(entries))
-            print(f"     {slot}: {preview}")
 
 
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
