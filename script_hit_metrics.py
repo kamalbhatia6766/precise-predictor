@@ -62,13 +62,18 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
 
 
 def _aggregate_metrics(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
-    records: List[Dict[str, Any]] = []
-    for keys, group in df.groupby(group_cols):
-        key_values = keys if isinstance(keys, tuple) else (keys,)
-        record: Dict[str, Any] = {col: value for col, value in zip(group_cols, key_values)}
+    if df.empty:
+        return pd.DataFrame()
 
+    rows: List[Dict[str, Any]] = []
+    grouped = df.groupby(group_cols, dropna=False)
+
+    for keys, group in grouped:
+        key_values = keys if isinstance(keys, tuple) else (keys,)
+        record: Dict[str, Any] = {col: val for col, val in zip(group_cols, key_values)}
+
+        hit_series = group.get("hit_type", "none").astype(str).str.lower()
         total_predictions = len(group)
-        hit_series = group.get("hit_type", "none")
         exact_hits = int((hit_series == "exact").sum())
         neighbor_hits = int((hit_series == "neighbor").sum())
         mirror_hits = int((hit_series == "mirror").sum())
@@ -79,13 +84,12 @@ def _aggregate_metrics(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
         hit_rate_extended = (exact_hits + near_hits) / total_predictions if total_predictions else 0.0
         blind_miss_rate = max(0.0, 1.0 - hit_rate_extended)
 
-        hit_rate = hit_rate_exact + 0.5 * near_miss_rate
-        if hit_rate > 1.0:
-            hit_rate = 1.0
+        hit_rate = min(1.0, hit_rate_exact + 0.5 * near_miss_rate)
         score = hit_rate_exact + 0.5 * near_miss_rate - 0.2 * blind_miss_rate
 
-        record.update(
+        rows.append(
             {
+                **record,
                 "total_predictions": int(total_predictions),
                 "exact_hits": int(exact_hits),
                 "mirror_hits": int(mirror_hits),
@@ -99,9 +103,8 @@ def _aggregate_metrics(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
                 "score": score,
             }
         )
-        records.append(record)
 
-    return pd.DataFrame(records)
+    return pd.DataFrame(rows)
 
 
 def get_metrics_table(
@@ -233,62 +236,90 @@ def compute_pack_hit_stats(window_days: int = 30, base_dir: Optional[Path] = Non
 
 def build_script_league(df: pd.DataFrame, min_predictions: int = 10, min_hits_for_hero: int = 1):
     metrics = df if df is not None else pd.DataFrame()
+    league: Dict[str, Any] = {"by_slot": {}, "overall": {}, "window_rows": len(metrics)}
+
     if metrics.empty:
-        return {"heroes": [], "weak": [], "window_rows": 0}
+        league["overall"] = {"hero": None, "weak": None}
+        return league
 
-    agg = metrics.groupby("script_id", as_index=False).agg(
-        total_predictions=("total_predictions", "sum"),
-        exact_hits=("exact_hits", "sum"),
-        near_hits=("near_hits", "sum"),
-        avg_hit_rate=("hit_rate", "mean"),
-        avg_score=("score", "mean"),
-    )
-    agg["combined_hits"] = agg["exact_hits"] + 0.5 * agg["near_hits"]
+    metrics = metrics.copy()
+    metrics["script_id"] = metrics.get("script_id").astype(str).str.strip().str.upper()
+    if "slot" in metrics.columns:
+        metrics["slot"] = metrics.get("slot").astype(str).str.strip().str.upper()
 
-    heroes_df = agg[(agg["total_predictions"] >= min_predictions) & (agg["exact_hits"] >= min_hits_for_hero)]
-    heroes_df = heroes_df.sort_values(["avg_score", "combined_hits"], ascending=[False, False])
-    weak_df = agg[agg["total_predictions"] >= min_predictions].sort_values(["avg_score", "combined_hits"], ascending=[True, False])
+    for slot, sub in metrics.groupby("slot", dropna=False):
+        eligible = sub[sub["total_predictions"] >= min_predictions]
+        if eligible.empty:
+            league["by_slot"][slot] = {"hero": None, "weak": None}
+            continue
 
-    heroes_list = [
-        {
-            "script": row["script_id"],
-            "total_predictions": int(row["total_predictions"]),
-            "total_hits": float(row["combined_hits"]),
-            "hit_rate": float(row["avg_hit_rate"]),
+        hero_pool = eligible[eligible["exact_hits"] >= min_hits_for_hero]
+        hero_source = hero_pool if not hero_pool.empty else eligible
+        hero_row = hero_source.loc[hero_source["score"].idxmax()]
+        weak_row = eligible.loc[eligible["score"].idxmin()]
+
+        league["by_slot"][slot] = {
+            "hero": {
+                "script_id": str(hero_row.get("script_id")),
+                "score": float(hero_row.get("score", 0.0)),
+                "hit_rate_exact": float(hero_row.get("hit_rate_exact", 0.0)),
+            },
+            "weak": {
+                "script_id": str(weak_row.get("script_id")),
+                "score": float(weak_row.get("score", 0.0)),
+                "hit_rate_exact": float(weak_row.get("hit_rate_exact", 0.0)),
+            },
         }
-        for _, row in heroes_df.iterrows()
-    ]
-    weak_list = [
-        {
-            "script": row["script_id"],
-            "total_predictions": int(row["total_predictions"]),
-            "total_hits": float(row["combined_hits"]),
-            "hit_rate": float(row["avg_hit_rate"]),
-        }
-        for _, row in weak_df.iterrows()
-    ]
-    return {"heroes": heroes_list, "weak": weak_list, "window_rows": len(metrics)}
+
+    overall_source = metrics[metrics["total_predictions"] >= min_predictions]
+    if overall_source.empty:
+        league["overall"] = {"hero": None, "weak": None}
+        return league
+
+    overall_pool = overall_source[overall_source["exact_hits"] >= min_hits_for_hero]
+    hero_source = overall_pool if not overall_pool.empty else overall_source
+    hero_row = hero_source.loc[hero_source["score"].idxmax()]
+    weak_row = overall_source.loc[overall_source["score"].idxmin()]
+
+    league["overall"] = {
+        "hero": {
+            "script_id": str(hero_row.get("script_id")),
+            "score": float(hero_row.get("score", 0.0)),
+            "hit_rate_exact": float(hero_row.get("hit_rate_exact", 0.0)),
+        },
+        "weak": {
+            "script_id": str(weak_row.get("script_id")),
+            "score": float(weak_row.get("score", 0.0)),
+            "hit_rate_exact": float(weak_row.get("hit_rate_exact", 0.0)),
+        },
+    }
+
+    return league
 
 
 def format_script_league(league_df: pd.DataFrame, max_rows: int = 20) -> str:
-    if not league_df:
+    if not league_df or not isinstance(league_df, dict):
         return "No league data available."
 
-    heroes = league_df.get("heroes", [])[:max_rows]
-    weak = league_df.get("weak", [])[:max_rows]
     lines: List[str] = []
-    if heroes:
-        lines.append("Heroes:")
-        for row in heroes:
-            lines.append(
-                f"  {row['script']}: hits={row['total_hits']:.1f} in {row['total_predictions']} (hit_rate={row['hit_rate']:.2f})"
-            )
-    if weak:
-        lines.append("Weak:")
-        for row in weak:
-            lines.append(
-                f"  {row['script']}: hits={row['total_hits']:.1f} in {row['total_predictions']} (hit_rate={row['hit_rate']:.2f})"
-            )
+    by_slot = league_df.get("by_slot", {}) or {}
+    for slot in SLOTS:
+        entry = by_slot.get(slot)
+        if not entry:
+            continue
+        hero_id = entry.get("hero", {}).get("script_id") if isinstance(entry, dict) else None
+        weak_id = entry.get("weak", {}).get("script_id") if isinstance(entry, dict) else None
+        hero_label = hero_id or "n/a"
+        weak_label = weak_id or "n/a"
+        lines.append(f"{slot}: hero {hero_label} | weak {weak_label}")
+
+    overall = league_df.get("overall") or {}
+    hero_overall = overall.get("hero", {}) if isinstance(overall, dict) else {}
+    weak_overall = overall.get("weak", {}) if isinstance(overall, dict) else {}
+    hero_label = hero_overall.get("script_id") or "n/a"
+    weak_label = weak_overall.get("script_id") or "n/a"
+    lines.append(f"Overall hero {hero_label} | weak {weak_label}")
+
     return "\n".join(lines) if lines else "No league data available."
 
 
