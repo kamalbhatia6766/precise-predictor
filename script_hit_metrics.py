@@ -26,18 +26,16 @@ def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, O
         return pd.DataFrame(), None
 
     df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    for col in ("date", "result_date"):
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
+    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
+    df = df.dropna(subset=["result_date"])
+    df["result_date"] = df["result_date"].dt.date
     df["slot"] = df.get("slot").apply(_normalise_slot)
     df["script_id"] = df.get("script_id").astype(str).str.strip().str.upper()
-    df["hit_type"] = df.get("hit_type", "none").astype(str).str.strip().str.lower()
-    date_col = "result_date" if "result_date" in df.columns else "date" if "date" in df.columns else None
-    if date_col:
-        df = df.dropna(subset=[date_col])
+    df["HIT_TYPE"] = df.get("HIT_TYPE", "MISS").astype(str).str.upper()
+    df["is_exact_hit"] = df.get("is_exact_hit", False).astype(bool)
+    df["is_near_miss"] = df.get("is_near_miss", False).astype(bool)
     df = df.dropna(subset=["slot", "script_id"])
-    return df, date_col
+    return df, "result_date"
 
 
 def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) -> Tuple[pd.DataFrame, Dict[str, Any]]:
@@ -72,19 +70,14 @@ def _aggregate_metrics(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
         key_values = keys if isinstance(keys, tuple) else (keys,)
         record: Dict[str, Any] = {col: val for col, val in zip(group_cols, key_values)}
 
-        hit_series = group.get("hit_type", "none").astype(str).str.lower()
         total_predictions = len(group)
-        exact_hits = int((hit_series == "exact").sum())
-        neighbor_hits = int((hit_series == "neighbor").sum())
-        mirror_hits = int((hit_series == "mirror").sum())
-        near_hits = neighbor_hits + mirror_hits
+        exact_hits = int(group.get("is_exact_hit", False).sum())
+        near_hits = int(group.get("is_near_miss", False).sum())
 
         hit_rate_exact = exact_hits / total_predictions if total_predictions else 0.0
         near_miss_rate = near_hits / total_predictions if total_predictions else 0.0
-        hit_rate_extended = (exact_hits + near_hits) / total_predictions if total_predictions else 0.0
-        blind_miss_rate = max(0.0, 1.0 - hit_rate_extended)
+        blind_miss_rate = max(0.0, 1.0 - (hit_rate_exact + near_miss_rate))
 
-        hit_rate = min(1.0, hit_rate_exact + 0.5 * near_miss_rate)
         score = hit_rate_exact + 0.5 * near_miss_rate - 0.2 * blind_miss_rate
 
         rows.append(
@@ -92,14 +85,10 @@ def _aggregate_metrics(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
                 **record,
                 "total_predictions": int(total_predictions),
                 "exact_hits": int(exact_hits),
-                "mirror_hits": int(mirror_hits),
-                "neighbor_hits": int(neighbor_hits),
                 "near_hits": int(near_hits),
                 "hit_rate_exact": hit_rate_exact,
                 "near_miss_rate": near_miss_rate,
-                "hit_rate_extended": hit_rate_extended,
                 "blind_miss_rate": blind_miss_rate,
-                "hit_rate": hit_rate,
                 "score": score,
             }
         )
@@ -345,11 +334,9 @@ def _print_metrics(metrics_df: pd.DataFrame, summary: Dict[str, Any], mode: str)
         "slot",
         "total_predictions",
         "exact_hits",
-        "mirror_hits",
-        "neighbor_hits",
+        "near_hits",
         "hit_rate_exact",
         "near_miss_rate",
-        "hit_rate",
         "blind_miss_rate",
         "score",
     ]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -13,11 +13,10 @@ import quant_data_core
 import pattern_packs
 from script_hit_memory_utils import (
     SCRIPT_HIT_MEMORY_HEADERS,
-    append_script_hit_row,
     get_script_hit_memory_path,
+    get_script_hit_memory_xlsx_path,
     load_script_hit_memory,
-    rebuild_script_hit_memory,
-    update_latest_script_hit_memory,
+    overwrite_script_hit_memory,
 )
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -35,6 +34,13 @@ SCRIPT_PATTERNS: Dict[str, List[str]] = {
     "scr8": ["scr10_predictions_*.xlsx"],
     "scr9": ["ultimate_predictions_*.xlsx"],
 }
+
+PREDICTION_ROOT_CANDIDATES: Tuple[str, ...] = (
+    "predictions",
+    "predictions_archive",
+    "predictions_archives",
+    "old_predictions",
+)
 
 
 # --------------------------------------------------------------------------------------
@@ -109,23 +115,26 @@ def normalize_script_name(path: Path) -> Optional[str]:
 
 
 def find_prediction_files(base_dir: Path) -> Dict[str, List[Path]]:
-    predictions_root = base_dir / "predictions"
     files: Dict[str, List[Path]] = {}
 
-    for script, patterns in SCRIPT_PATTERNS.items():
-        script_dir = predictions_root / f"deepseek_{script}"
-        if not script_dir.exists():
-            print(f"⚠️  Directory not found for {script.upper()}: {script_dir}")
+    for root_name in PREDICTION_ROOT_CANDIDATES:
+        root_dir = base_dir / root_name
+        if not root_dir.exists():
             continue
+        for script, patterns in SCRIPT_PATTERNS.items():
+            script_dir = root_dir / f"deepseek_{script}"
+            if not script_dir.exists():
+                continue
+            matches: List[Path] = []
+            for pattern in patterns:
+                matches.extend(script_dir.glob(pattern))
+            if matches:
+                files.setdefault(script, []).extend(matches)
 
-        matches: List[Path] = []
-        for pattern in patterns:
-            matches.extend(list(script_dir.glob(pattern)))
-        if not matches:
-            print(f"⚠️  No prediction files found for {script.upper()} in {script_dir}")
-            continue
-        matches = sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)
-        files[script] = matches
+    for script, paths in files.items():
+        unique_paths = {p.resolve() for p in paths}
+        sorted_paths = sorted(unique_paths, key=lambda p: p.stat().st_mtime, reverse=True)
+        files[script] = sorted_paths
     return files
 
 
@@ -270,12 +279,19 @@ def load_predictions_map(base_dir: Path) -> Dict[str, pd.DataFrame]:
                 if df is None or df.empty:
                     continue
                 df["source_file"] = path.name
+                df["script_id"] = script.upper()
                 frames.append(df)
-                print(f"📁 {script.upper()}: {path.name} ({len(df)} rows)")
             except Exception as exc:
                 print(f"❌ Error loading predictions for {script.upper()} from {path}: {exc}")
         if frames:
-            predictions[script] = pd.concat(frames, ignore_index=True)
+            combined = pd.concat(frames, ignore_index=True)
+            combined = combined.sort_values(["target_date", "slot", "rank"], na_position="last")
+            predictions[script] = combined
+            print(
+                f"📁 {script.upper()}: {len(paths)} files, {len(combined)} rows (all sources)"
+            )
+    if not predictions:
+        print("⚠️  No prediction files found in any configured root.")
     return predictions
 
 
@@ -289,76 +305,47 @@ def build_script_hit_rows_for_dates(
     dates: List[date],
 ) -> List[Dict[str, Any]]:
     real_lookup = {
-        (row["DATE"], row["SLOT"]): row["REAL_NUM"]
+        (row["DATE"], row["SLOT"]): _format_two_digit(row["REAL_NUM"])
         for _, row in real_df.iterrows()
         if pd.notna(row.get("REAL_NUM"))
     }
-
     s40_set = set(pattern_packs.S40_STRINGS)
 
     def _is_neighbor(pred: int, actual: int) -> bool:
         return actual in {(pred + 1) % 100, (pred - 1) % 100}
 
-    def _is_family_164950(num: int) -> bool:
-        digits = {num // 10, num % 10}
-        return digits.issubset({0, 1, 4, 5, 6, 9})
-
-    def classify_hit(predicted: Optional[str], actual: Optional[str]) -> Dict[str, Any]:
-        result = {
-            "hit_type": "none",
-            "is_neighbor": False,
-            "is_mirror": False,
-            "is_s40": False,
-            "is_family_164950": False,
-        }
+    def classify_hit(
+        predicted: Optional[str],
+        actual: Optional[str],
+        other_slots: Iterable[str],
+        slot: str,
+        current_date: date,
+    ) -> str:
         if not predicted or not actual:
-            return result
+            return "MISS"
 
         try:
             pred_num = int(predicted)
             actual_num = int(actual)
         except Exception:
-            return result
+            return "MISS"
 
-        is_exact = predicted == actual
-        is_neighbor = _is_neighbor(pred_num, actual_num)
-        is_mirror = predicted[::-1] == actual
-        is_s40 = predicted in s40_set
-        is_family = _is_family_164950(pred_num)
+        if predicted == actual:
+            return "DIRECT"
+        if predicted[::-1] == actual:
+            return "MIRROR"
+        if _is_neighbor(pred_num, actual_num):
+            return "NEIGHBOR"
 
-        if is_exact:
-            hit_type = "exact"
-        elif is_neighbor:
-            hit_type = "neighbor"
-        elif is_mirror:
-            hit_type = "mirror"
-        elif is_s40:
-            hit_type = "s40"
-        elif is_family:
-            hit_type = "family_164950"
-        else:
-            hit_type = "none"
+        other_hits = {num for num in other_slots if num and num != actual}
+        if predicted in other_hits:
+            return "CROSS_SLOT"
 
-        result.update(
-            {
-                "hit_type": hit_type,
-                "is_neighbor": is_neighbor,
-                "is_mirror": is_mirror,
-                "is_s40": is_s40,
-                "is_family_164950": is_family,
-            }
-        )
-        return result
-
-    def pick_top_row(group: pd.DataFrame) -> pd.Series:
-        if "rank" in group.columns and group["rank"].notna().any():
-            sorted_group = group.sort_values("rank")
-            return sorted_group.iloc[0]
-        for score_col in ["score", "probability", "confidence", "weight"]:
-            if score_col in group.columns and group[score_col].notna().any():
-                sorted_group = group.sort_values(score_col, ascending=False)
-                return sorted_group.iloc[0]
-        return group.iloc[0]
+        prev_actual = real_lookup.get((current_date - timedelta(days=1), slot))
+        next_actual = real_lookup.get((current_date + timedelta(days=1), slot))
+        if predicted in {prev_actual, next_actual}:
+            return "CROSS_DAY"
+        return "MISS"
 
     rows: List[Dict[str, Any]] = []
 
@@ -370,59 +357,70 @@ def build_script_hit_rows_for_dates(
         if "target_date" not in df.columns or "slot" not in df.columns:
             continue
 
+        df["target_date"] = pd.to_datetime(df["target_date"], errors="coerce").dt.date
+        df["slot"] = df["slot"].apply(_normalise_slot_value)
+        df = df.dropna(subset=["target_date", "slot"])
+        df["predicted"] = df["predicted"].apply(_format_two_digit)
+        df = df.dropna(subset=["predicted"])
+        df["rank"] = pd.to_numeric(df.get("rank"), errors="coerce")
+
         for current_date in dates:
             date_df = df[df["target_date"] == current_date]
             if date_df.empty:
                 continue
+            actuals_for_date = {slot: real_lookup.get((current_date, slot)) for slot in SLOTS}
             for slot in SLOTS:
+                slot_actual = actuals_for_date.get(slot)
+                if not slot_actual:
+                    continue
                 slot_df = date_df[date_df["slot"] == slot].copy()
                 if slot_df.empty:
                     continue
-                key = (current_date, slot)
-                if key not in real_lookup:
-                    continue
 
-                slot_df["rank"] = pd.to_numeric(slot_df.get("rank"), errors="coerce")
                 fallback_rank = pd.Series(range(1, len(slot_df) + 1), index=slot_df.index)
                 slot_df["rank"] = slot_df["rank"].fillna(fallback_rank)
                 slot_df = slot_df.sort_values("rank")
-                slot_df = slot_df.head(5)
 
-                actual_val = _format_two_digit(real_lookup[key])
+                other_slots = [num for s, num in actuals_for_date.items() if s != slot]
                 for _, pred_row in slot_df.iterrows():
                     predicted_val = _format_two_digit(pred_row.get("predicted"))
                     if predicted_val is None:
                         continue
-                    hit_info = classify_hit(predicted_val, actual_val)
-                    hit_type = hit_info["hit_type"]
+                    hit_type = classify_hit(predicted_val, slot_actual, other_slots, slot, current_date)
                     rank_val = pred_row.get("rank")
                     pack_family = None
                     if predicted_val in s40_set:
                         pack_family = "S40"
-                    elif hit_info.get("is_family_164950"):
-                        pack_family = "FAMILY_164950"
-
                     row: Dict[str, Any] = {key: None for key in SCRIPT_HIT_MEMORY_HEADERS}
                     script_id = script_name.upper()
-                    row["DATE"] = current_date
-                    row["result_date"] = current_date
-                    row["SLOT"] = slot
-                    row["SCRIPT_ID"] = script_id
-                    row["script_name"] = script_id
-                    row["PREDICTED"] = predicted_val
-                    row["ACTUAL"] = actual_val
-                    row["result"] = actual_val
-                    row["HIT_TYPE"] = hit_type
-                    row["HIT_FLAG"] = int(hit_type != "none")
-                    row["is_neighbor"] = int(bool(hit_info.get("is_neighbor")))
-                    row["is_mirror"] = int(bool(hit_info.get("is_mirror")))
-                    row["is_s40"] = int(bool(hit_info.get("is_s40")))
-                    row["is_family_164950"] = int(bool(hit_info.get("is_family_164950")))
-                    row["RANK"] = int(rank_val) if not pd.isna(rank_val) else None
-                    row["PREDICT_DATE"] = pred_row.get("predict_date") or pred_row.get("predict_day")
-                    row["SOURCE_FILE"] = pred_row.get("source_file")
-                    row["is_near_miss"] = int(hit_type in {"mirror", "neighbor"})
-                    row["pack_family"] = pack_family or pred_row.get("pack_family")
+                    row.update(
+                        {
+                            "DATE": current_date,
+                            "result_date": current_date,
+                            "SLOT": slot,
+                            "real_slot": slot,
+                            "SCRIPT_ID": script_id,
+                            "script_name": script_id,
+                            "PREDICTED": predicted_val,
+                            "predicted_number": predicted_val,
+                            "ACTUAL": slot_actual,
+                            "real_number": slot_actual,
+                            "result": slot_actual,
+                            "HIT_TYPE": hit_type,
+                            "hit_type": hit_type,
+                            "HIT_FLAG": int(hit_type != "MISS"),
+                            "is_neighbor": int(hit_type == "NEIGHBOR"),
+                            "is_mirror": int(hit_type == "MIRROR"),
+                            "is_s40": int(predicted_val in s40_set),
+                            "is_family_164950": 0,
+                            "RANK": int(rank_val) if not pd.isna(rank_val) else None,
+                            "rank_in_script": int(rank_val) if not pd.isna(rank_val) else None,
+                            "PREDICT_DATE": pred_row.get("predict_date") or pred_row.get("predict_day"),
+                            "SOURCE_FILE": pred_row.get("source_file"),
+                            "is_near_miss": int(hit_type in {"MIRROR", "NEIGHBOR", "CROSS_SLOT", "CROSS_DAY"}),
+                            "pack_family": pack_family or pred_row.get("pack_family"),
+                        }
+                    )
                     rows.append(row)
     return rows
 
@@ -452,10 +450,8 @@ def _rebuild_script_hit_memory(window_days: int) -> None:
 
     predictions_map = load_predictions_map(base_dir)
     rows = build_script_hit_rows_for_dates(real_df, predictions_map, dates)
-    memory_path = rebuild_script_hit_memory(rows, base_dir=base_dir)
-    print(
-        f"Built {len(rows)} script-hit rows for {len(dates)} dates and 9 scripts."
-    )
+    memory_path = overwrite_script_hit_memory(pd.DataFrame(rows), base_dir=base_dir)
+    print(f"Built {len(rows)} script-hit rows for {len(dates)} dates and 9 scripts.")
     print(f"Script hit memory rebuilt at {memory_path}")
 
 
@@ -471,12 +467,9 @@ def _update_latest_script_hit_memory() -> None:
     memory_df = load_script_hit_memory(base_dir=base_dir)
     last_result_date: Optional[date] = None
     if not memory_df.empty:
-        if "DATE" in memory_df.columns:
-            last_result_date = pd.to_datetime(memory_df["DATE"], errors="coerce").dt.date.max()
-        elif "result_date" in memory_df.columns:
-            last_result_date = pd.to_datetime(memory_df["result_date"], errors="coerce").dt.date.max()
-        elif "date" in memory_df.columns:
-            last_result_date = pd.to_datetime(memory_df["date"], errors="coerce").dt.date.max()
+        last_result_date = pd.to_datetime(memory_df["result_date"], errors="coerce").dt.date.max()
+        if pd.isna(last_result_date):
+            last_result_date = None
 
     if last_result_date is not None and latest_completed <= last_result_date:
         print(f"Hit memory already up to date for {last_result_date}")
@@ -485,8 +478,15 @@ def _update_latest_script_hit_memory() -> None:
     dates_to_update = [d for d in completed_dates if last_result_date is None or d > last_result_date]
     predictions_map = load_predictions_map(base_dir)
     rows = build_script_hit_rows_for_dates(real_df, predictions_map, dates_to_update)
-    memory_path = update_latest_script_hit_memory(rows, base_dir=base_dir)
+
     if rows:
+        new_df = pd.DataFrame(rows)
+        combined = pd.concat([memory_df, new_df], ignore_index=True)
+        combined = combined.drop_duplicates(
+            subset=["result_date", "slot", "script_id", "predicted_number", "source_file"],
+            keep="last",
+        )
+        memory_path = overwrite_script_hit_memory(combined, base_dir=base_dir)
         print(f"Appended {len(rows)} rows for dates {dates_to_update} to {memory_path}")
     else:
         print("No new script hit rows to append (no predictions matched new dates).")
