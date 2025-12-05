@@ -726,27 +726,31 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
     print(f"5️⃣ SCRIPT PERFORMANCE (last {window_days} days)")
     metrics, summary = get_metrics_table(window_days=window_days)
 
-    if not summary.get("has_data") or metrics is None or metrics.empty:
+    # Guard: if we truly have no usable data, show warming-up message
+    if metrics is None or summary is None or metrics.empty:
         print("   Script performance layer warming up (no window data yet).")
         return
 
     def fmt_row(row) -> str:
-        name = str(row.get("SCRIPT_ID", "")).strip()
-        total = int(row.get("EVENTS", 0))
-        exact_hits = int(row.get("EXACT", 0))
-        extended_hits = int(row.get("EXTENDED", 0))
-        exact_rate = float(row.get("EXACT_PCT", 0.0))
-        extended_rate = float(row.get("EXTENDED_PCT", 0.0))
-        signal = row.get("SIGNAL") or "-"
+        name = str(row.get("SCRIPT_ID", "") or row.get("script_name", "")).strip()
+        total = int(row.get("EVENTS", row.get("total_predictions", 0)) or 0)
+        exact_hits = int(row.get("EXACT", row.get("primary_hits", 0)) or 0)
+        extended_hits = int(row.get("EXTENDED", row.get("total_hits", 0)) or 0)
+        exact_rate = float(row.get("EXACT_PCT", row.get("hit_rate", 0.0)) or 0.0)
+        extended_rate = float(row.get("EXTENDED_PCT", 0.0 if "EXTENDED_PCT" in row else extended_hits / total * 100 if total else 0.0) or 0.0)
+        signal = str(row.get("SIGNAL", "-") or "-")
+
         return (
             "   "
             + f"{name}: EXACT {exact_hits}/{total}, EXT {extended_hits}/{total} "
             + f"→ EXACT {exact_rate:.1f}%, EXT {extended_rate:.1f}% (Signal: {signal})"
         )
 
+    # Print one line per script from the metrics table
     for _, row in metrics.iterrows():
         print(fmt_row(row))
 
+    # Build and print the league summary (heroes / weak scripts)
     league = build_script_league(metrics)
     league_text = format_script_league(league)
     for line in league_text.splitlines():
