@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 import quant_data_core
+import pattern_packs
 from script_hit_memory_utils import (
     SCRIPT_HIT_MEMORY_HEADERS,
     append_script_hit_row,
@@ -293,21 +294,61 @@ def build_script_hit_rows_for_dates(
         if pd.notna(row.get("REAL_NUM"))
     }
 
-    def classify_hit(predicted: Optional[str], actual: Optional[str]) -> str:
+    s40_set = set(pattern_packs.S40_STRINGS)
+
+    def _is_neighbor(pred: int, actual: int) -> bool:
+        return actual in {(pred + 1) % 100, (pred - 1) % 100}
+
+    def _is_family_164950(num: int) -> bool:
+        digits = {num // 10, num % 10}
+        return digits.issubset({0, 1, 4, 5, 6, 9})
+
+    def classify_hit(predicted: Optional[str], actual: Optional[str]) -> Dict[str, Any]:
+        result = {
+            "hit_type": "MISS",
+            "is_neighbor": False,
+            "is_mirror": False,
+            "is_s40": False,
+            "is_family_164950": False,
+        }
         if not predicted or not actual:
-            return "MISS"
-        if predicted == actual:
-            return "EXACT"
-        if predicted[::-1] == actual:
-            return "MIRROR"
+            return result
+
         try:
             pred_num = int(predicted)
             actual_num = int(actual)
         except Exception:
-            return "MISS"
-        if actual_num in {(pred_num + 1) % 100, (pred_num - 1) % 100}:
-            return "NEIGHBOR"
-        return "MISS"
+            return result
+
+        is_exact = predicted == actual
+        is_neighbor = _is_neighbor(pred_num, actual_num)
+        is_mirror = predicted[::-1] == actual
+        is_s40 = predicted in s40_set
+        is_family = _is_family_164950(pred_num)
+
+        if is_exact:
+            hit_type = "EXACT"
+        elif is_neighbor:
+            hit_type = "NEIGHBOR"
+        elif is_mirror:
+            hit_type = "MIRROR"
+        elif is_s40:
+            hit_type = "S40"
+        elif is_family:
+            hit_type = "FAMILY_164950"
+        else:
+            hit_type = "MISS"
+
+        result.update(
+            {
+                "hit_type": hit_type,
+                "is_neighbor": is_neighbor,
+                "is_mirror": is_mirror,
+                "is_s40": is_s40,
+                "is_family_164950": is_family,
+            }
+        )
+        return result
 
     def pick_top_row(group: pd.DataFrame) -> pd.Series:
         if "rank" in group.columns and group["rank"].notna().any():
@@ -345,7 +386,8 @@ def build_script_hit_rows_for_dates(
                 if predicted_val is None:
                     continue
                 actual_val = _format_two_digit(real_lookup[key])
-                hit_type = classify_hit(predicted_val, actual_val)
+                hit_info = classify_hit(predicted_val, actual_val)
+                hit_type = hit_info["hit_type"]
                 rank_val = top_row.get("rank")
                 if pd.isna(rank_val):
                     rank_val = 1
@@ -360,7 +402,11 @@ def build_script_hit_rows_for_dates(
                 row["ACTUAL"] = actual_val
                 row["result"] = actual_val
                 row["HIT_TYPE"] = hit_type
-                row["HIT_FLAG"] = int(hit_type == "EXACT")
+                row["HIT_FLAG"] = int(hit_type != "MISS")
+                row["is_neighbor"] = bool(hit_info.get("is_neighbor"))
+                row["is_mirror"] = bool(hit_info.get("is_mirror"))
+                row["is_s40"] = bool(hit_info.get("is_s40"))
+                row["is_family_164950"] = bool(hit_info.get("is_family_164950"))
                 row["RANK"] = int(rank_val) if not pd.isna(rank_val) else None
                 row["PREDICT_DATE"] = top_row.get("predict_date") or top_row.get("predict_day")
                 row["SOURCE_FILE"] = top_row.get("source_file")

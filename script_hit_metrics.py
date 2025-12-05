@@ -109,21 +109,26 @@ def compute_script_metrics(
     working_df["hit_type"] = working_df.get("hit_type", "").fillna("").astype(str).str.upper()
     working_df["pack_family"] = working_df.get("pack_family", "").fillna("").astype(str).str.strip()
     working_df["hit_flag"] = pd.to_numeric(working_df.get("hit_flag", 0), errors="coerce").fillna(0).astype(int)
+    working_df["is_neighbor"] = pd.to_numeric(working_df.get("is_neighbor", 0), errors="coerce").fillna(0).astype(int)
+    working_df["is_mirror"] = pd.to_numeric(working_df.get("is_mirror", 0), errors="coerce").fillna(0).astype(int)
+    working_df["is_s40"] = pd.to_numeric(working_df.get("is_s40", 0), errors="coerce").fillna(0).astype(int)
+    working_df["is_family_164950"] = pd.to_numeric(
+        working_df.get("is_family_164950", 0), errors="coerce"
+    ).fillna(0).astype(int)
 
-    def _is_hit(row: pd.Series) -> bool:
-        return bool(row.get("hit_flag")) or row.get("hit_type") in {"EXACT", "NEIGHBOR", "MIRROR"}
-
-    working_df["_is_hit"] = working_df.apply(_is_hit, axis=1)
+    working_df["_is_hit"] = working_df["hit_type"] != "MISS"
 
     records: List[Dict[str, object]] = []
     for (script_name, slot), group in working_df.groupby(["script_name", "slot"], dropna=False):
         total_predictions = len(group)
-        total_hits = int(group["_is_hit"].sum())
+        total_hits = int((group["hit_type"] != "MISS").sum())
         primary_hits = int((group["hit_type"] == "EXACT").sum())
         neighbor_hits = int((group["hit_type"] == "NEIGHBOR").sum())
         mirror_hits = int((group["hit_type"] == "MIRROR").sum())
-        s40_hits = int((group["pack_family"].str.upper() == "S40").sum())
-        family_hits = int((group["pack_family"].str.strip() == "164950").sum())
+        s40_hits = int(((group["hit_type"] == "S40") | (group["is_s40"] == 1)).sum())
+        family_hits = int(
+            ((group["hit_type"] == "FAMILY_164950") | (group["is_family_164950"] == 1)).sum()
+        )
         hit_rate = (total_hits / total_predictions) if total_predictions else 0.0
         last_hit_raw = group.loc[group["_is_hit"], date_col].max() if total_hits else None
         last_hit_date = _format_date(last_hit_raw)

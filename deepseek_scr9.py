@@ -17,6 +17,7 @@ from script_hit_metrics import (
     compute_slot_heroes_and_weak,
     load_script_metrics,
 )
+from script_hit_memory_utils import load_script_weights
 warnings.filterwarnings('ignore')
 
 USE_SCRIPT_WEIGHTS = False
@@ -163,6 +164,9 @@ class UltimatePredictionEngine:
                 window_days=SCRIPT_WEIGHTS_WINDOW_DAYS,
                 project_root=Path(self.base_dir),
             )
+            slot_weights = load_script_weights(
+                window_days=SCRIPT_WEIGHTS_WINDOW_DAYS, base_dir=Path(self.base_dir)
+            )
         except Exception as exc:
             print(f"SCRIPT WEIGHTS: metrics not available; using 1.0 for all scripts. ({exc})")
             return {}
@@ -170,6 +174,19 @@ class UltimatePredictionEngine:
         if not weight_map:
             print("SCRIPT WEIGHTS: metrics not available; using 1.0 for all scripts.")
             return {}
+
+        if slot_weights:
+            grouped = defaultdict(dict)
+            for (script, slot), wt in slot_weights.items():
+                grouped[slot][script] = wt
+            self.slot_script_weights = grouped
+            print("SCRIPT WEIGHTS (last 30d):")
+            for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
+                entries = grouped.get(slot, {})
+                if not entries:
+                    continue
+                preview = ", ".join(f"{k}={v:.2f}" for k, v in sorted(entries.items()))
+                print(f"  {slot}: {preview}")
 
         parts = []
         for script in sorted(weight_map.keys()):

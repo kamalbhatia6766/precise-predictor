@@ -25,6 +25,7 @@ from script_hit_metrics import (
     build_script_league,
     format_script_league,
 )
+from script_hit_memory_utils import load_script_hit_memory, load_script_weights
 from utils_2digit import is_valid_2d_number, to_2d_str
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -78,6 +79,13 @@ class PatternSummary:
     s40: Optional[Dict[str, float]]
     fam_164950: Optional[Dict[str, float]]
     notes: List[str]
+
+
+def _choose_date_column(df: pd.DataFrame) -> Optional[str]:
+    for col in ("result_date", "date"):
+        if col in df.columns and not df[col].isna().all():
+            return col
+    return None
 
 
 @dataclass
@@ -551,6 +559,63 @@ def load_pattern_summary() -> PatternSummary:
     )
 
 
+def _pattern_slot_stats(window_days: int = 30) -> Dict[str, Dict[str, float]]:
+    df = load_script_hit_memory()
+    if df is None or df.empty:
+        return {}
+
+    df = df.copy()
+    df.columns = [str(c).lower() for c in df.columns]
+    date_col = _choose_date_column(df)
+    if date_col is None:
+        return {}
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    latest = df[date_col].max()
+    if pd.isna(latest):
+        return {}
+    cutoff = latest - timedelta(days=window_days - 1)
+    window_df = df[df[date_col] >= cutoff]
+    if window_df.empty:
+        return {}
+
+    # Baseline over full history per slot for labelling
+    baseline: Dict[str, Dict[str, float]] = {}
+    for slot in SLOTS:
+        slot_hist = df[df["slot"].astype(str).str.upper() == slot]
+        total_hist = len(slot_hist)
+        if total_hist == 0:
+            baseline[slot] = {"s40": 0.0, "fam": 0.0}
+            continue
+        s40_series = slot_hist["is_s40"] if "is_s40" in slot_hist.columns else pd.Series([0] * len(slot_hist))
+        fam_series = slot_hist["is_family_164950"] if "is_family_164950" in slot_hist.columns else pd.Series([0] * len(slot_hist))
+        hit_type_series = slot_hist["hit_type"].astype(str).str.upper() if "hit_type" in slot_hist.columns else pd.Series([""] * len(slot_hist))
+        s40_hist = ((s40_series.astype(float) > 0) | (hit_type_series == "S40")).sum()
+        fam_hist = ((fam_series.astype(float) > 0) | (hit_type_series == "FAMILY_164950")).sum()
+        baseline[slot] = {"s40": s40_hist / total_hist, "fam": fam_hist / total_hist}
+
+    summary: Dict[str, Dict[str, float]] = {}
+    for slot in SLOTS:
+        slot_df = window_df[window_df["slot"].astype(str).str.upper() == slot]
+        total = len(slot_df)
+        if total == 0:
+            continue
+        s40_series = slot_df["is_s40"] if "is_s40" in slot_df.columns else pd.Series([0] * len(slot_df))
+        fam_series = slot_df["is_family_164950"] if "is_family_164950" in slot_df.columns else pd.Series([0] * len(slot_df))
+        hit_type_series = slot_df["hit_type"].astype(str).str.upper() if "hit_type" in slot_df.columns else pd.Series([""] * len(slot_df))
+        s40_hits = ((s40_series.astype(float) > 0) | (hit_type_series == "S40")).sum()
+        fam_hits = ((fam_series.astype(float) > 0) | (hit_type_series == "FAMILY_164950")).sum()
+        summary[slot] = {
+            "total": total,
+            "s40_hits": int(s40_hits),
+            "fam_hits": int(fam_hits),
+            "s40_rate": s40_hits / total,
+            "fam_rate": fam_hits / total,
+            "s40_baseline": baseline.get(slot, {}).get("s40", 0.0),
+            "fam_baseline": baseline.get(slot, {}).get("fam", 0.0),
+        }
+    return summary
+
+
 def check_pattern_baseline(current_keys: Iterable[str]) -> Optional[str]:
     baseline_path = PERFORMANCE_DIR / "pattern_baseline.json"
     current_set = set(current_keys)
@@ -705,6 +770,74 @@ def print_pattern_section(patterns: PatternSummary) -> None:
         print(f"   {note}")
 
 
+def _temperature(rate: float, baseline: float, margin: float = 0.05) -> str:
+    if rate is None:
+        return "NORMAL"
+    if rate >= baseline + margin:
+        return "HOT"
+    if rate <= baseline - margin:
+        return "COLD"
+    return "NORMAL"
+
+
+def print_pattern_slot_section(window_days: int = 30) -> None:
+    slot_stats = _pattern_slot_stats(window_days=window_days)
+    if not slot_stats:
+        print("   Per-slot pattern layer warming up (no data).")
+        return
+    for slot in SLOTS:
+        stats = slot_stats.get(slot)
+        if not stats:
+            continue
+        s40_label = _temperature(stats.get("s40_rate", 0.0), stats.get("s40_baseline", 0.0))
+        fam_label = _temperature(stats.get("fam_rate", 0.0), stats.get("fam_baseline", 0.0))
+        print(
+            f"   {slot}: S40 {s40_label} ({int(stats.get('s40_hits',0))}/{stats.get('total')}), "
+            f"164950 {fam_label} ({int(stats.get('fam_hits',0))}/{stats.get('total')})"
+        )
+
+
+def _load_slot_roi() -> Dict[str, float]:
+    data = _load_json(PERFORMANCE_DIR / "quant_reality_pnl.json") or {}
+    by_slot = data.get("by_slot", [])
+    roi_map: Dict[str, float] = {}
+    for item in by_slot:
+        slot = str(item.get("slot", "")).upper()
+        roi = item.get("roi") or item.get("pnl")
+        try:
+            roi_map[slot] = float(roi)
+        except Exception:
+            continue
+    return roi_map
+
+
+def _pnl_regime(value: Optional[float]) -> str:
+    if value is None:
+        return "OK"
+    if value >= 15:
+        return "STRONG"
+    if value <= -10:
+        return "SLUMP"
+    if value < 0:
+        return "WEAK"
+    return "OK"
+
+
+def print_regime_snapshot(window_days: int = 30) -> None:
+    print("3️⃣ REGIME SNAPSHOT")
+    slot_pattern_stats = _pattern_slot_stats(window_days=window_days)
+    roi_map = _load_slot_roi()
+    if not slot_pattern_stats and not roi_map:
+        print("   Regime snapshot warming up (insufficient data).")
+        return
+    for slot in SLOTS:
+        patterns = slot_pattern_stats.get(slot, {})
+        pnl_label = _pnl_regime(roi_map.get(slot))
+        s40_label = _temperature(patterns.get("s40_rate", 0.0), patterns.get("s40_baseline", 0.0))
+        fam_label = _temperature(patterns.get("fam_rate", 0.0), patterns.get("fam_baseline", 0.0))
+        print(f"   {slot}: P&L={pnl_label}, S40={s40_label}, 164950={fam_label}")
+
+
 def print_risk_section(strategy: StrategySummary, money: MoneyManagerSummary, execution: ExecutionReadiness, confidence: ConfidenceSummary) -> None:
     print("\n4️⃣ RISK & EXECUTION")
     strat = strategy.recommended or "(strategy data NA)"
@@ -765,15 +898,19 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
     if not weight_map:
         print("   Script weights (30d): neutral (all 1.00).")
     else:
-        parts = [
-            f"{name}={entry.get('weight', 1.0):.2f}"
-            for name, entry in sorted(weight_map.items())
-        ]
-        if all(part.endswith("=1.00") for part in parts):
-            print("   Script weights (30d): neutral (all 1.00).")
-        else:
-            preview = ", ".join(parts)
-            print(f"   Script weights (30d): {preview}")
+        slot_weights = load_script_weights(window_days=window_days)
+        grouped: Dict[str, List[str]] = {slot: [] for slot in SLOTS}
+        for (script, slot), wt in slot_weights.items():
+            if slot not in grouped:
+                continue
+            grouped[slot].append(f"{script}={wt:.2f}")
+        print("   Script weights (30d):")
+        for slot in SLOTS:
+            entries = grouped.get(slot) or []
+            if not entries:
+                continue
+            preview = ", ".join(sorted(entries))
+            print(f"     {slot}: {preview}")
 
 
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
@@ -814,7 +951,9 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     print_header(bet_date, target_date, mode, strategy, execution, plan)
     print_plan_section(plan, execution, mode, final_plan=final_plan)
     print_pnl_section(pnl)
+    print_regime_snapshot(window_days=SCRIPT_METRICS_WINDOW_DAYS)
     print_pattern_section(patterns)
+    print_pattern_slot_section(window_days=SCRIPT_METRICS_WINDOW_DAYS)
     print_risk_section(strategy, money, execution, confidence)
     print_script_performance_section(window_days=SCRIPT_METRICS_WINDOW_DAYS)
     print("=" * 80)
