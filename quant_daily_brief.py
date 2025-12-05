@@ -726,18 +726,18 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
     print(f"5️⃣ SCRIPT PERFORMANCE (last {window_days} days)")
     metrics, summary = get_metrics_table(window_days=window_days)
 
-    if metrics is None or metrics.empty:
+    if not summary.get("has_data") or metrics is None or metrics.empty:
         print("   Script performance layer warming up (no window data yet).")
         return
 
     def fmt_row(row) -> str:
         name = str(row.get("SCRIPT_ID", "")).strip()
-        total = int(row.get("total_events", 0))
-        exact_hits = int(row.get("exact_hits", 0))
-        extended_hits = int(row.get("extended_hits", 0))
-        exact_rate = float(row.get("exact_hit_rate", 0.0)) * 100.0
-        extended_rate = float(row.get("extended_hit_rate", 0.0)) * 100.0
-        signal = row.get("signal") or "-"
+        total = int(row.get("EVENTS", 0))
+        exact_hits = int(row.get("EXACT", 0))
+        extended_hits = int(row.get("EXTENDED", 0))
+        exact_rate = float(row.get("EXACT_PCT", 0.0))
+        extended_rate = float(row.get("EXTENDED_PCT", 0.0))
+        signal = row.get("SIGNAL") or "-"
         return (
             "   "
             + f"{name}: EXACT {exact_hits}/{total}, EXT {extended_hits}/{total} "

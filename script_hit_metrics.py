@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
-from typing import List
+from typing import Dict, List, Tuple
 
 import pandas as pd
 
@@ -17,80 +17,111 @@ def _load_memory() -> pd.DataFrame:
 
     df = load_script_hit_memory()
     if df.empty:
-        return df
+        return pd.DataFrame(columns=df.columns)
 
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"].astype(str).str.strip(), errors="coerce").dt.date
+    if "hit_flag" in df.columns:
+        df["hit_flag"] = pd.to_numeric(df.get("hit_flag"), errors="coerce")
+    if "is_near_miss" in df.columns:
+        df["is_near_miss"] = pd.to_numeric(df.get("is_near_miss"), errors="coerce")
 
     return df
 
 
-def compute_script_metrics(window_days: int) -> pd.DataFrame:
+def get_metrics_table(window_days: int) -> Tuple[pd.DataFrame, Dict]:
     """
-    Compute per-script hit metrics for the last `window_days` worth of results.
-    Returns a DataFrame with one row per script.
+    Compute per-script metrics for the last `window_days` days.
+
+    Returns:
+        metrics_df: DataFrame with columns
+            ["SCRIPT_ID", "DAYS", "EVENTS", "EXACT", "MIRROR", "NEIGHBOR",
+             "EXTENDED", "EXACT_PCT", "EXTENDED_PCT", "SIGNAL"]
+        summary: dict with high-level information about the window.
     """
 
     df = _load_memory()
+    summary: Dict = {
+        "has_data": False,
+        "window_days": window_days,
+        "from_date": None,
+        "to_date": None,
+        "total_events": 0,
+    }
+
     if df.empty or "date" not in df.columns or df["date"].isna().all():
-        return pd.DataFrame()
+        return pd.DataFrame(), summary
 
     latest_date = df["date"].max()
     if pd.isna(latest_date):
-        return pd.DataFrame()
+        return pd.DataFrame(), summary
 
     cutoff_date = latest_date - timedelta(days=window_days - 1)
     df_window = df[df["date"] >= cutoff_date]
-
-    if df_window.empty or "script_name" not in df_window.columns:
-        return pd.DataFrame()
-
-    df_window = df_window.dropna(subset=["script_name"])
     if df_window.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), summary
 
+    df_window = df_window.copy()
+    df_window["SCRIPT_ID"] = df_window.get("script_id") or df_window.get("script_name")
+    df_window["SCRIPT_ID"] = df_window["SCRIPT_ID"].fillna(df_window.get("script_name"))
+    df_window = df_window.dropna(subset=["SCRIPT_ID"])
+    if df_window.empty:
+        return pd.DataFrame(), summary
+
+    df_window["hit_type"] = df_window.get("hit_type", "").fillna("").str.upper()
     df_window["hit_flag"] = pd.to_numeric(df_window.get("hit_flag", 0), errors="coerce").fillna(0).astype(int)
     df_window["is_near_miss"] = pd.to_numeric(df_window.get("is_near_miss", 0), errors="coerce").fillna(0).astype(int)
 
-    grouped = df_window.groupby("script_name")
-
-    records: List[dict] = []
-    for script_name, group in grouped:
-        n_predictions = len(group)
-        n_exact_hits = int((group["hit_flag"] == 1).sum())
-        n_near_misses = int((group["is_near_miss"] == 1).sum())
-        n_extended_hits = int(((group["hit_flag"] == 1) | (group["is_near_miss"] == 1)).sum())
-
-        exact_hit_rate = n_exact_hits / n_predictions if n_predictions else 0.0
-        extended_hit_rate = n_extended_hits / n_predictions if n_predictions else 0.0
-
+    grouped = df_window.groupby("SCRIPT_ID")
+    records: List[Dict] = []
+    for script_id, group in grouped:
+        total_events = len(group)
+        exact_hits = int((group["hit_type"] == "EXACT").sum())
+        mirror_hits = int((group["hit_type"] == "MIRROR").sum())
+        neighbor_hits = int((group["hit_type"] == "NEIGHBOR").sum())
+        extended_hits = exact_hits + mirror_hits + neighbor_hits
+        exact_pct = (exact_hits / total_events * 100.0) if total_events else 0.0
+        extended_pct = (extended_hits / total_events * 100.0) if total_events else 0.0
+        days = group["date"].nunique()
         records.append(
             {
-                "script_name": script_name,
-                "n_predictions": n_predictions,
-                "n_exact_hits": n_exact_hits,
-                "n_near_misses": n_near_misses,
-                "n_extended_hits": n_extended_hits,
-                "exact_hit_rate": exact_hit_rate,
-                "extended_hit_rate": extended_hit_rate,
+                "SCRIPT_ID": script_id,
+                "DAYS": days,
+                "EVENTS": total_events,
+                "EXACT": exact_hits,
+                "MIRROR": mirror_hits,
+                "NEIGHBOR": neighbor_hits,
+                "EXTENDED": extended_hits,
+                "EXACT_PCT": exact_pct,
+                "EXTENDED_PCT": extended_pct,
             }
         )
 
-    result_df = pd.DataFrame(records)
-    if result_df.empty:
-        return result_df
+    metrics_df = pd.DataFrame(records)
+    if metrics_df.empty:
+        return metrics_df, summary
 
-    result_df = result_df.sort_values(by=["extended_hit_rate", "n_predictions"], ascending=[False, False]).reset_index(drop=True)
-    return result_df
+    metrics_df = metrics_df.sort_values("EXTENDED_PCT", ascending=False).reset_index(drop=True)
+    num_rows = len(metrics_df)
+    if num_rows:
+        top_cut = max(1, num_rows // 3)
+        mid_cut = max(1, (2 * num_rows) // 3)
+        metrics_df["SIGNAL"] = "LOW"
+        metrics_df.loc[: top_cut - 1, "SIGNAL"] = "HIGH"
+        metrics_df.loc[top_cut: mid_cut - 1, "SIGNAL"] = "MEDIUM"
+    else:
+        metrics_df["SIGNAL"] = "LOW"
 
+    summary.update(
+        {
+            "has_data": True,
+            "from_date": df_window["date"].min(),
+            "to_date": df_window["date"].max(),
+            "total_events": int(metrics_df["EVENTS"].sum()),
+        }
+    )
 
-def get_metrics_table(window_days: int = 30) -> pd.DataFrame:
-    """
-    Public wrapper used by quant_daily_brief.py.
-    Simply calls compute_script_metrics(window_days).
-    """
-
-    return compute_script_metrics(window_days)
+    return metrics_df, summary
 
 
 if __name__ == "__main__":
@@ -98,9 +129,9 @@ if __name__ == "__main__":
     parser.add_argument("--window", type=int, default=30, help="Number of days to look back from the latest date.")
     args = parser.parse_args()
 
-    df_metrics = get_metrics_table(window_days=args.window)
+    df_metrics, summary = get_metrics_table(window_days=args.window)
 
-    if df_metrics.empty:
+    if not summary.get("has_data"):
         print(f"No script hit memory data available for last {args.window} days.")
     else:
         print(f"=== SCRIPT HIT METRICS (last {args.window} days) ===")
