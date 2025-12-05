@@ -19,7 +19,12 @@ import pandas as pd
 
 import quant_data_core
 import quant_paths
-from script_hit_metrics import get_metrics_table, build_script_league, format_script_league
+from script_hit_metrics import (
+    build_script_weight_map,
+    get_metrics_table,
+    build_script_league,
+    format_script_league,
+)
 from utils_2digit import is_valid_2d_number, to_2d_str
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -755,6 +760,20 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
     league_text = format_script_league(league)
     for line in league_text.splitlines():
         print(f"   {line}")
+
+    weight_map = build_script_weight_map(window_days=window_days)
+    if not weight_map:
+        print("   Script weights (30d): neutral (all 1.00).")
+    else:
+        parts = [
+            f"{name}={entry.get('weight', 1.0):.2f}"
+            for name, entry in sorted(weight_map.items())
+        ]
+        if all(part.endswith("=1.00") for part in parts):
+            print("   Script weights (30d): neutral (all 1.00).")
+        else:
+            preview = ", ".join(parts)
+            print(f"   Script weights (30d): {preview}")
 
 
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
