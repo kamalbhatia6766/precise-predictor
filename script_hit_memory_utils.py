@@ -125,6 +125,18 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
     df["slot"] = df.get("slot").apply(_normalise_slot)
     df["script_name"] = df.get("script_name").apply(_clean_script)
     df["script_id"] = df.get("script_id").apply(_clean_script)
+    if "hit_type" in df.columns:
+        df["hit_type"] = df["hit_type"].astype(str).str.strip().str.lower()
+    for flag_col in [
+        "hit_flag",
+        "is_near_miss",
+        "is_neighbor",
+        "is_mirror",
+        "is_s40",
+        "is_family_164950",
+    ]:
+        if flag_col in df.columns:
+            df[flag_col] = pd.to_numeric(df.get(flag_col), errors="coerce").fillna(0).astype(int)
     return df
 
 
