@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
 import pandas as pd
 import quant_paths
@@ -22,30 +22,30 @@ SCRIPT_HIT_MEMORY_HEADERS: List[str] = [
 
 def get_script_hit_memory_path() -> Path:
     """
-    Return the absolute path to script_hit_memory.csv inside the project's logs folder.
-    Use quant_paths.get_project_root() / "logs" / "script_hit_memory.csv".
-    Ensure that the parent "logs" folder exists.
+    Return the absolute path to script_hit_memory.csv inside the project's logs/performance folder.
+    Use quant_paths.get_project_root() / "logs" / "performance" / "script_hit_memory.csv".
+    Ensure parent folders exist.
     """
 
     project_root = quant_paths.get_project_root()
-    logs_dir = project_root / "logs"
+    logs_dir = project_root / "logs" / "performance"
     logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir / "script_hit_memory.csv"
 
 
 def ensure_script_hit_memory_exists() -> Path:
     """
-    Ensure that script_hit_memory.csv exists with the correct header row.
+    Ensure that script_hit_memory.csv exists with the correct headers.
     Return the Path to the CSV file.
     """
 
     csv_path = get_script_hit_memory_path()
 
-    if not csv_path.exists():
+    if not csv_path.exists() or csv_path.stat().st_size == 0:
         pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS).to_csv(csv_path, index=False)
         return csv_path
 
-    df = pd.read_csv(csv_path, dtype=str) if csv_path.stat().st_size > 0 else pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+    df = pd.read_csv(csv_path, dtype=str)
 
     for col in SCRIPT_HIT_MEMORY_HEADERS:
         if col not in df.columns:
@@ -58,8 +58,7 @@ def ensure_script_hit_memory_exists() -> Path:
 
 def load_script_hit_memory() -> pd.DataFrame:
     """
-    Load script_hit_memory.csv as a DataFrame.
-    Always returns a DataFrame with columns exactly SCRIPT_HIT_MEMORY_HEADERS.
+    Load script_hit_memory.csv as a DataFrame with columns exactly SCRIPT_HIT_MEMORY_HEADERS.
     """
 
     ensure_script_hit_memory_exists()
