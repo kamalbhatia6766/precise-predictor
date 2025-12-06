@@ -120,9 +120,16 @@ class UltimatePredictionEngine:
                 self.script_weight_metrics_df = None
                 return
 
+            weights_info = execution_core.build_weighted_script_weights(
+                metrics_df, window_days=SCRIPT_WEIGHTS_WINDOW_DAYS
+            )
+
             self.script_weight_metrics_df = metrics_df
-            self.script_weight_metrics = {"rows": len(metrics_df)}
-            self.slot_script_weights = execution_core.build_weighted_script_weights(metrics_df, window_days=SCRIPT_WEIGHTS_WINDOW_DAYS)
+            self.script_weight_metrics = {
+                "rows": len(metrics_df),
+                "window_days": weights_info.get("window_days", SCRIPT_WEIGHTS_WINDOW_DAYS),
+            }
+            self.slot_script_weights = weights_info.get("per_slot", {})
             self._print_weight_preview()
         except Exception as e:
             print(f"⚠️  Script weight preview unavailable: {e}")
@@ -149,11 +156,9 @@ class UltimatePredictionEngine:
         if self.script_weight_metrics_df is None or self.script_weight_metrics_df.empty:
             return
         slot_bands = hero_weak_table(self.script_weight_metrics_df)
-        window_used = (
-            self.script_weight_metrics.get("effective_window_days")
-            if isinstance(self.script_weight_metrics, dict)
-            else SCRIPT_WEIGHTS_WINDOW_DAYS
-        )
+        window_used = SCRIPT_WEIGHTS_WINDOW_DAYS
+        if isinstance(self.script_weight_metrics, dict):
+            window_used = self.script_weight_metrics.get("window_days", window_used)
         print(f"SCRIPT WEIGHT PREVIEW (last {window_used} days):")
         if slot_bands is None or slot_bands.empty:
             print("  Hero/weak data unavailable (n/a)")

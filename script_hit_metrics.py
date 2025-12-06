@@ -72,12 +72,24 @@ def _aggregate_metrics(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
         record: Dict[str, Any] = {col: val for col, val in zip(group_cols, key_values)}
 
         total_predictions = len(group)
-        exact_hits = int(group.get("is_exact_hit", False).sum())
-        near_hits = int(group.get("is_near_miss", False).sum())
+        exact_hits = int(group.get("is_exact_hit", False).astype(bool).sum())
+
+        near_col = None
+        for candidate in ["is_near_hit", "is_neighbour_hit", "is_neighbor_hit", "is_near_miss"]:
+            if candidate in group.columns:
+                near_col = candidate
+                break
+
+        if near_col is not None:
+            near_hits = int(group[near_col].astype(bool).sum())
+        else:
+            near_hits = 0
+
+        blind_misses = max(total_predictions - exact_hits - near_hits, 0)
 
         hit_rate_exact = exact_hits / total_predictions if total_predictions else 0.0
         near_miss_rate = near_hits / total_predictions if total_predictions else 0.0
-        blind_miss_rate = max(0.0, 1.0 - (hit_rate_exact + near_miss_rate))
+        blind_miss_rate = blind_misses / total_predictions if total_predictions else 0.0
 
         score = hit_rate_exact + 0.5 * near_miss_rate - 0.2 * blind_miss_rate
 
