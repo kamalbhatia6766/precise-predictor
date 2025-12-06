@@ -47,6 +47,15 @@ class UltimatePredictionEngine:
         self.setup_directories()
         self.load_script_weight_preview()
 
+    def _set_equal_weights_for_slot(self, slot: str):
+        self.slot_script_weights = self.slot_script_weights or {}
+        scripts = []
+        if self.script_weight_metrics_df is not None and not self.script_weight_metrics_df.empty:
+            slot_df = self.script_weight_metrics_df[self.script_weight_metrics_df.get("slot") == slot]
+            if not slot_df.empty and "script_id" in slot_df.columns:
+                scripts = [self._script_key(str(s)) for s in slot_df["script_id"].tolist()]
+        self.slot_script_weights[slot] = {script: 1.0 for script in scripts}
+
     def setup_directories(self):
         """Create output folders"""
         base_dir = self.base_dir
@@ -116,7 +125,10 @@ class UltimatePredictionEngine:
             metrics_df = hit_core.compute_script_metrics(hit_df, window_days=SCRIPT_WEIGHTS_WINDOW_DAYS, base_dir=Path(self.base_dir))
             if metrics_df is None or metrics_df.empty:
                 print("Script metrics warming up – skipping script-wise performance overlay.")
-                self.slot_script_weights = {}
+                for slot in SLOTS:
+                    print(f"[WARN] No hero/weak metrics for slot {slot}, using equal weights")
+                    self._set_equal_weights_for_slot(slot)
+                self.slot_script_weights = self.slot_script_weights or {}
                 self.script_weight_metrics = None
                 self.script_weight_metrics_df = None
                 return
@@ -165,14 +177,16 @@ class UltimatePredictionEngine:
         print(f"SCRIPT WEIGHT PREVIEW (last {window_used} days):")
         if slot_bands is None or slot_bands.empty:
             for slot in SLOTS:
-                print(f"  No hero/weak for slot {slot}; using equal weights.")
+                print(f"[WARN] No hero/weak metrics for slot {slot}, using equal weights")
+                self._set_equal_weights_for_slot(slot)
         else:
             for _, row in slot_bands.iterrows():
                 hero = row.get("hero_script") or "n/a"
                 weak = row.get("weak_script") or "n/a"
                 slot = row.get("slot")
                 if hero == "n/a" and weak == "n/a":
-                    print(f"  No hero/weak for slot {slot}; using equal weights.")
+                    print(f"[WARN] No hero/weak metrics for slot {slot}, using equal weights")
+                    self._set_equal_weights_for_slot(slot)
                     continue
                 print(f"  {slot}: hero=[{hero}] weak=[{weak}] window={window_used}d")
                 if self.slot_script_weights and slot in self.slot_script_weights:
@@ -433,9 +447,13 @@ class UltimatePredictionEngine:
             default_weight = 1.0 if not self.slot_script_weights else 0.5
             script_weight = default_weight
             if self.slot_script_weights and slot_key:
-                script_weight = self.slot_script_weights.get(slot_key, {}).get(
-                    self._script_key(script_name), default_weight
-                )
+                slot_weights = self.slot_script_weights.get(slot_key) or {}
+                if not slot_weights:
+                    script_weight = 1.0
+                else:
+                    script_weight = slot_weights.get(
+                        self._script_key(script_name), default_weight
+                    )
             weight = script_weight
 
             for rank, number in enumerate(predictions, 1):

@@ -12,6 +12,8 @@ from quant_core.data_core import load_results_dataframe
 
 
 def _as_date_string(value: object) -> str:
+    import pandas as pd
+
     if hasattr(value, "strftime"):
         return value.strftime("%Y-%m-%d")
     try:

@@ -548,6 +548,7 @@ def load_pnl_snapshot() -> PnLSnapshot:
 def load_pattern_summary(window_days: int = 90) -> PatternSummary:
     notes: List[str] = []
     memory_df = load_script_hit_memory(base_dir=quant_paths.get_project_root())
+
     def _empty_summary() -> PatternSummary:
         return PatternSummary(
             total_hits=0,
@@ -568,11 +569,13 @@ def load_pattern_summary(window_days: int = 90) -> PatternSummary:
             notes=notes,
         )
 
-    if memory_df is None or memory_df.empty:
-        return _empty_summary()
+    date_col = None
+    for col in ("DATE", "result_date", "date"):
+        if col in (memory_df.columns if memory_df is not None else []) and not memory_df[col].isna().all():
+            date_col = col
+            break
 
-    date_col = _choose_date_column(memory_df)
-    if not date_col:
+    if memory_df is None or memory_df.empty or not date_col:
         return _empty_summary()
 
     work_df = memory_df.copy()
@@ -583,106 +586,86 @@ def load_pattern_summary(window_days: int = 90) -> PatternSummary:
 
     latest_date = work_df[date_col].max()
     cutoff = latest_date - timedelta(days=window_days - 1)
-    window_df = work_df[work_df[date_col] >= cutoff]
+    window_df = work_df[work_df[date_col] >= cutoff].copy()
     if window_df.empty:
         return _empty_summary()
 
-    hit_df = window_df.copy()
-    hits_analyzed = len(hit_df) if hit_df is not None else 0
+    S40_COLS = [f"{slot}_is_s40" for slot in SLOTS]
+    FAM_COLS = [f"{slot}_is_164950" for slot in SLOTS]
+    for col in S40_COLS + FAM_COLS:
+        if col not in window_df.columns:
+            window_df[col] = False
 
-    s40_hits = 0
-    fam_hits = 0
+    window_df[S40_COLS + FAM_COLS] = window_df[S40_COLS + FAM_COLS].fillna(False).astype(bool)
+    window_df[date_col] = window_df[date_col].dt.date
 
-    if hits_analyzed:
-        if "is_s40" in hit_df.columns:
-            s40_hits = int(pd.to_numeric(hit_df["is_s40"], errors="coerce").fillna(0).sum())
-        if "is_164950" in hit_df.columns:
-            fam_hits = int(pd.to_numeric(hit_df["is_164950"], errors="coerce").fillna(0).sum())
-        elif "is_family_164950" in hit_df.columns:
-            fam_hits = int(pd.to_numeric(hit_df["is_family_164950"], errors="coerce").fillna(0).sum())
+    total_rows = len(window_df)
+    hits_analyzed = total_rows
 
-    s40_hit_rate_row = (s40_hits / hits_analyzed * 100.0) if hits_analyzed else 0.0
-    fam_hit_rate_row = (fam_hits / hits_analyzed * 100.0) if hits_analyzed else 0.0
+    rows_with_s40 = int(window_df[S40_COLS].any(axis=1).sum())
+    rows_with_fam = int(window_df[FAM_COLS].any(axis=1).sum())
 
-    results_df = load_results_df()
-    daily_s40_days = 0
-    daily_164_days = 0
-    total_days = 0
+    s40_per_row = rows_with_s40 / total_rows if total_rows else 0.0
+    fam_per_row = rows_with_fam / total_rows if total_rows else 0.0
 
-    if not results_df.empty:
-        daily_df = results_df.copy()
-        if "DATE" in daily_df.columns and "DATE_ONLY" not in daily_df.columns:
-            daily_df["DATE_ONLY"] = pd.to_datetime(daily_df["DATE"], errors="coerce").dt.date
+    if total_rows:
+        grouped = window_df.groupby(date_col)
+        daily_s40_flags = grouped[S40_COLS].any()
+        daily_fam_flags = grouped[FAM_COLS].any()
 
-        if "DATE_ONLY" in daily_df.columns and not daily_df["DATE_ONLY"].isna().all():
-            latest_date = daily_df["DATE_ONLY"].max()
-            cutoff_daily = latest_date - timedelta(days=window_days - 1)
-            daily_df = daily_df[daily_df["DATE_ONLY"] >= cutoff_daily].copy()
+        daily_s40_days = int(daily_s40_flags.any(axis=1).sum())
+        daily_fam_days = int(daily_fam_flags.any(axis=1).sum())
+        total_days = len(daily_s40_flags)
+        s40_daily_cover = daily_s40_days / total_days if total_days else 0.0
+        fam_daily_cover = daily_fam_days / total_days if total_days else 0.0
+    else:
+        daily_s40_days = daily_fam_days = total_days = 0
+        s40_daily_cover = fam_daily_cover = 0.0
 
-            for slot in SLOTS:
-                daily_df[slot] = daily_df[slot].astype(str).str.strip()
-                daily_df[slot] = daily_df[slot].where(daily_df[slot] != "XX", None)
+    slot_s40_share: Dict[str, float] = {}
+    slot_fam_share: Dict[str, float] = {}
+    per_slot_stats: Dict[str, Dict[str, float]] = {}
+    for slot in SLOTS:
+        col_s40 = f"{slot}_is_s40"
+        col_fam = f"{slot}_is_164950"
+        slot_df = window_df[[col_s40, col_fam]].copy()
+        slot_total = len(slot_df)
+        s40_hits = int(slot_df[col_s40].sum())
+        fam_hits = int(slot_df[col_fam].sum())
+        per_slot_stats[slot] = {
+            "total": slot_total,
+            "s40_hits": s40_hits,
+            "fam_hits": fam_hits,
+            "s40_rate": s40_hits / slot_total if slot_total else 0.0,
+            "fam_rate": fam_hits / slot_total if slot_total else 0.0,
+        }
+        slot_s40_share[slot] = per_slot_stats[slot]["s40_rate"]
+        slot_fam_share[slot] = per_slot_stats[slot]["fam_rate"]
 
-            def _is_s40_number(val: str) -> bool:
-                if val is None or val == "" or str(val).lower() == "nan":
-                    return False
-                try:
-                    n = int(val)
-                except ValueError:
-                    return False
-                n = max(0, min(99, n))
-                return f"{n:02d}" in S40_SET
+    if any(slot_s40_share.values()):
+        best_slot = max(slot_s40_share, key=lambda k: slot_s40_share[k])
+        weak_slot = min(slot_s40_share, key=lambda k: slot_s40_share[k])
+        notes.append(f"S40 best={best_slot}, weak={weak_slot} (window {window_days}d)")
 
-            def _is_164950_number(val: str) -> bool:
-                if val is None or val == "" or str(val).lower() == "nan":
-                    return False
-                try:
-                    n = int(val)
-                except ValueError:
-                    return False
-                n = max(0, min(99, n))
-                s = f"{n:02d}"
-                return (s[0] in PACK_164950_FAMILY) and (s[1] in PACK_164950_FAMILY)
-
-            for slot in SLOTS:
-                daily_df[f"{slot}_is_s40"] = daily_df[slot].apply(_is_s40_number)
-                daily_df[f"{slot}_is_164"] = daily_df[slot].apply(_is_164950_number)
-
-            grouped = daily_df.groupby("DATE_ONLY", dropna=False)
-            total_days = grouped.size().shape[0]
-            s40_cols = [f"{slot}_is_s40" for slot in SLOTS]
-            daily_s40_flags = grouped[s40_cols].any()
-            daily_s40_days = daily_s40_flags.any(axis=1).sum()
-            fam_cols = [f"{slot}_is_164" for slot in SLOTS]
-            daily_164_flags = grouped[fam_cols].any()
-            daily_164_days = daily_164_flags.any(axis=1).sum()
-
-    s40_daily_rate = (daily_s40_days / total_days * 100.0) if total_days else 0.0
-    fam_daily_rate = (daily_164_days / total_days * 100.0) if total_days else 0.0
-
-    stats = compute_pack_hit_stats(window_days=window_days, base_dir=quant_paths.get_project_root()) or {}
-    per_slot = stats.get("per_slot", {})
-    if per_slot:
-        ordered = sorted(per_slot.items(), key=lambda kv: kv[1].get("s40_rate", 0), reverse=True)
-        best_s40 = ordered[0][0] if ordered else None
-        worst_s40 = ordered[-1][0] if ordered else None
-        if best_s40 and worst_s40:
-            notes.append(f"S40 best={best_s40}, weak={worst_s40} (window {window_days}d)")
+    if any(slot_fam_share.values()):
+        best_slot = max(slot_fam_share, key=lambda k: slot_fam_share[k])
+        weak_slot = min(slot_fam_share, key=lambda k: slot_fam_share[k])
+        notes.append(f"164950 best={best_slot}, weak={weak_slot} (window {window_days}d)")
 
     return PatternSummary(
         total_hits=hits_analyzed,
         s40={
-            "hits": s40_hits,
-            "hit_rate": s40_hit_rate_row,
-            "daily_rate": s40_daily_rate,
+            "hits": rows_with_s40,
+            "hit_rate": s40_per_row * 100.0,
+            "daily_rate": s40_daily_cover * 100.0,
             "daily_days": daily_s40_days,
             "total_days": total_days,
         },
         fam_164950={
-            "hits": fam_hits,
-            "hit_rate": fam_hit_rate_row,
-            "daily_rate": fam_daily_rate,
-            "daily_days": daily_164_days,
+            "hits": rows_with_fam,
+            "hit_rate": fam_per_row * 100.0,
+            "daily_rate": fam_daily_cover * 100.0,
+            "daily_days": daily_fam_days,
             "total_days": total_days,
         },
         notes=notes,
@@ -996,7 +979,7 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
         print(f"   No script-level hits in the last {window_days} days – league not meaningful yet.")
         return
 
-    league = build_script_league(metrics, min_predictions=1, min_hits_for_hero=1)
+    league = build_script_league(metrics, min_predictions=10, min_hits_for_hero=1)
     if not league:
         print(f"   No script-level hits in the last {window_days} days – league not meaningful yet.")
         return
@@ -1007,18 +990,19 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
         rate_val = rate if rate is not None else 0.0
         return f"score {score:+.2f} exact {rate_val:.1%}"
 
+    heroes_df = hero_weak_table(metrics, min_predictions=10)
+    hero_map = {row.get("slot"): row for _, row in heroes_df.iterrows()} if heroes_df is not None else {}
+
     for slot in SLOTS:
-        entry = league.get("by_slot", {}).get(slot) if isinstance(league, dict) else None
-        if not entry:
-            continue
-        hero = entry.get("hero") if isinstance(entry, dict) else None
-        weak = entry.get("weak") if isinstance(entry, dict) else None
-        hero_id = (hero or {}).get("script_id") or "n/a"
-        weak_id = (weak or {}).get("script_id") or "n/a"
-        hero_score = (hero or {}).get("score")
-        weak_score = (weak or {}).get("score")
-        hero_rate = (hero or {}).get("hit_rate_exact")
-        weak_rate = (weak or {}).get("hit_rate_exact")
+        hero_row = hero_map.get(slot) if hero_map else None
+        hero_id = hero_row.get("hero_script") if hero_row is not None else None
+        weak_id = hero_row.get("weak_script") if hero_row is not None else None
+        hero_score = hero_row.get("hero_score") if hero_row is not None else None
+        weak_score = hero_row.get("weak_score") if hero_row is not None else None
+        hero_rate = hero_row.get("hero_hit_rate_exact") if hero_row is not None else None
+        weak_rate = hero_row.get("weak_hit_rate_exact") if hero_row is not None else None
+        hero_id = hero_id or "n/a"
+        weak_id = weak_id or "n/a"
         print(
             f"   {slot}: hero {hero_id} ({_fmt_scores(hero_score, hero_rate)}) "
             f"| weak {weak_id} ({_fmt_scores(weak_score, weak_rate)})"
@@ -1038,6 +1022,31 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
             f"   Overall hero: {hero_id} ({_fmt_scores(hero_score, hero_rate)}) "
             f"| overall weak: {weak_id} ({_fmt_scores(weak_score, weak_rate)})"
         )
+
+
+def print_topn_roi_insight() -> None:
+    path = Path("logs/performance/topn_roi_summary.csv")
+    if not path.exists():
+        return
+    try:
+        df = pd.read_csv(path)
+        if df.empty:
+            return
+        df = df[df.get("slot") == "ALL"].copy()
+        if df.empty:
+            return
+        df["ROI"] = pd.to_numeric(df.get("ROI"), errors="coerce")
+        df["N"] = pd.to_numeric(df.get("N"), errors="coerce")
+        df = df.dropna(subset=["ROI", "N"])
+        if df.empty:
+            return
+        best_row = df.loc[df["ROI"].idxmax()]
+        best_n = int(best_row.get("N", 0))
+        roi_val = float(best_row.get("ROI", 0.0))
+        print("6️⃣ TOP-N ROI INSIGHT (last 30 days)")
+        print(f"   Best N = {best_n} with overall ROI = {roi_val:+.1%} (1 unit per number)")
+    except Exception as e:
+        print(f"   (Top-N ROI insight unavailable: {e})")
 
 
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
@@ -1083,6 +1092,7 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     print_pattern_slot_section(window_days=SCRIPT_METRICS_WINDOW_DAYS)
     print_risk_section(strategy, money, execution, confidence)
     print_script_performance_section(window_days=SCRIPT_METRICS_WINDOW_DAYS)
+    print_topn_roi_insight()
     print("=" * 80)
     verdict = "Short verdict: System learning healthy; keep stakes disciplined."
     print(verdict)

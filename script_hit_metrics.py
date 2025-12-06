@@ -80,21 +80,24 @@ def _aggregate_metrics(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
                 near_col = candidate
                 break
 
-        if near_col is not None:
-            near_hits = int(group[near_col].astype(bool).sum())
-        else:
-            near_hits = 0
-
-        blind_misses = max(total_predictions - exact_hits - near_hits, 0)
-
         if total_predictions == 0:
             hit_rate_exact = near_miss_rate = blind_miss_rate = 0.0
             score = 0.0
         else:
+            if near_col is not None:
+                near_hits = int(group[near_col].astype(bool).sum())
+            else:
+                near_hits = 0
+
+            blind_misses = max(total_predictions - exact_hits - near_hits, 0)
             hit_rate_exact = exact_hits / total_predictions
             near_miss_rate = near_hits / total_predictions
             blind_miss_rate = blind_misses / total_predictions
             score = hit_rate_exact + 0.5 * near_miss_rate - 0.2 * blind_miss_rate
+
+        if total_predictions == 0:
+            near_hits = 0
+            blind_misses = 0
 
         rows.append(
             {
