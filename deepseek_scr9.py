@@ -14,6 +14,7 @@ from pathlib import Path
 import quant_data_core
 from quant_core import execution_core, hit_core
 from script_hit_metrics import (
+    SLOTS,
     build_script_league,
     build_script_weights_by_slot,
     compute_script_metrics,
@@ -115,7 +116,7 @@ class UltimatePredictionEngine:
             metrics_df = hit_core.compute_script_metrics(hit_df, window_days=SCRIPT_WEIGHTS_WINDOW_DAYS, base_dir=Path(self.base_dir))
             if metrics_df is None or metrics_df.empty:
                 print("Script metrics warming up – skipping script-wise performance overlay.")
-                self.slot_script_weights = None
+                self.slot_script_weights = {}
                 self.script_weight_metrics = None
                 self.script_weight_metrics_df = None
                 return
@@ -133,7 +134,7 @@ class UltimatePredictionEngine:
             self._print_weight_preview()
         except Exception as e:
             print(f"⚠️  Script weight preview unavailable: {e}")
-            self.slot_script_weights = None
+            self.slot_script_weights = {}
             self.script_weight_metrics = None
             self.script_weight_metrics_df = None
 
@@ -154,6 +155,8 @@ class UltimatePredictionEngine:
 
     def _print_weight_preview(self):
         if self.script_weight_metrics_df is None or self.script_weight_metrics_df.empty:
+            for slot in SLOTS:
+                print(f"  No hero/weak for slot {slot}; using equal weights.")
             return
         slot_bands = hero_weak_table(self.script_weight_metrics_df)
         window_used = SCRIPT_WEIGHTS_WINDOW_DAYS
@@ -161,12 +164,16 @@ class UltimatePredictionEngine:
             window_used = self.script_weight_metrics.get("window_days", window_used)
         print(f"SCRIPT WEIGHT PREVIEW (last {window_used} days):")
         if slot_bands is None or slot_bands.empty:
-            print("  Hero/weak data unavailable (n/a)")
+            for slot in SLOTS:
+                print(f"  No hero/weak for slot {slot}; using equal weights.")
         else:
             for _, row in slot_bands.iterrows():
                 hero = row.get("hero_script") or "n/a"
                 weak = row.get("weak_script") or "n/a"
                 slot = row.get("slot")
+                if hero == "n/a" and weak == "n/a":
+                    print(f"  No hero/weak for slot {slot}; using equal weights.")
+                    continue
                 print(f"  {slot}: hero=[{hero}] weak=[{weak}] window={window_used}d")
                 if self.slot_script_weights and slot in self.slot_script_weights:
                     weight_line = ", ".join(

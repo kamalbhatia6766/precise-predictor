@@ -11,6 +11,16 @@ from quant_core import hit_core, pattern_core, pnl_core
 from quant_core.data_core import load_results_dataframe
 
 
+def _as_date_string(value: object) -> str:
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    try:
+        dt = pd.to_datetime(value)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return str(value)
+
+
 def _backup_file(path: Path) -> None:
     if not path.exists():
         return
@@ -21,7 +31,7 @@ def _backup_file(path: Path) -> None:
 
 
 def rebuild_from_date(from_date: str, rebuild_hit_memory: bool, rebuild_pnl: bool, rebuild_patterns: bool) -> None:
-    print(f"QUANT TIME MACHINE – Rebuilding from {from_date}")
+    print(f"QUANT TIME MACHINE – Rebuilding from {_as_date_string(from_date)}")
     base_dir = Path(__file__).resolve().parent
     target_date = pd.to_datetime(from_date).date()
     results_df = load_results_dataframe()
@@ -47,8 +57,15 @@ def rebuild_from_date(from_date: str, rebuild_hit_memory: bool, rebuild_pnl: boo
         try:
             pattern_window = 120
             hit_df = hit_core.rebuild_hit_memory(window_days=pattern_window)
+            if hit_df is not None and not hit_df.empty:
+                for col in ["DATE", "result_date", "date"]:
+                    if col in hit_df.columns:
+                        hit_df[col] = pd.to_datetime(hit_df[col], errors="coerce")
             pattern_core.build_pattern_config(hit_df=hit_df, window_days=pattern_window)
-            print("Pattern config rebuilt from Time Machine.")
+            print(
+                "Pattern config rebuilt from Time Machine."
+                f" window={pattern_window}d latest={_as_date_string(hit_df['DATE'].max()) if hit_df is not None and 'DATE' in hit_df.columns else 'n/a'}"
+            )
         except Exception as e:
             print(f"[WARN] Pattern rebuild failed in Time Machine: {e}")
 
