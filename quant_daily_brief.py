@@ -548,24 +548,44 @@ def load_pnl_snapshot() -> PnLSnapshot:
 def load_pattern_summary(window_days: int = 90) -> PatternSummary:
     notes: List[str] = []
     memory_df = load_script_hit_memory(base_dir=quant_paths.get_project_root())
+    def _empty_summary() -> PatternSummary:
+        return PatternSummary(
+            total_hits=0,
+            s40={
+                "hits": 0,
+                "hit_rate": 0.0,
+                "daily_rate": 0.0,
+                "daily_days": 0,
+                "total_days": 0,
+            },
+            fam_164950={
+                "hits": 0,
+                "hit_rate": 0.0,
+                "daily_rate": 0.0,
+                "daily_days": 0,
+                "total_days": 0,
+            },
+            notes=notes,
+        )
+
     if memory_df is None or memory_df.empty:
-        return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
+        return _empty_summary()
 
     date_col = _choose_date_column(memory_df)
     if not date_col:
-        return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
+        return _empty_summary()
 
     work_df = memory_df.copy()
     work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce")
     work_df = work_df.dropna(subset=[date_col])
     if work_df.empty:
-        return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
+        return _empty_summary()
 
     latest_date = work_df[date_col].max()
     cutoff = latest_date - timedelta(days=window_days - 1)
     window_df = work_df[work_df[date_col] >= cutoff]
     if window_df.empty:
-        return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
+        return _empty_summary()
 
     hit_df = window_df.copy()
     hits_analyzed = len(hit_df) if hit_df is not None else 0
@@ -630,8 +650,12 @@ def load_pattern_summary(window_days: int = 90) -> PatternSummary:
 
             grouped = daily_df.groupby("DATE_ONLY", dropna=False)
             total_days = grouped.size().shape[0]
-            daily_s40_days = grouped[[f"{slot}_is_s40" for slot in SLOTS]].any(axis=1).sum()
-            daily_164_days = grouped[[f"{slot}_is_164" for slot in SLOTS]].any(axis=1).sum()
+            s40_cols = [f"{slot}_is_s40" for slot in SLOTS]
+            daily_s40_flags = grouped[s40_cols].any()
+            daily_s40_days = daily_s40_flags.any(axis=1).sum()
+            fam_cols = [f"{slot}_is_164" for slot in SLOTS]
+            daily_164_flags = grouped[fam_cols].any()
+            daily_164_days = daily_164_flags.any(axis=1).sum()
 
     s40_daily_rate = (daily_s40_days / total_days * 100.0) if total_days else 0.0
     fam_daily_rate = (daily_164_days / total_days * 100.0) if total_days else 0.0
