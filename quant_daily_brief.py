@@ -20,7 +20,7 @@ import pandas as pd
 import quant_data_core
 import quant_paths
 from quant_core import pattern_core
-from quant_core.config_core import PACK_164950_FAMILY, S40
+from quant_core.config_core import PACK_164950_FAMILY, S40 as S40_SET
 from script_hit_metrics import (
     compute_pack_hit_stats,
     get_metrics_table,
@@ -567,21 +567,74 @@ def load_pattern_summary(window_days: int = 90) -> PatternSummary:
     if window_df.empty:
         return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
 
-    def _is_164950(num: str) -> bool:
-        return len(num) == 2 and all(ch in PACK_164950_FAMILY for ch in num)
+    hit_df = window_df.copy()
+    hits_analyzed = len(hit_df) if hit_df is not None else 0
 
-    total_rows = len(window_df)
     s40_hits = 0
     fam_hits = 0
-    for _, row in window_df.iterrows():
-        num = to_2d_str(row.get("real_number"))
-        is_hit = bool(row.get("is_exact_hit", False))
-        if not num or not is_hit:
-            continue
-        if num in S40:
-            s40_hits += 1
-        if _is_164950(num):
-            fam_hits += 1
+
+    if hits_analyzed:
+        if "is_s40" in hit_df.columns:
+            s40_hits = int(pd.to_numeric(hit_df["is_s40"], errors="coerce").fillna(0).sum())
+        if "is_164950" in hit_df.columns:
+            fam_hits = int(pd.to_numeric(hit_df["is_164950"], errors="coerce").fillna(0).sum())
+        elif "is_family_164950" in hit_df.columns:
+            fam_hits = int(pd.to_numeric(hit_df["is_family_164950"], errors="coerce").fillna(0).sum())
+
+    s40_hit_rate_row = (s40_hits / hits_analyzed * 100.0) if hits_analyzed else 0.0
+    fam_hit_rate_row = (fam_hits / hits_analyzed * 100.0) if hits_analyzed else 0.0
+
+    results_df = load_results_df()
+    daily_s40_days = 0
+    daily_164_days = 0
+    total_days = 0
+
+    if not results_df.empty:
+        daily_df = results_df.copy()
+        if "DATE" in daily_df.columns and "DATE_ONLY" not in daily_df.columns:
+            daily_df["DATE_ONLY"] = pd.to_datetime(daily_df["DATE"], errors="coerce").dt.date
+
+        if "DATE_ONLY" in daily_df.columns and not daily_df["DATE_ONLY"].isna().all():
+            latest_date = daily_df["DATE_ONLY"].max()
+            cutoff_daily = latest_date - timedelta(days=window_days - 1)
+            daily_df = daily_df[daily_df["DATE_ONLY"] >= cutoff_daily].copy()
+
+            for slot in SLOTS:
+                daily_df[slot] = daily_df[slot].astype(str).str.strip()
+                daily_df[slot] = daily_df[slot].where(daily_df[slot] != "XX", None)
+
+            def _is_s40_number(val: str) -> bool:
+                if val is None or val == "" or str(val).lower() == "nan":
+                    return False
+                try:
+                    n = int(val)
+                except ValueError:
+                    return False
+                n = max(0, min(99, n))
+                return f"{n:02d}" in S40_SET
+
+            def _is_164950_number(val: str) -> bool:
+                if val is None or val == "" or str(val).lower() == "nan":
+                    return False
+                try:
+                    n = int(val)
+                except ValueError:
+                    return False
+                n = max(0, min(99, n))
+                s = f"{n:02d}"
+                return (s[0] in PACK_164950_FAMILY) and (s[1] in PACK_164950_FAMILY)
+
+            for slot in SLOTS:
+                daily_df[f"{slot}_is_s40"] = daily_df[slot].apply(_is_s40_number)
+                daily_df[f"{slot}_is_164"] = daily_df[slot].apply(_is_164950_number)
+
+            grouped = daily_df.groupby("DATE_ONLY", dropna=False)
+            total_days = grouped.size().shape[0]
+            daily_s40_days = grouped[[f"{slot}_is_s40" for slot in SLOTS]].any(axis=1).sum()
+            daily_164_days = grouped[[f"{slot}_is_164" for slot in SLOTS]].any(axis=1).sum()
+
+    s40_daily_rate = (daily_s40_days / total_days * 100.0) if total_days else 0.0
+    fam_daily_rate = (daily_164_days / total_days * 100.0) if total_days else 0.0
 
     stats = compute_pack_hit_stats(window_days=window_days, base_dir=quant_paths.get_project_root()) or {}
     per_slot = stats.get("per_slot", {})
@@ -593,9 +646,21 @@ def load_pattern_summary(window_days: int = 90) -> PatternSummary:
             notes.append(f"S40 best={best_s40}, weak={worst_s40} (window {window_days}d)")
 
     return PatternSummary(
-        total_hits=total_rows,
-        s40={"hits": s40_hits, "hit_rate": s40_hits / total_rows if total_rows else 0.0},
-        fam_164950={"hits": fam_hits, "hit_rate": fam_hits / total_rows if total_rows else 0.0},
+        total_hits=hits_analyzed,
+        s40={
+            "hits": s40_hits,
+            "hit_rate": s40_hit_rate_row,
+            "daily_rate": s40_daily_rate,
+            "daily_days": daily_s40_days,
+            "total_days": total_days,
+        },
+        fam_164950={
+            "hits": fam_hits,
+            "hit_rate": fam_hit_rate_row,
+            "daily_rate": fam_daily_rate,
+            "daily_days": daily_164_days,
+            "total_days": total_days,
+        },
         notes=notes,
     )
 
@@ -769,13 +834,21 @@ def print_pattern_section(patterns: PatternSummary) -> None:
     if patterns.total_hits is not None:
         print(f"   Hits analyzed    : {patterns.total_hits}")
     if patterns.s40:
-        hr = patterns.s40.get("hit_rate")
+        hr = patterns.s40.get("hit_rate", 0.0) or 0.0
         hits = patterns.s40.get("hits")
-        print(f"   S40 family       : {pct(hr)} hit rate, {hits} hits")
+        print(f"   S40 family       : {hr:.2f}% per-row, {hits} tagged hits")
+        print(
+            f"   S40 daily cover  : {patterns.s40.get('daily_rate', 0.0):.1f}% of days "
+            f"({patterns.s40.get('daily_days', 0)}/{patterns.s40.get('total_days', 0)}) with ≥1 S40 result"
+        )
     if patterns.fam_164950:
-        hr = patterns.fam_164950.get("hit_rate")
+        hr = patterns.fam_164950.get("hit_rate", 0.0) or 0.0
         hits = patterns.fam_164950.get("hits")
-        print(f"   164950 family    : {pct(hr)} hit rate, {hits} hits")
+        print(f"   164950 family    : {hr:.2f}% per-row, {hits} tagged hits")
+        print(
+            f"   164950 daily     : {patterns.fam_164950.get('daily_rate', 0.0):.1f}% of days "
+            f"({patterns.fam_164950.get('daily_days', 0)}/{patterns.fam_164950.get('total_days', 0)}) with ≥1 164950 result"
+        )
     for note in patterns.notes:
         print(f"   {note}")
 

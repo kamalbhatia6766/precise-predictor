@@ -121,6 +121,8 @@ def get_metrics_table(
 
     group_cols = ["script_id"] if mode == "overall" else ["script_id", "slot"]
     metrics = _aggregate_metrics(window_df, group_cols)
+    if not metrics.empty and "score" in metrics.columns:
+        metrics["score"] = (metrics["score"] + 0.20) * 100.0
     order_cols = ["script_id", "slot"] if "slot" in metrics.columns else ["script_id"]
     metrics = metrics.sort_values(order_cols + ["score"], ascending=[True] * len(order_cols) + [False]).reset_index(drop=True)
     return metrics, summary

@@ -14,6 +14,7 @@ DEFAULT_PATTERN_WINDOW = 90
 
 
 def _ensure_hit_df(hit_df: Optional[pd.DataFrame], window_days: int) -> pd.DataFrame:
+    window_days = int(window_days)
     if hit_df is None:
         from . import hit_core
 
@@ -60,6 +61,7 @@ def _ensure_hit_df(hit_df: Optional[pd.DataFrame], window_days: int) -> pd.DataF
 
 
 def run_basic_pattern_intel(hit_df: Optional[pd.DataFrame] = None, window_days: int = DEFAULT_PATTERN_WINDOW) -> Dict[str, Dict[str, float]]:
+    window_days = int(window_days)
     df = _ensure_hit_df(hit_df, window_days)
     if df.empty:
         return {}
@@ -142,6 +144,7 @@ def run_basic_pattern_intel(hit_df: Optional[pd.DataFrame] = None, window_days: 
 
 
 def run_enhanced_pattern_intel(hit_df: Optional[pd.DataFrame] = None, window_days: int = 120) -> Dict[str, Dict]:
+    window_days = int(window_days)
     engine = PatternIntelligenceEnhanced(window_days=window_days)
     df = _ensure_hit_df(hit_df, window_days)
     if df.empty:
@@ -180,6 +183,7 @@ def build_pattern_config(
     window_days: int = 120,
     out_path: str = "config/pattern_packs_auto.json",
 ) -> Dict:
+    window_days = int(window_days)
     stats = run_basic_pattern_intel(hit_df=hit_df, window_days=window_days)
     packs = []
     for pack_id, pack_stats in stats.items():
