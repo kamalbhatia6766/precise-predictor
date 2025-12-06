@@ -44,7 +44,12 @@ def rebuild_from_date(from_date: str, rebuild_hit_memory: bool, rebuild_pnl: boo
     if rebuild_patterns:
         path = Path("config/pattern_packs_auto.json")
         _backup_file(path)
-        pattern_core.build_pattern_config(hit_df=hit_df, window_days=120)
+        try:
+            hit_df = hit_core.rebuild_hit_memory(window_days=120)
+            pattern_core.build_pattern_config(hit_df=hit_df, window_days=120)
+            print("Pattern config rebuilt from Time Machine.")
+        except Exception as e:
+            print(f"[WARN] Pattern rebuild failed in Time Machine: {e}")
 
     print("Rebuild completed.")
 

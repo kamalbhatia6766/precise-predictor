@@ -7,41 +7,138 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 import pattern_packs
-from pattern_intelligence_engine import PatternIntelligenceEngine
 from pattern_intelligence_enhanced import PatternIntelligenceEnhanced
-from script_hit_memory_utils import load_script_hit_memory
 
 
 DEFAULT_PATTERN_WINDOW = 90
 
 
 def _ensure_hit_df(hit_df: Optional[pd.DataFrame], window_days: int) -> pd.DataFrame:
-    if hit_df is not None and not hit_df.empty:
-        df = hit_df.copy()
-    else:
-        df = load_script_hit_memory(base_dir=Path(__file__).resolve().parent.parent)
+    if hit_df is None:
+        from . import hit_core
+
+        hit_df = hit_core.rebuild_hit_memory(window_days=window_days)
+
+    df = hit_df.copy()
+
     if df.empty:
         return pd.DataFrame()
-    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
-    df = df.dropna(subset=["result_date"])
-    latest = df["result_date"].max()
-    if pd.isna(latest):
-        return pd.DataFrame()
-    cutoff = latest - pd.to_timedelta(window_days - 1, unit="D")
-    df = df[df["result_date"] >= cutoff]
+
+    if "DATE" in df.columns:
+        df["DATE"] = pd.to_datetime(df["DATE"]).dt.date
+
+    if "result_date" in df.columns:
+        df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
+        df = df.dropna(subset=["result_date"])
+        latest = df["result_date"].max()
+        if pd.notna(latest):
+            cutoff = latest - pd.to_timedelta(window_days - 1, unit="D")
+            df = df[df["result_date"] >= cutoff]
+
     df["real_number"] = pd.to_numeric(df.get("real_number"), errors="coerce")
+    df = df.dropna(subset=["real_number"])
+    df["real_number"] = df["real_number"].astype(int)
     df["slot"] = df.get("slot").astype(str)
-    df["is_exact_hit"] = df.get("is_exact_hit", False).astype(bool)
-    df["is_near_miss"] = df.get("is_near_miss", False).astype(bool)
+
+    if "is_exact_hit" in df.columns:
+        df["is_exact_hit"] = df["is_exact_hit"].astype(bool)
+    else:
+        df["is_exact_hit"] = False
+
+    near_col = None
+    for candidate in ["is_near_hit", "is_neighbour_hit", "is_neighbor_hit", "is_near_miss"]:
+        if candidate in df.columns:
+            near_col = candidate
+            break
+
+    if near_col is not None:
+        df["is_near_hit"] = df[near_col].astype(bool)
+    else:
+        df["is_near_hit"] = False
+
     return df
 
 
 def run_basic_pattern_intel(hit_df: Optional[pd.DataFrame] = None, window_days: int = DEFAULT_PATTERN_WINDOW) -> Dict[str, Dict[str, float]]:
-    engine = PatternIntelligenceEngine(window_days=window_days)
     df = _ensure_hit_df(hit_df, window_days)
     if df.empty:
         return {}
-    return engine.analyse(df)
+
+    families: List[str] = [
+        "S40",
+        "PACK_164950",
+        "PACK_00_19",
+        "PACK_20_39",
+        "PACK_40_59",
+        "PACK_60_79",
+        "PACK_80_99",
+    ]
+
+    def _belongs_to_family(number: int, family: str) -> bool:
+        if family == "S40":
+            return pattern_packs.is_s40(number)
+        if family == "PACK_164950":
+            return pattern_packs.is_164950_family(number)
+        tags = pattern_packs.get_digit_pack_tags(number)
+        return family in tags
+
+    stats: Dict[str, Dict[str, float]] = {}
+    epsilon = 1e-6
+
+    for family in families:
+        fam_df = df[df["real_number"].apply(lambda n: _belongs_to_family(n, family))]
+        if fam_df.empty:
+            stats[family] = {
+                "observations": 0,
+                "exact_hits": 0,
+                "near_hits": 0,
+                "hit_rate_exact": 0.0,
+                "near_miss_rate": 0.0,
+                "best_slot": "n/a",
+                "weak_slot": "n/a",
+            }
+            continue
+
+        exact_hits = int(fam_df["is_exact_hit"].sum())
+        near_hits = int(fam_df["is_near_hit"].sum())
+        hit_rate_exact = exact_hits / len(fam_df) if len(fam_df) else 0.0
+        near_rate = near_hits / len(fam_df) if len(fam_df) else 0.0
+
+        slot_scores: Dict[str, float] = {}
+        for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
+            slot_df = fam_df[fam_df["slot"] == slot]
+            n = len(slot_df)
+            if n == 0:
+                slot_scores[slot] = 0.0
+                continue
+            slot_exact = int(slot_df["is_exact_hit"].sum())
+            slot_near = int(slot_df["is_near_hit"].sum())
+            hit_rate = slot_exact / n if n else 0.0
+            near_slot_rate = slot_near / n if n else 0.0
+            slot_scores[slot] = hit_rate + 0.2 * near_slot_rate
+
+        if slot_scores:
+            max_score = max(slot_scores.values())
+            min_score = min(slot_scores.values())
+            if len(fam_df) == 0 or abs(max_score - min_score) < epsilon:
+                best_slot = weak_slot = "n/a"
+            else:
+                best_slot = max(slot_scores, key=slot_scores.get)
+                weak_slot = min(slot_scores, key=slot_scores.get)
+        else:
+            best_slot = weak_slot = "n/a"
+
+        stats[family] = {
+            "observations": len(fam_df),
+            "exact_hits": exact_hits,
+            "near_hits": near_hits,
+            "hit_rate_exact": hit_rate_exact,
+            "near_miss_rate": near_rate,
+            "best_slot": best_slot,
+            "weak_slot": weak_slot,
+        }
+
+    return stats
 
 
 def run_enhanced_pattern_intel(hit_df: Optional[pd.DataFrame] = None, window_days: int = 120) -> Dict[str, Dict]:
