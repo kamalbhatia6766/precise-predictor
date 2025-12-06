@@ -20,6 +20,7 @@ import pandas as pd
 import quant_data_core
 import quant_paths
 from quant_core import pattern_core
+from quant_core.config_core import PACK_164950_FAMILY, S40
 from script_hit_metrics import (
     compute_pack_hit_stats,
     get_metrics_table,
@@ -27,6 +28,7 @@ from script_hit_metrics import (
     format_script_league,
     hero_weak_table,
 )
+from script_hit_memory_utils import load_script_hit_memory
 from utils_2digit import is_valid_2d_number, to_2d_str
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -544,25 +546,56 @@ def load_pnl_snapshot() -> PnLSnapshot:
 
 
 def load_pattern_summary(window_days: int = 90) -> PatternSummary:
-    stats = compute_pack_hit_stats(window_days=window_days, base_dir=quant_paths.get_project_root())
     notes: List[str] = []
-    if not stats:
+    memory_df = load_script_hit_memory(base_dir=quant_paths.get_project_root())
+    if memory_df is None or memory_df.empty:
         return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
 
+    date_col = _choose_date_column(memory_df)
+    if not date_col:
+        return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
+
+    work_df = memory_df.copy()
+    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce")
+    work_df = work_df.dropna(subset=[date_col])
+    if work_df.empty:
+        return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
+
+    latest_date = work_df[date_col].max()
+    cutoff = latest_date - timedelta(days=window_days - 1)
+    window_df = work_df[work_df[date_col] >= cutoff]
+    if window_df.empty:
+        return PatternSummary(total_hits=None, s40=None, fam_164950=None, notes=notes)
+
+    def _is_164950(num: str) -> bool:
+        return len(num) == 2 and all(ch in PACK_164950_FAMILY for ch in num)
+
+    total_rows = len(window_df)
+    s40_hits = 0
+    fam_hits = 0
+    for _, row in window_df.iterrows():
+        num = to_2d_str(row.get("real_number"))
+        is_hit = bool(row.get("is_exact_hit", False))
+        if not num or not is_hit:
+            continue
+        if num in S40:
+            s40_hits += 1
+        if _is_164950(num):
+            fam_hits += 1
+
+    stats = compute_pack_hit_stats(window_days=window_days, base_dir=quant_paths.get_project_root()) or {}
     per_slot = stats.get("per_slot", {})
-    best_s40 = None
-    worst_s40 = None
     if per_slot:
         ordered = sorted(per_slot.items(), key=lambda kv: kv[1].get("s40_rate", 0), reverse=True)
         best_s40 = ordered[0][0] if ordered else None
         worst_s40 = ordered[-1][0] if ordered else None
-    if best_s40 and worst_s40:
-        notes.append(f"S40 best={best_s40}, weak={worst_s40} (window {window_days}d)")
+        if best_s40 and worst_s40:
+            notes.append(f"S40 best={best_s40}, weak={worst_s40} (window {window_days}d)")
 
     return PatternSummary(
-        total_hits=stats.get("total_rows"),
-        s40=stats.get("S40"),
-        fam_164950=stats.get("FAMILY_164950"),
+        total_hits=total_rows,
+        s40={"hits": s40_hits, "hit_rate": s40_hits / total_rows if total_rows else 0.0},
+        fam_164950={"hits": fam_hits, "hit_rate": fam_hits / total_rows if total_rows else 0.0},
         notes=notes,
     )
 

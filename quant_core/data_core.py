@@ -11,10 +11,10 @@ import quant_data_core
 DEFAULT_COLUMNS = ["DATE", "FRBD", "GZBD", "GALI", "DSWR"]
 
 
-def load_results_dataframe(base_dir: Optional[Path] = None) -> pd.DataFrame:
+def load_results_dataframe() -> pd.DataFrame:
     """Wrapper for quant_data_core.load_results_dataframe with basic cleaning."""
 
-    df = quant_data_core.load_results_dataframe(base_dir=base_dir)
+    df = quant_data_core.load_results_dataframe()
     if df is None or df.empty:
         return pd.DataFrame(columns=DEFAULT_COLUMNS)
     df = df.copy()
@@ -32,6 +32,9 @@ def load_results_dataframe(base_dir: Optional[Path] = None) -> pd.DataFrame:
     for col in missing:
         df[col] = pd.NA
     df = df[DEFAULT_COLUMNS]
+    # Closed days are represented as "XX" in the existing pipelines
+    for slot in ["FRBD", "GZBD", "GALI", "DSWR"]:
+        df[slot] = df[slot].fillna("XX").astype(str).str.upper()
     return df
 
 
