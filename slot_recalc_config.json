@@ -1,0 +1,12 @@
+{
+  "hit_family_multiplier": 0.7,
+  "unhit_family_multiplier": 1.2,
+  "pattern_families": [
+    "S40",
+    "PACK_3DIGIT",
+    "PACK_4DIGIT",
+    "PACK_5DIGIT",
+    "PACK_6DIGIT",
+    "PACK_164950"
+  ]
+}
