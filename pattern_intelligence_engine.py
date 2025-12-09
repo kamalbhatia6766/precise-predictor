@@ -9,6 +9,7 @@ import pandas as pd
 
 from quant_core import hit_core, pattern_core
 from quant_learning_core import slot_regime
+from quant_stats_core import compute_pack_hit_stats
 from script_hit_memory_utils import load_script_hit_memory
 
 WINDOW_DAYS = 90
@@ -34,9 +35,16 @@ def _load_windowed_memory(window_days: int, base_dir: Optional[Path] = None) -> 
         return df
 
     df["slot"] = df.get("slot").astype(str).str.upper()
+
+    def _coerce_bool(series: pd.Series, default: bool = False) -> pd.Series:
+        filled = series.copy()
+        filled = filled.where(pd.notna(filled), default)
+        lowered = filled.astype(str).str.lower()
+        return lowered.isin({"true", "1", "yes", "y", "t"})
+
     for col in ["is_exact_hit", "is_s40", "is_family_164950"]:
         if col in df.columns:
-            df[col] = df[col].fillna(False).astype(bool)
+            df[col] = _coerce_bool(df[col])
         else:
             df[col] = False
     return df
@@ -78,35 +86,70 @@ def _family_summary(df: pd.DataFrame, flag_col: str) -> Dict:
 
 def compute_pattern_metrics(window_days: int = WINDOW_DAYS, base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, Dict]:
     df = _load_windowed_memory(window_days, base_dir=base_dir)
-    total_rows = len(df)
-    result_days = df["result_date"].dt.date.nunique() if not df.empty else 0
-    exact_hits = int(df.get("is_exact_hit", False).sum()) if not df.empty else 0
+    pack_stats = compute_pack_hit_stats(window_days=window_days, base_dir=base_dir)
+
+    total_rows = pack_stats.get("total_rows", len(df)) if isinstance(pack_stats, dict) else len(df)
+    result_days = pack_stats.get("days_total", 0) if isinstance(pack_stats, dict) else (
+        df["result_date"].dt.date.nunique() if not df.empty else 0
+    )
+    exact_hits = int(pd.to_numeric(df.get("is_exact_hit", False), errors="coerce").fillna(0).astype(int).sum()) if not df.empty else 0
     hit_rate_exact = exact_hits / total_rows if total_rows else 0.0
 
     summary = {
         "window_days": window_days,
-        "total_rows": total_rows,
-        "result_days": result_days,
+        "total_rows": int(total_rows),
+        "result_days": int(result_days),
         "exact_hits": exact_hits,
         "hit_rate_exact": hit_rate_exact,
     }
 
-    summary["s40"] = _family_summary(df, "is_s40") if not df.empty else {
-        "hits_total": 0,
-        "hit_rate": 0.0,
-        "daily_cover_days": 0,
-        "daily_cover_total_days": 0,
-        "daily_cover_pct": 0.0,
-        "per_slot": {},
-    }
-    summary["family_164950"] = _family_summary(df, "is_family_164950") if not df.empty else {
-        "hits_total": 0,
-        "hit_rate": 0.0,
-        "daily_cover_days": 0,
-        "daily_cover_total_days": 0,
-        "daily_cover_pct": 0.0,
-        "per_slot": {},
-    }
+    def _slot_family_block(slot_key: str, field: str) -> Dict[str, object]:
+        per_slot = pack_stats.get("per_slot", {}) if isinstance(pack_stats, dict) else {}
+        slot_stats = per_slot.get(slot_key, {}) if isinstance(per_slot, dict) else {}
+        return {
+            "hits_total": int(slot_stats.get(field, 0)),
+            "hit_rate": float(slot_stats.get(f"{field.split('_')[0]}_rate", 0.0)),
+            "daily_cover_days": int(slot_stats.get(f"{field.split('_')[0]}_days", 0)),
+            "daily_cover_total_days": int(slot_stats.get("days_total", 0)),
+            "daily_cover_pct": (
+                int(slot_stats.get(f"{field.split('_')[0]}_days", 0))
+                / int(slot_stats.get("days_total", 1) or 1)
+                * 100.0
+                if slot_stats
+                else 0.0
+            ),
+            "regime": slot_regime(float(slot_stats.get(f"{field.split('_')[0]}_rate", 0.0))),
+        }
+
+    def _family_block(key: str, field: str) -> Dict[str, object]:
+        hits = 0.0
+        hit_rate = 0.0
+        if isinstance(pack_stats, dict):
+            fam_block = pack_stats.get(key, {}) or {}
+            hits = fam_block.get("hits", 0)
+            hit_rate = fam_block.get("hit_rate", 0.0)
+        cover_days = int(pack_stats.get(f"days_with_{field}", 0)) if isinstance(pack_stats, dict) else 0
+        total_days = int(pack_stats.get("days_total", 0)) if isinstance(pack_stats, dict) else 0
+        per_slot = {}
+        if isinstance(pack_stats, dict):
+            for slot in SLOTS:
+                slot_stats = (pack_stats.get("per_slot", {}) or {}).get(slot, {})
+                if not slot_stats:
+                    continue
+                per_slot[slot] = _slot_family_block(slot, field)
+        return {
+            "hits_total": int(hits),
+            "hit_rate": float(hit_rate),
+            "daily_cover_days": cover_days,
+            "daily_cover_total_days": total_days,
+            "daily_cover_pct": (cover_days / total_days * 100.0) if total_days else 0.0,
+            "per_slot": per_slot,
+        }
+
+    summary["s40"] = _family_block("S40", "s40_hits") if pack_stats else _family_summary(df, "is_s40")
+    summary["family_164950"] = (
+        _family_block("FAMILY_164950", "fam_hits") if pack_stats else _family_summary(df, "is_family_164950")
+    )
 
     return df, summary
 

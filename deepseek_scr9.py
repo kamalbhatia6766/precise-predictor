@@ -193,6 +193,7 @@ class UltimatePredictionEngine:
                 print(f"[WARN] No hero/weak metrics for slot {slot}, using equal weights")
                 self._set_equal_weights_for_slot(slot)
         else:
+            self._apply_hero_weak_tilt(slot_bands)
             for _, row in slot_bands.iterrows():
                 hero = row.get("hero_script") or "n/a"
                 weak = row.get("weak_script") or "n/a"
@@ -215,6 +216,35 @@ class UltimatePredictionEngine:
             hero_label = hero_overall.get("script_id") or "n/a"
             weak_label = weak_overall.get("script_id") or "n/a"
             print(f"  Overall heroes=[{hero_label}] weak=[{weak_label}] window_rows={league.get('window_rows')}")
+
+    def _apply_hero_weak_tilt(self, slot_bands: pd.DataFrame) -> None:
+        if not USE_SCRIPT_WEIGHTS:
+            return
+        if self.slot_script_weights is None:
+            return
+
+        tilt_factors = {"hero": 1.3, "weak": 0.7}
+        for _, row in slot_bands.iterrows():
+            slot = str(row.get("slot")) if row.get("slot") is not None else None
+            if not slot:
+                continue
+            slot = slot.upper()
+            weights = self.slot_script_weights.get(slot)
+            if not weights:
+                continue
+            hero_script = str(row.get("hero_script") or "").upper()
+            weak_script = str(row.get("weak_script") or "").upper()
+            adjusted = {}
+            for script, weight in weights.items():
+                factor = 1.0
+                if script.upper() == hero_script:
+                    factor = tilt_factors["hero"]
+                elif script.upper() == weak_script:
+                    factor = tilt_factors["weak"]
+                adjusted[script] = weight * factor
+
+            total = sum(adjusted.values()) or 1.0
+            self.slot_script_weights[slot] = {k: v / total for k, v in adjusted.items()}
 
     def _script_key(self, script_name: str) -> str:
         match = re.search(r"scr(\d+)", script_name, re.IGNORECASE)
