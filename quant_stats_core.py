@@ -11,6 +11,7 @@ import pandas as pd
 
 import quant_paths
 from script_hit_memory_utils import classify_relation, filter_hits_by_window, load_script_hit_memory
+import pattern_packs
 
 
 def _load_ultimate_performance() -> pd.DataFrame:
@@ -111,8 +112,14 @@ def compute_pack_hit_stats(window_days: int = 30, base_dir: Optional[Path] = Non
     window_df["result_date"] = pd.to_datetime(window_df["result_date"], errors="coerce").dt.normalize()
     window_df = window_df.dropna(subset=["result_date"])
 
-    window_df["is_s40"] = pd.to_numeric(window_df.get("is_s40", 0), errors="coerce").fillna(0).astype(int)
-    window_df["is_family_164950"] = pd.to_numeric(window_df.get("is_family_164950", 0), errors="coerce").fillna(0).astype(int)
+    real_numbers = window_df.get("real_number")
+    if real_numbers is not None:
+        num_strings = real_numbers.astype(str).str.zfill(2)
+        window_df["is_s40"] = num_strings.apply(pattern_packs.is_s40).astype(int)
+        window_df["is_family_164950"] = num_strings.apply(pattern_packs.is_164950_family).astype(int)
+    else:
+        window_df["is_s40"] = pd.to_numeric(window_df.get("is_s40", 0), errors="coerce").fillna(0).astype(int)
+        window_df["is_family_164950"] = pd.to_numeric(window_df.get("is_family_164950", 0), errors="coerce").fillna(0).astype(int)
 
     total_rows = len(window_df)
     days_total = window_df["result_date"].dt.date.nunique()

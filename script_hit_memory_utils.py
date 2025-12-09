@@ -422,10 +422,14 @@ def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFr
     if work_df.empty:
         return work_df, 0
 
-    latest_date = work_df[date_col].max()
-    cutoff = latest_date - timedelta(days=window_days - 1)
-    filtered = work_df[work_df[date_col] >= cutoff]
-    used_days = filtered[date_col].nunique()
+    unique_days = sorted(work_df[date_col].dropna().unique())
+    if not unique_days:
+        return work_df.iloc[0:0], 0
+
+    selected_days = unique_days[-window_days:]
+    day_set = set(selected_days)
+    filtered = work_df[work_df[date_col].isin(day_set)]
+    used_days = len(day_set)
     return filtered, int(used_days)
 
 

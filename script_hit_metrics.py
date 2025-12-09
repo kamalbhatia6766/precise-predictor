@@ -15,7 +15,11 @@ import pandas as pd
 import quant_paths
 from quant_core import hit_core
 from quant_stats_core import compute_pack_hit_stats as compute_pack_hit_stats_core, compute_script_slot_stats
-from script_hit_memory_utils import classify_relation, load_script_hit_memory
+from script_hit_memory_utils import (
+    classify_relation,
+    filter_hits_by_window,
+    load_script_hit_memory,
+)
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 
@@ -52,12 +56,12 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
     if df.empty or not date_col:
         return pd.DataFrame(), {}
 
-    latest_date = df[date_col].max()
-    window_start = latest_date - timedelta(days=window_days - 1)
-    mask = (df[date_col] >= window_start) & (df[date_col] <= latest_date)
-    filtered = df.loc[mask].copy()
-    used_days = filtered[date_col].nunique()
-    earliest_date = filtered[date_col].min() if not filtered.empty else None
+    filtered, used_days = filter_hits_by_window(df, window_days=window_days)
+    if filtered.empty:
+        return pd.DataFrame(), {}
+
+    latest_date = filtered[date_col].max()
+    earliest_date = filtered[date_col].min()
 
     summary = {
         "requested_window_days": window_days,
