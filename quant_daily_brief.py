@@ -22,6 +22,7 @@ import quant_paths
 import quant_learning_core
 from quant_core import pattern_core
 from quant_core.config_core import PACK_164950_FAMILY, S40 as S40_SET
+from quant_stats_core import get_quant_stats
 from script_hit_metrics import (
     compute_pack_hit_stats,
     get_metrics_table,
@@ -34,6 +35,7 @@ from quant_stats_core import compute_topn_roi
 from utils_2digit import is_valid_2d_number, to_2d_str
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
+quant_stats = get_quant_stats()
 PERFORMANCE_DIR = quant_paths.get_performance_logs_dir()
 BET_ENGINE_DIR = quant_paths.get_bet_engine_dir()
 SCRIPT_METRICS_WINDOW_DAYS = 30
@@ -1104,6 +1106,46 @@ def print_regime_snapshot(window_days: int = 30) -> None:
         print(f"   {slot}: P&L={pnl_label}, S40={s40_label}, 164950={fam_label}")
 
 
+def print_pattern_family_snapshot() -> None:
+    patterns_root = quant_stats.get("patterns") if isinstance(quant_stats, dict) else None
+    if not patterns_root:
+        print("   (pattern family snapshot unavailable – run pattern_intelligence_enhanced.py first.)")
+        return
+    slots_block = patterns_root.get("slots", {}) if isinstance(patterns_root, dict) else {}
+    if not slots_block:
+        print("   (pattern family snapshot unavailable – run pattern_intelligence_enhanced.py first.)")
+        return
+    print("   27-family regimes:")
+    for slot in SLOTS:
+        slot_block = slots_block.get(slot, {}) if isinstance(slots_block, dict) else {}
+        fam_block = slot_block.get("families", {}) if isinstance(slot_block, dict) else {}
+        boosts = []
+        offs = []
+        for fam_name, fam_info in fam_block.items():
+            regime = str(fam_info.get("regime_30d", fam_info.get("regime" ,"NORMAL"))).upper()
+            hit_rate = fam_info.get("hit_rate_30d", fam_info.get("hit_rate", 0.0))
+            if regime == "BOOST":
+                boosts.append((fam_name, hit_rate))
+            elif regime == "OFF":
+                offs.append((fam_name, hit_rate))
+        boosts = sorted(boosts, key=lambda x: (-(x[1] or 0), x[0]))[:3]
+        offs = sorted(offs, key=lambda x: (x[1] or 0, x[0]))[:2]
+        boost_tags = "{" + ", ".join([b[0] for b in boosts]) + "}" if boosts else "{}"
+        off_tags = "{" + ", ".join([o[0] for o in offs]) + "}" if offs else "{}"
+        print(f"   {slot}: BOOST={boost_tags} | OFF={off_tags}")
+
+    print("\n   S40 & 164950 cross-slot snapshot:")
+    for fam in ["S40", "FAMILY_164950"]:
+        per_slot = {}
+        for slot in SLOTS:
+            fam_info = ((slots_block.get(slot, {}) or {}).get("families", {}) or {}).get(fam, {})
+            per_slot[slot] = fam_info
+        best_slot = max(per_slot.items(), key=lambda x: x[1].get("hit_rate_30d", 0.0) if isinstance(x[1], dict) else 0.0)[0]
+        weak_slot = min(per_slot.items(), key=lambda x: x[1].get("hit_rate_30d", 0.0) if isinstance(x[1], dict) else 0.0)[0]
+        parts = [f"{slot}={str((info or {}).get('regime_30d') or (info or {}).get('regime') or 'NORMAL')}" for slot, info in per_slot.items()]
+        print(f"   {fam}: best={best_slot}, weak={weak_slot}, regimes: {', '.join(parts)}")
+
+
 def print_risk_section(strategy: StrategySummary, money: MoneyManagerSummary, execution: ExecutionReadiness, confidence: ConfidenceSummary) -> None:
     print("\n4️⃣ RISK & EXECUTION")
     strat = strategy.recommended or "(strategy data NA)"
@@ -1263,11 +1305,14 @@ def _load_topn_best_profile(insight: Optional[Dict] = None) -> Tuple[Optional[in
 def print_topn_roi_insight(insight: Optional[Dict] = None) -> Optional[Dict]:
     window_days = 30
     if insight is None:
+        insight = quant_stats.get("topn") if isinstance(quant_stats, dict) else None
+    if insight is None:
         insight = compute_topn_roi(window_days=window_days)
     if not insight:
+        print("6️⃣ TOP-N ROI INSIGHT (requested 30d)\n   (Top-N ROI snapshot unavailable – run topn_roi_scanner.py first.)")
         return None
-    overall = insight.get("overall", {}) or {}
-    per_slot = insight.get("per_slot", {}) or {}
+    overall = (insight.get("overall") if isinstance(insight, dict) else {}) or {}
+    per_slot = (insight.get("slots") or insight.get("per_slot") or {}) if isinstance(insight, dict) else {}
     roi_by_n = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
     best_n = overall.get("best_N") if isinstance(overall, dict) else None
     best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
@@ -1284,6 +1329,15 @@ def print_topn_roi_insight(insight: Optional[Dict] = None) -> Optional[Dict]:
         roi_map = per_slot.get(slot, {}).get("roi_by_N", {}) if isinstance(per_slot.get(slot), dict) else {}
         parts = [f"Top{n}:{roi_map.get(n, 0.0):+.1f}%" for n in range(1, 11)]
         print(f"   {slot}: {' | '.join(parts)}")
+        slot_best = per_slot.get(slot, {}).get("best_N") if isinstance(per_slot.get(slot), dict) else None
+        slot_best_roi = per_slot.get(slot, {}).get("best_roi") if isinstance(per_slot.get(slot), dict) else None
+        if roi_map:
+            top_band = [roi_map.get(n) for n in range(1, 6) if roi_map.get(n) is not None]
+            deep_positive = [(n, v) for n, v in roi_map.items() if n > 5 and v is not None and v > 0]
+            if top_band and all((r is not None and r <= 0) for r in top_band) and deep_positive and slot_best:
+                print(f"      {slot}: best_N={slot_best}, ROI={slot_best_roi:+.1f}% (Top1–5 red; using deeper N-band).")
+            elif slot_best and slot_best <= 5 and slot_best_roi is not None and slot_best_roi > 0:
+                print(f"      {slot}: best_N={slot_best}, ROI={slot_best_roi:+.1f}% (tight profitable band).")
 
     overall_best, per_slot_best = _load_topn_best_profile(insight)
     if overall_best is not None or per_slot_best:
@@ -1388,6 +1442,7 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     print_regime_snapshot(window_days=SCRIPT_METRICS_WINDOW_DAYS)
     print_pattern_section(patterns)
     print_pattern_slot_section(window_days=SCRIPT_METRICS_WINDOW_DAYS)
+    print_pattern_family_snapshot()
     print_risk_section(strategy, money, execution, confidence)
     print_script_performance_section(window_days=SCRIPT_METRICS_WINDOW_DAYS)
     topn_insight = print_topn_roi_insight(topn_insight)
@@ -1400,15 +1455,24 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
         best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
 
     verdict = "Short verdict: "
+    pattern_snapshot = quant_stats.get("patterns") if isinstance(quant_stats, dict) else {}
+    has_off = False
+    if pattern_snapshot:
+        slots_block = pattern_snapshot.get("slots", {}) if isinstance(pattern_snapshot, dict) else {}
+        for slot in SLOTS:
+            fams = (slots_block.get(slot, {}) or {}).get("families", {}) if isinstance(slots_block, dict) else {}
+            if any(str((fams.get(f) or {}).get("regime_30d", "")).upper() == "OFF" for f in fams):
+                has_off = True
+                break
     if pnl.last7_roi and pnl.last30_roi and pnl.last7_roi > 0 and pnl.last30_roi > 0:
         if best_roi is not None and best_roi < 0:
-            verdict += "Core P&L positive; short-window hit-rate weak — keep stakes disciplined."
-        elif pnl.overall_roi and pnl.overall_roi > 0 and best_n and 5 <= best_n <= 15:
-            verdict += f"System learning healthy; balanced Top-N ({best_n}) looks OK — stakes can stay disciplined."
+            verdict += "System profitable but Top-N band soft — keep stakes disciplined."
+        elif has_off:
+            verdict += "ROI healthy; some families OFF — stay balanced while waiting for fresh hits."
         else:
-            verdict += "System learning healthy; stakes can stay disciplined."
+            verdict += "ROI healthy; focus on BOOST families and positive Top-N bands."
     else:
-        verdict += "Recent ROI under pressure — stay defensive until hit-rate recovers."
+        verdict += "Recent ROI under pressure or cooling families — stay defensive until hit-rate recovers."
 
     print(verdict)
     print("=" * 80)
