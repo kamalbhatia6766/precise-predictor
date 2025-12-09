@@ -92,22 +92,23 @@ class PatternIntelligenceEnhanced:
         enhanced = pattern_core.run_enhanced_pattern_intel(hit_df=df, window_days=self.window_days)
         scripts = enhanced.get("scripts", {}) if isinstance(enhanced, dict) else {}
         slots = enhanced.get("slots", {}) if isinstance(enhanced, dict) else {}
-        payload = {
+        summary = {
             "timestamp": datetime.now().isoformat(),
             "window_days": self.window_days,
             "summary": base_summary,
             "scripts": scripts,
             "slots": slots,
         }
-        self.save(payload, df)
-        self._export_regime_summary(summary)
+        self._latest_summary = summary
+        self.save(summary, df)
+        self._export_regime_summary(base_summary)
         self.print_summary(df, scripts, slots)
         return True
 
     def _export_regime_summary(self, summary: Dict) -> None:
         try:
-            base_dir = quant_paths.get_base_dir()
-            output_path = Path(base_dir) / "logs" / "performance" / "pattern_regimes_summary.json"
+            base_dir = self.base_dir
+            output_path = base_dir / "logs" / "performance" / "pattern_regimes_summary.json"
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
             pattern_window = int(summary.get("window_days", self.window_days))
