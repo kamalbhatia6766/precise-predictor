@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from datetime import timedelta
@@ -88,11 +89,50 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
             per_slot[slot]["best_roi"] = slot_best_roi
 
     return {
+        "window_days_requested": window_days,
+        "window_days_used": int(available_days),
         "window_start": window_start,
         "window_end": window_end,
         "available_days": available_days,
         "overall": {"best_N": best_N, "best_roi": best_roi, "roi_by_N": roi_by_n},
         "per_slot": per_slot,
+    }
+
+
+def load_topn_roi_stats(base_dir: Optional[Path] = None) -> Dict[str, Any]:
+    base_path = Path(base_dir) if base_dir else quant_paths.get_base_dir()
+    path = base_path / "logs" / "performance" / "topn_roi_scan.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def get_quant_stats(base_dir: Optional[Path] = None) -> Dict[str, Any]:
+    project_root = Path(base_dir) if base_dir else quant_paths.get_base_dir()
+
+    def _safe_load(path: Path) -> Optional[Dict[str, Any]]:
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
+
+    pnl_path = project_root / "logs" / "performance" / "quant_reality_pnl.json"
+    slot_health_path = project_root / "data" / "slot_health.json"
+    scripts_path = project_root / "logs" / "performance" / "script_hero_weak.json"
+    patterns_path = project_root / "logs" / "performance" / "pattern_regime_summary.json"
+    topn_path = project_root / "logs" / "performance" / "topn_roi_scan.json"
+
+    return {
+        "pnl": _safe_load(pnl_path),
+        "slot_health": _safe_load(slot_health_path),
+        "scripts": _safe_load(scripts_path),
+        "patterns": _safe_load(patterns_path),
+        "topn": _safe_load(topn_path) or {},
     }
 
 

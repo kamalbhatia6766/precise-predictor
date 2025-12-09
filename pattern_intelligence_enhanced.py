@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import List, Optional
 from pathlib import Path
 from typing import Dict
 
@@ -10,7 +11,9 @@ import pandas as pd
 from quant_core import hit_core, pattern_core
 from pattern_intelligence_engine import compute_pattern_metrics
 from quant_stats_core import compute_pack_hit_stats
+from script_hit_memory_utils import filter_hits_by_window
 import quant_paths
+import pattern_packs
 
 WINDOW_DAYS = 120
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -102,6 +105,7 @@ class PatternIntelligenceEnhanced:
         self._latest_summary = summary
         self.save(summary, df)
         self._export_regime_summary(base_summary)
+        self._export_family_regimes(df)
         self.print_summary(df, scripts, slots)
         return True
 
@@ -171,6 +175,124 @@ class PatternIntelligenceEnhanced:
             output_path.write_text(json.dumps(payload, indent=2))
         except Exception as exc:
             print(f"[pattern_intelligence_enhanced] Warning: unable to write pattern_regimes_summary.json: {exc}")
+
+    def _export_family_regimes(self, df: pd.DataFrame) -> None:
+        try:
+            if df is None or df.empty:
+                return
+
+            work_df = df.copy()
+            work_df["result_date"] = pd.to_datetime(work_df.get("result_date"), errors="coerce")
+            work_df = work_df.dropna(subset=["result_date"])
+            if work_df.empty:
+                return
+
+            work_df["slot"] = work_df.get("slot", "").astype(str).str.upper()
+
+            def _families_for_number(n: object) -> List[str]:
+                try:
+                    fams = pattern_packs.get_number_families(n)
+                    return [str(f).strip() for f in fams if str(f).strip()]
+                except Exception:
+                    return []
+
+            def _is_hit(row: pd.Series) -> bool:
+                hit_type = str(row.get("hit_type") or row.get("HIT_TYPE") or "").strip().upper()
+                if hit_type:
+                    return hit_type == "HIT"
+                return bool(row.get("is_exact_hit"))
+
+            work_df["_families"] = work_df.get("real_number").apply(_families_for_number)
+            work_df["_is_hit"] = work_df.apply(_is_hit, axis=1)
+
+            families: List[str] = []
+            for fams in work_df["_families"]:
+                if isinstance(fams, list):
+                    families.extend([str(f).strip() for f in fams if str(f).strip()])
+            families_set = set(families)
+            families_set.update({"S40", "FAMILY_164950"})
+            families = sorted(families_set)
+
+            window_config = {"long_days": 90, "mid_days": 30, "short_days": 7}
+            window_defs = {
+                "90d": window_config["long_days"],
+                "30d": window_config["mid_days"],
+                "7d": window_config["short_days"],
+            }
+
+            slots_payload: Dict[str, Dict] = {}
+
+            def _last_hit_date(slot_df: pd.DataFrame, family: str) -> Optional[str]:
+                fam_hits = slot_df[slot_df["_families"].apply(lambda tags: family in tags) & slot_df["_is_hit"]]
+                if fam_hits.empty:
+                    return None
+                date_val = fam_hits["result_date"].max()
+                return date_val.date().isoformat() if pd.notna(date_val) else None
+
+            for slot in SLOTS:
+                slot_df_all = work_df[work_df["slot"] == slot].copy()
+                slot_df_all["result_date"] = pd.to_datetime(slot_df_all["result_date"], errors="coerce")
+                slot_payload: Dict[str, Dict] = {"families": {}}
+
+                window_hit_rates: Dict[str, List[float]] = {label: [] for label in window_defs}
+
+                for label, days in window_defs.items():
+                    window_df, _ = filter_hits_by_window(slot_df_all, window_days=days)
+                    if window_df.empty:
+                        base_df = pd.DataFrame()
+                    else:
+                        base_df = window_df.copy()
+                        base_df["result_date"] = pd.to_datetime(base_df["result_date"], errors="coerce")
+                        base_df = base_df.dropna(subset=["result_date"])
+
+                    rows_count = len(base_df)
+
+                    for family in families:
+                        fam_block = slot_payload["families"].setdefault(family, {})
+                        fam_hits = 0
+                        if not base_df.empty:
+                            fam_mask = base_df["_families"].apply(lambda tags: family in tags)
+                            fam_hits = int(base_df[fam_mask & base_df["_is_hit"]].shape[0])
+
+                        hit_rate = fam_hits / max(rows_count, 1)
+                        fam_block[f"rows_{label}"] = rows_count
+                        fam_block[f"hits_{label}"] = fam_hits
+                        fam_block[f"hit_rate_{label}"] = hit_rate
+                        window_hit_rates[label].append(hit_rate)
+
+                for label, rates in window_hit_rates.items():
+                    avg_rate = sum(rates) / len(families) if families else 0.0
+                    boost_cut = 1.3 * avg_rate
+                    off_cut = 0.3 * avg_rate
+                    for family in families:
+                        fam_block = slot_payload["families"].setdefault(family, {})
+                        rate_val = fam_block.get(f"hit_rate_{label}", 0.0)
+                        if rate_val >= boost_cut:
+                            regime = "BOOST"
+                        elif rate_val <= off_cut:
+                            regime = "OFF"
+                        else:
+                            regime = "NORMAL"
+                        fam_block[f"regime_{label}"] = regime
+
+                for family in families:
+                    fam_block = slot_payload["families"].setdefault(family, {})
+                    fam_block["last_hit_date"] = _last_hit_date(slot_df_all, family)
+
+                slots_payload[slot] = slot_payload
+
+            output_path = self.base_dir / "logs" / "performance" / "pattern_regime_summary.json"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            payload = {
+                "generated_at": datetime.now().isoformat(),
+                "window_config": window_config,
+                "slots": slots_payload,
+            }
+
+            output_path.write_text(json.dumps(payload, indent=2))
+        except Exception as exc:
+            print(f"[pattern_intelligence_enhanced] Warning: unable to write pattern_regime_summary.json: {exc}")
 
 
 def main() -> int:

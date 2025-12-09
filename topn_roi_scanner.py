@@ -1,15 +1,14 @@
-from typing import Dict
-
+import argparse
 import csv
 import json
 from datetime import date, datetime
 from pathlib import Path
+from typing import Dict, List
 
 from quant_stats_core import compute_topn_roi
 import quant_paths
 
 MAX_N = 40
-TOP_N_VALUES = list(range(1, 11))
 
 
 def _write_csv(summary: Dict) -> None:
@@ -127,9 +126,54 @@ def _write_best_roi_json(summary: Dict, target_window: int) -> None:
         print(f"[topn_roi_scanner] Warning: unable to write topn_roi_summary.json: {exc}")
 
 
+def _write_scan_json(summary: Dict, target_window: int, max_n: int) -> None:
+    try:
+        base_dir = quant_paths.get_base_dir()
+        output_path = Path(base_dir) / "logs" / "performance" / "topn_roi_scan.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        overall = summary.get("overall", {}) or {}
+        per_slot_summary = summary.get("per_slot", {}) or {}
+
+        def _roi_map(raw: Dict[int, float]) -> Dict[str, float]:
+            return {str(k): v for k, v in raw.items() if k <= max_n}
+
+        slots_payload: Dict[str, Dict] = {}
+        for slot, slot_map in per_slot_summary.items():
+            roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
+            slots_payload[slot] = {
+                "best_N": slot_map.get("best_N"),
+                "best_roi": slot_map.get("best_roi"),
+                "roi_by_N": _roi_map(roi_map),
+            }
+
+        payload = {
+            "window_days_requested": target_window,
+            "window_days_used": summary.get("window_days_used") or summary.get("available_days"),
+            "window_start": summary.get("window_start"),
+            "window_end": summary.get("window_end"),
+            "overall": {
+                "best_N": overall.get("best_N"),
+                "best_roi": overall.get("best_roi"),
+                "roi_by_N": _roi_map(overall.get("roi_by_N", {})),
+            },
+            "slots": slots_payload,
+        }
+
+        output_path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    except Exception as exc:
+        print(f"[topn_roi_scanner] Warning: unable to write topn_roi_scan.json: {exc}")
+
+
 def main() -> int:
-    target_window = 30
-    summary = compute_topn_roi(window_days=target_window, max_n=MAX_N)
+    parser = argparse.ArgumentParser(description="Scan ROI performance across Top-N buckets.")
+    parser.add_argument("--window_days", type=int, default=30, help="Window (in days) to evaluate ROI.")
+    parser.add_argument("--max_n", type=int, default=20, help="Maximum N to scan (inclusive).")
+    args = parser.parse_args()
+
+    target_window = args.window_days
+    max_n = min(max(args.max_n, 1), MAX_N)
+    summary = compute_topn_roi(window_days=target_window, max_n=max_n)
     if not summary:
         print("No data available for ROI scan.")
         return 0
@@ -147,7 +191,8 @@ def main() -> int:
 
     overall = summary.get("overall", {}) or {}
     roi_map = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
-    for n in TOP_N_VALUES:
+    display_ns: List[int] = list(range(1, max_n + 1))
+    for n in display_ns:
         roi_val = roi_map.get(n)
         if roi_val is None:
             continue
@@ -159,7 +204,7 @@ def main() -> int:
         for slot, n_map in sorted(per_slot.items()):
             roi_by_n = n_map.get("roi_by_N", {}) if isinstance(n_map, dict) else {}
             parts = []
-            for n in TOP_N_VALUES:
+            for n in range(1, min(max_n, 10) + 1):
                 if n in roi_by_n:
                     parts.append(f"Top{n}:{roi_by_n[n]:+.1f}%")
             if parts:
@@ -174,6 +219,7 @@ def main() -> int:
     if best_n is not None:
         print(f"Best N = {best_n} with ROI = {best_roi:+.1f}%")
     _write_best_roi_json(summary, target_window=target_window)
+    _write_scan_json(summary, target_window=target_window, max_n=max_n)
     return 0
 
 
