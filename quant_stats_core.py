@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import argparse
+import subprocess
+import sys
 from datetime import timedelta
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -203,4 +206,47 @@ def compute_script_slot_stats(df: pd.DataFrame, group_cols: List[str]) -> pd.Dat
         )
 
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# CLI dashboard orchestrator
+# ---------------------------------------------------------------------------
+
+
+def _run_cmd(args: List[str]) -> None:
+    result = subprocess.run([sys.executable] + args, check=False)
+    if result.returncode != 0:
+        print(f"[WARN] {' '.join(args)} exited with code {result.returncode}")
+
+
+def run_dashboard(window_days: int = 30) -> None:
+    print("================================")
+    print("QUANT STATS CORE DASHBOARD")
+    print(f"Window days: {window_days}")
+    print("================================\n")
+
+    print("[1] SCRIPT-HIT METRICS")
+    _run_cmd(["script_hit_metrics.py", "--window", str(window_days)])
+
+    print("\n[2] QUANT ACCURACY REPORT")
+    _run_cmd(["quant_accuracy_report.py", "--window_days", str(window_days)])
+
+    print("\n[3] TOP-N ROI SCANNER")
+    _run_cmd(["topn_roi_scanner.py"])
+
+    print("\n[4] PATTERN INTELLIGENCE (ENHANCED)")
+    _run_cmd(["pattern_intelligence_enhanced.py"])
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run combined quant statistics dashboard.")
+    parser.add_argument("--window_days", type=int, default=30, help="Window (in days) to pass to windowed scripts.")
+    args = parser.parse_args()
+
+    run_dashboard(window_days=args.window_days)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
