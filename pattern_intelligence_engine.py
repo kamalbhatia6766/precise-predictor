@@ -10,7 +10,8 @@ import pandas as pd
 from quant_core import hit_core, pattern_core
 from quant_learning_core import slot_regime
 from quant_stats_core import compute_pack_hit_stats
-from script_hit_memory_utils import load_script_hit_memory
+from script_hit_memory_utils import filter_hits_by_window, load_script_hit_memory
+import pattern_packs
 
 WINDOW_DAYS = 90
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -22,19 +23,19 @@ def _load_windowed_memory(window_days: int, base_dir: Optional[Path] = None) -> 
         return pd.DataFrame()
 
     df = df.copy()
-    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
+    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce").dt.normalize()
     df = df.dropna(subset=["result_date"])
-    df["result_date"] = df["result_date"].dt.normalize()
-
-    latest_date = df["result_date"].max()
-    if pd.isna(latest_date):
-        return pd.DataFrame()
-    cutoff = latest_date - pd.to_timedelta(window_days - 1, unit="D")
-    df = df[df["result_date"] >= cutoff]
     if df.empty:
         return df
 
     df["slot"] = df.get("slot").astype(str).str.upper()
+    df["real_number"] = df.get("real_number").astype(str)
+
+    df, _ = filter_hits_by_window(df, window_days=window_days)
+    if df.empty:
+        return df
+
+    df["result_date"] = pd.to_datetime(df["result_date"], errors="coerce").dt.normalize()
 
     def _coerce_bool(series: pd.Series, default: bool = False) -> pd.Series:
         filled = series.copy()
@@ -42,11 +43,9 @@ def _load_windowed_memory(window_days: int, base_dir: Optional[Path] = None) -> 
         lowered = filled.astype(str).str.lower()
         return lowered.isin({"true", "1", "yes", "y", "t"})
 
-    for col in ["is_exact_hit", "is_s40", "is_family_164950"]:
-        if col in df.columns:
-            df[col] = _coerce_bool(df[col])
-        else:
-            df[col] = False
+    df["is_exact_hit"] = _coerce_bool(df.get("is_exact_hit", False))
+    df["is_s40"] = df["real_number"].apply(pattern_packs.is_s40)
+    df["is_family_164950"] = df["real_number"].apply(pattern_packs.is_164950_family)
     return df
 
 

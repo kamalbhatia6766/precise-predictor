@@ -8,7 +8,11 @@ import pandas as pd
 
 from quant_excel_loader import load_results_excel
 from quant_stats_core import compute_script_slot_stats
-from script_hit_memory_utils import get_script_hit_memory_xlsx_path, load_script_hit_memory
+from script_hit_memory_utils import (
+    filter_hits_by_window,
+    get_script_hit_memory_xlsx_path,
+    load_script_hit_memory,
+)
 
 
 def _format_percent(value: float) -> float:
@@ -137,17 +141,9 @@ def main() -> int:
     hit_df["is_exact_hit"] = _coerce_bool(hit_df.get("is_exact_hit", False))
     hit_df["is_near_miss"] = _coerce_bool(hit_df.get("is_near_miss", False))
 
-    latest_date = hit_df["result_date"].max() if not hit_df.empty else None
-    if latest_date is not None:
-        window_start = latest_date - timedelta(days=args.window_days - 1)
-        window_end = latest_date
-        mask = (hit_df["result_date"] >= window_start) & (hit_df["result_date"] <= window_end)
-        df_window = hit_df.loc[mask].copy()
-    else:
-        window_start = window_end = None
-        df_window = hit_df.copy()
-
-    used_days = df_window["result_date"].nunique() if not df_window.empty else 0
+    df_window, used_days = filter_hits_by_window(hit_df, window_days=args.window_days)
+    window_start = df_window["result_date"].min() if not df_window.empty else None
+    window_end = df_window["result_date"].max() if not df_window.empty else None
 
     overall_metrics = _build_metrics(hit_df)
 
@@ -157,7 +153,7 @@ def main() -> int:
     print(f"Hit memory: {get_script_hit_memory_xlsx_path()} → {len(hit_df)} rows")
     if min_date is not None and max_date is not None:
         print(f"Real results range: {min_date.date()} → {max_date.date()}")
-    if latest_date is not None and window_start is not None and window_end is not None:
+    if window_start is not None and window_end is not None:
         print(
             f"Window: {window_start} to {window_end} (window_days={args.window_days}, used_days={used_days})"
         )

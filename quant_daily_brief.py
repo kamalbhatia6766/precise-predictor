@@ -323,12 +323,24 @@ def load_plan_from_excel(plan_path: Path) -> Optional[PlanSummary]:
     return PlanSummary(slots=slots, total_stake=total_stake, open_slots=open_slots)
 
 
-def load_plan_for_mode(mode: str, bet_date: date, target_date: date) -> Optional[PlanSummary]:
+def load_plan_for_mode(mode: str, bet_date: date, target_date: date, dry_run: bool = False) -> Optional[PlanSummary]:
     if mode == "INTRADAY":
         path = BET_ENGINE_DIR / f"bet_plan_intraday_{bet_date.strftime('%Y%m%d')}.xlsx"
         return load_plan_from_excel(path)
     path = quant_paths.get_final_bet_plan_path(target_date.strftime("%Y-%m-%d"))
-    return load_plan_from_excel(path)
+    plan = load_plan_from_excel(path)
+    if plan:
+        return plan
+
+    master_path = BET_ENGINE_DIR / f"bet_plan_master_{target_date.strftime('%Y%m%d')}.xlsx"
+    plan = load_plan_from_excel(master_path)
+    if plan or dry_run:
+        return plan
+
+    # Fallback: attempt to regenerate tomorrow plan using latest SCR9 predictions.
+    run_script("deepseek_scr9.py", ["--speed-mode", "fast"], dry_run=dry_run)
+    run_script("precise_bet_engine.py", ["--target", "tomorrow"], dry_run=dry_run)
+    return load_plan_from_excel(master_path)
 
 
 def _find_column(columns: Iterable[str], keywords: List[str], require_all: bool = False) -> Optional[str]:
@@ -661,6 +673,34 @@ def _pattern_slot_stats(window_days: int = 30) -> Dict[str, Dict[str, float]]:
     return summary
 
 
+def _short_window_regimes(slot_stats: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, object]]:
+    regimes: Dict[str, Dict[str, object]] = {}
+    for slot in SLOTS:
+        stats = slot_stats.get(slot)
+        if not stats:
+            continue
+        total_days = max(1, int(stats.get("days_total", 0) or 0))
+
+        def _regime(days_with: int) -> str:
+            if days_with <= 0:
+                return "OFF"
+            ratio = days_with / total_days if total_days else 0.0
+            if ratio >= 0.7:
+                return "BOOST"
+            return "NORMAL"
+
+        s40_days = int(stats.get("s40_days", 0) or 0)
+        fam_days = int(stats.get("fam_days", 0) or 0)
+        regimes[slot] = {
+            "total_days": total_days,
+            "s40_days": s40_days,
+            "fam_days": fam_days,
+            "s40_regime": _regime(s40_days),
+            "fam_regime": _regime(fam_days),
+        }
+    return regimes
+
+
 def check_pattern_baseline(current_keys: Iterable[str]) -> Optional[str]:
     baseline_path = PERFORMANCE_DIR / "pattern_baseline.json"
     current_set = set(current_keys)
@@ -920,27 +960,14 @@ def print_pattern_slot_section(window_days: int = 30) -> None:
         print("   Per-slot pattern layer warming up (no data).")
         return
     print(f"   Short-window regime (last {window_days}d):")
+    regimes = _short_window_regimes(slot_stats)
     for slot in SLOTS:
-        stats = slot_stats.get(slot)
+        stats = regimes.get(slot)
         if not stats:
             continue
-        total_days = max(1, int(stats.get("days_total", 0) or 0))
-
-        def _regime(days_with: int) -> str:
-            if days_with <= 0:
-                return "OFF"
-            ratio = days_with / total_days if total_days else 0.0
-            if ratio >= 0.7:
-                return "BOOST"
-            return "NORMAL"
-
-        s40_days = int(stats.get("s40_days", 0) or 0)
-        fam_days = int(stats.get("fam_days", 0) or 0)
-        s40_label = _regime(s40_days)
-        fam_label = _regime(fam_days)
         print(
-            f"   {slot}: S40 {s40_label} ({s40_days}/{total_days}), "
-            f"164950 {fam_label} ({fam_days}/{total_days})"
+            f"   {slot}: S40 {stats['s40_regime']} ({stats['s40_days']}/{stats['total_days']}), "
+            f"164950 {stats['fam_regime']} ({stats['fam_days']}/{stats['total_days']})"
         )
 
 
@@ -973,27 +1000,17 @@ def _pnl_regime(value: Optional[float]) -> str:
 def print_regime_snapshot(window_days: int = 30) -> None:
     print("3️⃣ REGIME SNAPSHOT")
     slot_pattern_stats = _pattern_slot_stats(window_days=window_days)
+    regimes = _short_window_regimes(slot_pattern_stats)
     roi_map = _load_slot_roi()
     if not slot_pattern_stats and not roi_map:
         print("   Regime snapshot warming up (insufficient data).")
         return
     for slot in SLOTS:
         patterns = slot_pattern_stats.get(slot, {})
+        slot_regime = regimes.get(slot, {})
         pnl_label = _pnl_regime(roi_map.get(slot))
-        baseline_s40 = slot_pattern_stats.get("baseline_s40", 0.0)
-        baseline_fam = slot_pattern_stats.get("baseline_fam", 0.0)
-        s40_rate = patterns.get("s40_rate", 0.0)
-        fam_rate = patterns.get("fam_rate", 0.0)
-
-        def _regime_label(rate: float, baseline: float) -> str:
-            if pnl_label == "STRONG" and rate >= baseline + 0.10:
-                return "HOT"
-            if pnl_label == "SLUMP" and rate <= max(0.0, baseline - 0.10):
-                return "COOL"
-            return "NORMAL"
-
-        s40_label = _regime_label(s40_rate, baseline_s40)
-        fam_label = _regime_label(fam_rate, baseline_fam)
+        s40_label = slot_regime.get("s40_regime", "NORMAL")
+        fam_label = slot_regime.get("fam_regime", "NORMAL")
         print(f"   {slot}: P&L={pnl_label}, S40={s40_label}, 164950={fam_label}")
 
 
@@ -1144,7 +1161,7 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     else:
         run_nextday_pipeline(target_date, dry_run=dry_run)
 
-    plan = load_plan_for_mode(mode, bet_date, target_date)
+    plan = load_plan_for_mode(mode, bet_date, target_date, dry_run=dry_run)
     final_plan = load_final_bet_plan_for_date(target_date) if mode == "NEXT_DAY" else None
     execution = load_execution_readiness()
     pnl = load_pnl_snapshot()
