@@ -15,6 +15,18 @@ from quant_stats_core import compute_topn_roi
 from utils_2digit import is_valid_2d_number, to_2d_str
 warnings.filterwarnings('ignore')
 
+PATTERN_BOOST_S40 = 1.20
+PATTERN_PENALTY_S40 = 0.85
+PATTERN_BOOST_164950 = 1.15
+PATTERN_PENALTY_164950 = 0.90
+PATTERN_BOOST_EXTRA = 1.10
+PATTERN_PENALTY_EXTRA = 0.95
+PATTERN_MULT_MIN = 0.5
+PATTERN_MULT_MAX = 1.8
+DEFAULT_BEST_N = 3
+MIN_SHORTLIST_K = 3
+MAX_SHORTLIST_K = 12
+
 OVERLAY_POLICY = {
     # Filtered S36 overlay per slot
     "S36": {
@@ -124,6 +136,46 @@ except ImportError:
     print("⚠️  pattern_packs.py not found - pattern bonuses disabled")
     PATTERN_PACKS_AVAILABLE = False
 
+S40_FALLBACK = {
+    '00', '06', '07', '09', '15', '16', '18', '19', '24', '25', '27', '28',
+    '33', '34', '36', '37', '42', '43', '45', '46', '51', '52', '54', '55',
+    '60', '61', '63', '64', '70', '72', '73', '79', '81', '82', '88', '89',
+    '90', '91', '97', '98'
+}
+FAMILY_164950_DIGITS = {'0', '1', '4', '5', '6', '9'}
+
+
+def is_s40_number(num: object) -> bool:
+    try:
+        if PATTERN_PACKS_AVAILABLE:
+            return pattern_packs.is_s40(num)
+        return to_2d_str(num) in S40_FALLBACK
+    except Exception:
+        return False
+
+
+def is_164950_family(num: object) -> bool:
+    try:
+        if PATTERN_PACKS_AVAILABLE and hasattr(pattern_packs, "is_164950_family"):
+            return pattern_packs.is_164950_family(num)
+        digits = to_2d_str(num)
+        return digits[0] in FAMILY_164950_DIGITS and digits[1] in FAMILY_164950_DIGITS
+    except Exception:
+        return False
+
+
+def belongs_to_family(num: object, family_name: str) -> bool:
+    if not family_name:
+        return False
+    family_upper = str(family_name).upper()
+    try:
+        if PATTERN_PACKS_AVAILABLE and hasattr(pattern_packs, "get_digit_pack_tags"):
+            tags = [str(t).upper() for t in pattern_packs.get_digit_pack_tags(num)]
+            return family_upper in tags
+    except Exception:
+        return False
+    return False
+
 class PreciseBetEngine:
     def __init__(self):
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -165,12 +217,146 @@ class PreciseBetEngine:
         self.golden_insights = self.load_golden_insights()
 
         self.topn_roi_profile = {}
+        self.topn_shortlist_profile = {}
+        self.pattern_regime_summary = {}
 
     def _load_topn_roi_profile(self, window_days: int = 30) -> Dict:
         try:
             return compute_topn_roi(window_days=window_days) or {}
         except Exception:
             return {}
+
+    def _load_topn_shortlist_profile(self) -> Dict:
+        base_dir = Path(__file__).resolve().parent
+        path = base_dir / "logs" / "performance" / "topn_roi_summary.json"
+        profile = {"overall_best_N": DEFAULT_BEST_N, "best_n_per_slot": {}}
+        if not path.exists():
+            return profile
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            overall_best = data.get("overall_best_N") or data.get("overall", {}).get("best_N")
+            best_per_slot = data.get("best_n_per_slot") or data.get("per_slot") or {}
+            clean_per_slot = {}
+            if isinstance(best_per_slot, dict):
+                for k, v in best_per_slot.items():
+                    try:
+                        clean_per_slot[str(k).upper()] = int(v.get("best_N", v))
+                    except Exception:
+                        continue
+            profile["overall_best_N"] = int(overall_best) if overall_best else DEFAULT_BEST_N
+            profile["best_n_per_slot"] = clean_per_slot
+        except Exception:
+            return profile
+        return profile
+
+    def _load_pattern_regime_summary(self) -> Dict:
+        base_dir = Path(__file__).resolve().parent
+        candidates = [
+            base_dir / "logs" / "performance" / "pattern_regimes_summary.json",
+            base_dir / "logs" / "performance" / "pattern_regime_summary.json",
+        ]
+        regimes = {slot: {"S40": "NORMAL", "FAMILY_164950": "NORMAL"} for slot in self.slots}
+        extra_best = {slot: {"family": None, "regime": "NORMAL", "score": (-float("inf"), -float("inf"), -float("inf"))} for slot in self.slots}
+
+        def _score(regime_label: str, hits: int, cover: int):
+            mapping = {"BOOST": 2, "NORMAL": 1, "OFF": 0}
+            return (int(hits), int(cover), mapping.get(str(regime_label).upper(), 0))
+
+        data = None
+        for path in candidates:
+            if path.exists():
+                try:
+                    with open(path, "r") as f:
+                        data = json.load(f)
+                    break
+                except Exception:
+                    data = None
+        if not data:
+            return {"per_slot": regimes, "extra_family": {slot: None for slot in self.slots}}
+
+        families = data.get("families", {}) if isinstance(data, dict) else {}
+
+        for fam_key in ["S40", "FAMILY_164950"]:
+            fam_block = families.get(fam_key, {}) if isinstance(families, dict) else {}
+            per_slot_block = fam_block.get("per_slot", {}) if isinstance(fam_block, dict) else {}
+            for slot in self.slots:
+                slot_stats = per_slot_block.get(slot, {}) if isinstance(per_slot_block, dict) else {}
+                regime = slot_stats.get("regime", "NORMAL")
+                regimes[slot][fam_key] = str(regime).upper()
+
+        for fam_name, fam_block in families.items():
+            if fam_name in ("S40", "FAMILY_164950"):
+                continue
+            per_slot_block = fam_block.get("per_slot", {}) if isinstance(fam_block, dict) else {}
+            for slot in self.slots:
+                slot_stats = per_slot_block.get(slot, {}) if isinstance(per_slot_block, dict) else {}
+                regime = slot_stats.get("regime", "NORMAL")
+                hits = slot_stats.get("hits", 0) or 0
+                cover = slot_stats.get("days_covered", 0) or 0
+                score = _score(regime, hits, cover)
+                if score > tuple(extra_best[slot]["score"]):
+                    extra_best[slot] = {"family": fam_name, "regime": str(regime).upper(), "score": score}
+
+        return {
+            "per_slot": regimes,
+            "extra_family": {slot: {"family": info["family"], "regime": info["regime"]} for slot, info in extra_best.items()},
+        }
+
+    def _compute_pattern_multiplier(self, slot: str, number: object) -> float:
+        slot_key = str(slot).upper()
+        summary = self.pattern_regime_summary.get("per_slot", {}) if isinstance(self.pattern_regime_summary, dict) else {}
+        slot_regimes = summary.get(slot_key, {}) if isinstance(summary, dict) else {}
+        mult = 1.0
+
+        s40_regime = str(slot_regimes.get("S40", "NORMAL")).upper()
+        if is_s40_number(number):
+            if s40_regime == "BOOST":
+                mult *= PATTERN_BOOST_S40
+            elif s40_regime == "OFF":
+                mult *= PATTERN_PENALTY_S40
+
+        fam_regime = str(slot_regimes.get("FAMILY_164950", "NORMAL")).upper()
+        if is_164950_family(number):
+            if fam_regime == "BOOST":
+                mult *= PATTERN_BOOST_164950
+            elif fam_regime == "OFF":
+                mult *= PATTERN_PENALTY_164950
+
+        extra_map = self.pattern_regime_summary.get("extra_family", {}) if isinstance(self.pattern_regime_summary, dict) else {}
+        extra_info = extra_map.get(slot_key, {}) if isinstance(extra_map, dict) else {}
+        extra_family = extra_info.get("family")
+        extra_regime = str(extra_info.get("regime", "NORMAL")).upper()
+        if extra_family and belongs_to_family(number, extra_family):
+            if extra_regime == "BOOST":
+                mult *= PATTERN_BOOST_EXTRA
+            elif extra_regime == "OFF":
+                mult *= PATTERN_PENALTY_EXTRA
+
+        mult = max(PATTERN_MULT_MIN, min(mult, PATTERN_MULT_MAX))
+        return mult
+
+    def _get_shortlist_width(self, slot: str, candidate_count: int) -> int:
+        profile = self.topn_shortlist_profile or {}
+        overall_best = profile.get("overall_best_N") or DEFAULT_BEST_N
+        per_slot = profile.get("best_n_per_slot", {}) if isinstance(profile, dict) else {}
+        slot_best = per_slot.get(str(slot).upper(), overall_best) or overall_best
+        try:
+            k_val = int(slot_best)
+        except Exception:
+            k_val = DEFAULT_BEST_N
+        k_val = max(MIN_SHORTLIST_K, min(k_val, MAX_SHORTLIST_K))
+
+        slot_cap_rupees = self.base_unit * self.SOFT_CAP
+        min_unit = 0.5 * self.base_unit
+        if min_unit > 0:
+            max_numbers_cap = int(slot_cap_rupees // min_unit)
+            if max_numbers_cap > 0:
+                k_val = min(k_val, max_numbers_cap)
+
+        if candidate_count:
+            k_val = min(k_val, candidate_count)
+        return max(1, k_val)
 
     def _slot_roi_dampener(self, slot: str, health: SlotHealth, topn_per_slot: Dict[str, object]) -> float:
         slot_key = str(slot).upper()
@@ -741,7 +927,8 @@ class PreciseBetEngine:
             max_pattern = self.pattern_config.get('pattern_weights', {}).get('max_pattern_bonus', self.MAX_PATTERN_BONUS)
             pattern_bonus = min(pattern_bonus, max_pattern)
             
-            final_score = quantum_boosted_score + pattern_bonus + memory_bonus
+            pattern_multiplier = self._compute_pattern_multiplier(slot, number)
+            final_score = (quantum_boosted_score + pattern_bonus + memory_bonus) * pattern_multiplier
             
             direct_hits = history[history_key]['direct_hits'] if history_key in history else 0
             cross_hits = history[history_key]['cross_hits'] if history_key in history else 0
@@ -761,6 +948,7 @@ class PreciseBetEngine:
                 's40_hits_30d': s40_hits,
                 'quantum_boosted_score': quantum_boosted_score,
                 'quantum_boost_components': quantum_debug,
+                'pattern_multiplier': pattern_multiplier,
             })
         return scored_numbers
 
@@ -904,27 +1092,17 @@ class PreciseBetEngine:
             boost += 0.05
         return boost
 
-    def build_dynamic_shortlist(self, scored_numbers, ev_gap=0.03, hard_cap=12, soft_cap=15):
+    def build_dynamic_shortlist(self, scored_numbers, desired_k=3, ev_gap=0.03):
         if not scored_numbers:
             return [], []
         sorted_numbers = sorted(scored_numbers, key=lambda x: (-x['final_score'], x['rank']))
         if not sorted_numbers:
             return [], []
         top_score = sorted_numbers[0]['final_score']
-        shortlist = sorted_numbers[:3]
-        for item in sorted_numbers[3:]:
-            if item['final_score'] >= top_score * (1 - ev_gap) and len(shortlist) < hard_cap:
-                shortlist.append(item)
-        if len(sorted_numbers) >= 10:
-            top_10_scores = [x['final_score'] for x in sorted_numbers[:10]]
-            score_range = max(top_10_scores) - min(top_10_scores)
-            if score_range <= 2 * ev_gap * top_score:
-                for item in sorted_numbers[len(shortlist):]:
-                    if item['final_score'] >= top_score * (1 - ev_gap) and len(shortlist) < soft_cap:
-                        shortlist.append(item)
+        shortlist = sorted_numbers[:max(1, desired_k)]
         shortlist = self._apply_diversity_guards(shortlist, sorted_numbers)
         shortlist = self._apply_mirror_hedge(shortlist, sorted_numbers, top_score, ev_gap)
-        shortlist = sorted(shortlist, key=lambda x: (-x['final_score'], x['rank']))
+        shortlist = sorted(shortlist, key=lambda x: (-x['final_score'], x['rank']))[:max(1, desired_k)]
         shortlisted_numbers = [item['number'] for item in shortlist]
         for item in scored_numbers:
             item['shortlisted'] = item['number'] in shortlisted_numbers
@@ -1095,7 +1273,8 @@ class PreciseBetEngine:
             pattern_bonus = min(pattern_bonus, max_pattern)
             
             # ✅ FINAL SCORE COMBINATION (PRESERVED FROM v1)
-            final_score = quantum_boosted_score + pattern_bonus + memory_bonus
+            pattern_multiplier = self._compute_pattern_multiplier(slot, number)
+            final_score = (quantum_boosted_score + pattern_bonus + memory_bonus) * pattern_multiplier
             
             direct_hits = history[history_key]['direct_hits'] if history_key in history else 0
             cross_hits = history[history_key]['cross_hits'] if history_key in history else 0
@@ -1115,8 +1294,9 @@ class PreciseBetEngine:
                 's40_hits_30d': s40_hits,
                 'quantum_boosted_score': quantum_boosted_score,
                 'quantum_boost_components': quantum_debug,
+                'pattern_multiplier': pattern_multiplier,
             })
-            
+
         return scored_numbers
 
     # ✅ MODIFIED METHOD: Added intraday support parameters with safe defaults
@@ -1138,6 +1318,9 @@ class PreciseBetEngine:
         self.history = history
         print("🔍 Loading real numbers history for near-miss learning...")
         self.real_numbers_history = self.load_real_numbers_history(30, target_date)
+
+        self.topn_shortlist_profile = self._load_topn_shortlist_profile()
+        self.pattern_regime_summary = self._load_pattern_regime_summary()
         
         long_df = self.convert_wide_to_long_format(df, target_rows)
         target_df = long_df.copy()
@@ -1177,7 +1360,8 @@ class PreciseBetEngine:
                 print(f"   Empty scored list - using fallback")
                 continue
             
-            shortlist, all_scored = self.build_dynamic_shortlist(scored_numbers)
+            shortlist_k = self._get_shortlist_width(slot, len(numbers_list))
+            shortlist, all_scored = self.build_dynamic_shortlist(scored_numbers, desired_k=shortlist_k)
             tiers = self.assign_tiers(shortlist)
             
             for item in all_scored:
@@ -1197,6 +1381,7 @@ class PreciseBetEngine:
                     'final_score': item['final_score'],
                     'shortlisted': item['shortlisted'],
                     'quantum_boosted_score': item.get('quantum_boosted_score', 0),
+                    'pattern_multiplier': item.get('pattern_multiplier', 1.0),
                 })
                 
                 quantum_components = item.get('quantum_boost_components', {})
