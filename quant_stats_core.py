@@ -31,7 +31,15 @@ def _load_ultimate_performance() -> pd.DataFrame:
     return df
 
 
-def compute_topn_roi(window_days: int = 30) -> Dict:
+def _pick_best_n(roi_map: Dict[int, float]) -> Optional[int]:
+    if not roi_map:
+        return None
+    best_roi = max(roi_map.values())
+    tied = [n for n, roi in roi_map.items() if roi == best_roi]
+    return min(tied) if tied else None
+
+
+def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
     df = _load_ultimate_performance()
     if df.empty:
         return {}
@@ -46,13 +54,15 @@ def compute_topn_roi(window_days: int = 30) -> Dict:
     window_end = window_df["date"].max().date()
     available_days = window_df["date"].dt.date.nunique()
 
-    topn_flags = {n: f"hit_top{n}" for n in range(1, 11)}
+    topn_flags = {n: f"hit_top{n}" for n in range(1, max_n + 1)}
 
     def _roi_for_subset(subset: pd.DataFrame) -> Dict[int, float]:
         roi_map: Dict[int, float] = {}
         for n, flag_col in topn_flags.items():
             raw_flags = subset.get(flag_col, None)
-            stake_rows = len(raw_flags) if raw_flags is not None else 0
+            if raw_flags is None:
+                continue
+            stake_rows = len(raw_flags)
             stake = stake_rows * n
             hits = 0
             if stake and hasattr(raw_flags, "fillna"):
@@ -64,12 +74,18 @@ def compute_topn_roi(window_days: int = 30) -> Dict:
         return roi_map
 
     roi_by_n = _roi_for_subset(window_df)
-    best_N = max(roi_by_n, key=lambda k: roi_by_n[k]) if roi_by_n else None
+    best_N = _pick_best_n(roi_by_n)
     best_roi = roi_by_n.get(best_N) if best_N is not None else None
 
     per_slot: Dict[str, Dict[str, Dict[int, float]]] = {}
     for slot, slot_df in window_df.groupby("slot"):
-        per_slot[slot] = {"roi_by_N": _roi_for_subset(slot_df)}
+        slot_roi = _roi_for_subset(slot_df)
+        slot_best_n = _pick_best_n(slot_roi)
+        slot_best_roi = slot_roi.get(slot_best_n) if slot_best_n is not None else None
+        per_slot[slot] = {"roi_by_N": slot_roi}
+        if slot_best_n is not None:
+            per_slot[slot]["best_N"] = slot_best_n
+            per_slot[slot]["best_roi"] = slot_best_roi
 
     return {
         "window_start": window_start,

@@ -8,6 +8,7 @@ from pathlib import Path
 from quant_stats_core import compute_topn_roi
 import quant_paths
 
+MAX_N = 40
 TOP_N_VALUES = list(range(1, 11))
 
 
@@ -46,7 +47,8 @@ def _write_profile_json(summary: Dict, target_window: int) -> None:
     for slot, slot_map in per_slot.items():
         roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
         if roi_map:
-            best_n = max(roi_map, key=lambda k: roi_map.get(k, float("-inf")))
+            best_roi = max(roi_map.values())
+            best_n = min([n for n, roi in roi_map.items() if roi == best_roi])
             per_slot_best[slot] = best_n
             per_slot_roi[slot] = {
                 "Top1": roi_map.get(1),
@@ -61,9 +63,11 @@ def _write_profile_json(summary: Dict, target_window: int) -> None:
     payload = {
         "window_days": target_window,
         "best_N_overall": overall.get("best_N"),
+        "overall_best_N": overall.get("best_N"),
         "best_roi_overall": overall.get("best_roi"),
         "per_N_roi": {str(k): v for k, v in roi_by_n.items()},
         "per_slot_best_N": per_slot_best,
+        "best_n_per_slot": per_slot_best,
         "per_slot_roi": per_slot_roi,
         "window_start": summary.get("window_start"),
         "window_end": summary.get("window_end"),
@@ -87,23 +91,35 @@ def _write_best_roi_json(summary: Dict, target_window: int) -> None:
 
         overall = summary.get("overall", {}) or {}
         per_slot_summary = summary.get("per_slot", {}) or {}
+        roi_by_n_overall = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
 
         overall_best_n = overall.get("best_N") if isinstance(overall, dict) else None
         overall_best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
 
         per_slot: Dict[str, Dict[str, float]] = {}
+        best_n_per_slot: Dict[str, int] = {}
+        roi_per_slot: Dict[str, Dict[str, float]] = {}
         for slot, slot_map in per_slot_summary.items():
             roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
             if not roi_map:
                 continue
-            best_n = max(roi_map, key=lambda k: roi_map.get(k, float("-inf")))
+            best_roi = max(roi_map.values())
+            best_n = min([n for n, roi in roi_map.items() if roi == best_roi])
             per_slot[slot] = {"best_N": int(best_n), "roi": float(roi_map.get(best_n, 0.0))}
+            best_n_per_slot[slot] = int(best_n)
+            roi_per_slot[slot] = {str(k): v for k, v in roi_map.items()}
 
         payload = {
             "window_days": summary.get("available_days", target_window),
             "overall": {"best_N": overall_best_n, "roi": overall_best_roi},
             "per_slot": per_slot,
             "timestamp": datetime.now().isoformat(),
+            "overall_best_N": overall_best_n,
+            "best_n_per_slot": best_n_per_slot,
+            "roi_per_n": {
+                "overall": {str(k): v for k, v in roi_by_n_overall.items()},
+                "per_slot": roi_per_slot,
+            },
         }
 
         output_path.write_text(json.dumps(payload, indent=2, default=_json_default))
@@ -113,7 +129,7 @@ def _write_best_roi_json(summary: Dict, target_window: int) -> None:
 
 def main() -> int:
     target_window = 30
-    summary = compute_topn_roi(window_days=target_window)
+    summary = compute_topn_roi(window_days=target_window, max_n=MAX_N)
     if not summary:
         print("No data available for ROI scan.")
         return 0
@@ -148,6 +164,10 @@ def main() -> int:
                     parts.append(f"Top{n}:{roi_by_n[n]:+.1f}%")
             if parts:
                 print(f"{slot}: {' | '.join(parts)}")
+
+            best_n = n_map.get("best_N")
+            if best_n:
+                print(f"    Best N: {best_n}")
 
     best_n = overall.get("best_N") if isinstance(overall, dict) else None
     best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
