@@ -9,8 +9,10 @@ import pandas as pd
 
 import quant_paths
 from quant_slot_health import load_slot_health, SlotHealth
+from quant_stats_core import get_quant_stats
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
+quant_stats = get_quant_stats()
 
 
 def _load_json(path: Path) -> Optional[Dict]:
@@ -171,6 +173,54 @@ def _pattern_score_for_slot(patterns: Optional[Dict], slot: str) -> Dict[str, ob
     return {"score": float(score), "s40": s40_regime, "fam": fam_regime, "extra": extra}
 
 
+def _quant_slot_score(slot: str) -> Dict[str, object]:
+    slot_key = str(slot).upper()
+    pnl_block = quant_stats.get("pnl", {}) if isinstance(quant_stats, dict) else {}
+    slot_pnl = (pnl_block.get("slots", {}) if isinstance(pnl_block, dict) else {}).get(slot_key, {})
+    slot_roi = float(slot_pnl.get("roi", 0.0) or slot_pnl.get("roi_percent", 0.0) or 0.0)
+
+    slot_health_block = quant_stats.get("slot_health", {}) if isinstance(quant_stats, dict) else {}
+    health_entry = slot_health_block.get(slot_key, {}) if isinstance(slot_health_block, dict) else {}
+    slump_flag = bool(health_entry.get("slump", False))
+    roi_bucket = str(health_entry.get("roi_bucket", "")).upper()
+
+    topn_root = quant_stats.get("topn", {}) if isinstance(quant_stats, dict) else {}
+    topn_slots = topn_root.get("slots", {}) if isinstance(topn_root, dict) else {}
+    topn_slot = topn_slots.get(slot_key, {}) if isinstance(topn_slots, dict) else {}
+    best_n = topn_slot.get("best_N")
+    best_roi = topn_slot.get("best_roi")
+
+    pattern_root = quant_stats.get("patterns", {}) if isinstance(quant_stats, dict) else {}
+    fams = (pattern_root.get("slots", {}) if isinstance(pattern_root, dict) else {}).get(slot_key, {})
+    fam_block = fams.get("families", {}) if isinstance(fams, dict) else {}
+    s40_regime = (fam_block.get("S40", {}) or {}).get("regime_30d") or (fam_block.get("S40", {}) or {}).get("regime")
+    fam_regime = (fam_block.get("FAMILY_164950", {}) or {}).get("regime_30d") or (fam_block.get("FAMILY_164950", {}) or {}).get("regime")
+
+    score = slot_roi / 50.0
+    if slump_flag:
+        score -= 2.0
+    if roi_bucket == "LOW":
+        score -= 0.5
+    if best_roi is not None and best_roi > 0:
+        score += 0.5
+    if str(s40_regime or "").upper() == "BOOST":
+        score += 0.4
+    if str(fam_regime or "").upper() == "BOOST":
+        score += 0.2
+
+    return {
+        "slot": slot_key,
+        "slot_roi": slot_roi,
+        "slump": slump_flag,
+        "roi_bucket": roi_bucket,
+        "best_n": best_n,
+        "best_roi": best_roi,
+        "s40_regime": s40_regime,
+        "fam_regime": fam_regime,
+        "score": score,
+    }
+
+
 def _topn_score_for_slot(topn: Dict, slot: str) -> Dict[str, object]:
     per_slot_topn = topn.get("per_slot", {}) if isinstance(topn, dict) else {}
     best_n_per_slot = topn.get("best_n_per_slot", {}) if isinstance(topn, dict) else {}
@@ -188,6 +238,21 @@ def _topn_score_for_slot(topn: Dict, slot: str) -> Dict[str, object]:
 
 
 def _select_slot(slot_health: Dict[str, Dict[str, object]], topn: Dict, patterns: Optional[Dict]) -> Optional[str]:
+    quant_candidates = [_quant_slot_score(slot) for slot in SLOTS]
+    quant_candidates = [c for c in quant_candidates if c]
+    if quant_candidates:
+        quant_candidates.sort(
+            key=lambda c: (
+                -float(c.get("score", 0.0) or 0.0),
+                -float(c.get("slot_roi", 0.0) or 0.0),
+            ),
+        )
+        top_score = quant_candidates[0].get("score", 0.0)
+        tied = [c for c in quant_candidates if c.get("score", 0.0) == top_score]
+        tie_order = {"GZBD": 0, "GALI": 1, "DSWR": 2, "FRBD": 3}
+        winner = sorted(tied, key=lambda c: tie_order.get(c.get("slot", ""), 99))[0]
+        return winner.get("slot")
+
     if not slot_health:
         return None
 
@@ -230,6 +295,20 @@ def _select_slot(slot_health: Dict[str, Dict[str, object]], topn: Dict, patterns
 
 
 def _pick_number_from_plan(slot: str, base_dir: Path) -> Optional[Dict[str, str]]:
+    debug_path = base_dir / "data" / "bet_engine_debug.json"
+    if debug_path.exists():
+        try:
+            debug_data = json.loads(debug_path.read_text())
+            slot_block = (debug_data.get("slots", {}) or {}).get(slot, {}) if isinstance(debug_data, dict) else {}
+            numbers = slot_block.get("numbers", []) if isinstance(slot_block, dict) else []
+            if numbers:
+                numbers_sorted = sorted(numbers, key=lambda x: (-float(x.get("final_score", 0.0)), x.get("tier", "Z")))
+                chosen = numbers_sorted[0]
+                num = str(chosen.get("number", "")).zfill(2)
+                return {"number": num, "andar": num[0], "bahar": num[1], "tier": chosen.get("tier"), "final_score": chosen.get("final_score")}
+        except Exception:
+            pass
+
     latest_plan = quant_paths.find_latest_bet_plan_master()
     if not latest_plan or not Path(latest_plan).exists():
         return None
@@ -389,11 +468,32 @@ def main() -> int:
         print("No Arjun pick available (bet plan missing).")
         return 0
 
+    slot_quant = _quant_slot_score(chosen_slot)
+    reasons = []
+    roi_val = slot_quant.get("slot_roi") if slot_quant else None
+    if roi_val is not None:
+        reasons.append(f"slot ROI {float(roi_val):+.1f}%")
+    if slot_quant and slot_quant.get("slump"):
+        reasons.append("slot in slump")
+    best_n = slot_quant.get("best_n") if slot_quant else None
+    best_roi = slot_quant.get("best_roi") if slot_quant else None
+    if best_n:
+        reasons.append(f"best_N={best_n} ROI {float(best_roi or 0.0):+.1f}%")
+    s40_regime = slot_quant.get("s40_regime") if slot_quant else None
+    fam_regime = slot_quant.get("fam_regime") if slot_quant else None
+    if s40_regime:
+        reasons.append(f"S40 {s40_regime}")
+    if fam_regime:
+        reasons.append(f"164950 {fam_regime}")
+    reasons.append("chosen from bet plan shortlist")
+
     hero_map = hero_weak.get("per_slot", {}) if isinstance(hero_weak, dict) else {}
     hero_script = None
     slot_entry = hero_map.get(chosen_slot, {}) if isinstance(hero_map, dict) else {}
     if slot_entry:
         hero_script = slot_entry.get("hero_script")
+        if hero_script:
+            reasons.append(f"hero script={hero_script}")
 
     result = {
         "date": date.today().isoformat(),
@@ -401,6 +501,7 @@ def main() -> int:
         "number": pick["number"],
         "andar": pick["andar"],
         "bahar": pick["bahar"],
+        "reasons": reasons,
         "sources": {
             "slot_health": slot_health.get(chosen_slot, {}),
             "topn": (topn.get("per_slot", {}) or {}).get(chosen_slot, {}) if isinstance(topn, dict) else {},
@@ -427,6 +528,8 @@ def main() -> int:
         topn,
         hero_script,
     )
+    if reasons:
+        reason = reason + "; " + "; ".join(reasons) if reason else "; ".join(reasons)
 
     print("=== ARJUN MODE – FOCUSED SHOT ===")
     print(f"Slot      : {chosen_slot}")

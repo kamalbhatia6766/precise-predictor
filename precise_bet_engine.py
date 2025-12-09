@@ -11,9 +11,11 @@ import argparse
 import json
 import quant_data_core
 from quant_slot_health import get_slot_health, SlotHealth
-from quant_stats_core import compute_topn_roi
+from quant_stats_core import compute_topn_roi, get_quant_stats
 from utils_2digit import is_valid_2d_number, to_2d_str
 warnings.filterwarnings('ignore')
+
+quant_stats = get_quant_stats()
 
 PATTERN_BOOST_S40 = 1.20
 PATTERN_PENALTY_S40 = 0.85
@@ -176,6 +178,25 @@ def belongs_to_family(num: object, family_name: str) -> bool:
         return False
     return False
 
+
+def _safe_slot_block(key: str) -> Dict:
+    block = quant_stats.get(key, {}) if isinstance(quant_stats, dict) else {}
+    return block if isinstance(block, dict) else {}
+
+
+def _extract_script_numbers(entry: Dict) -> set:
+    numbers = set()
+    if not isinstance(entry, dict):
+        return numbers
+    for key in ["numbers", "top_numbers", "best_numbers"]:
+        vals = entry.get(key)
+        if isinstance(vals, list):
+            numbers.update({to_2d_str(v) for v in vals})
+    hits_block = entry.get("hits_by_number") if isinstance(entry, dict) else None
+    if isinstance(hits_block, dict):
+        numbers.update({to_2d_str(k) for k in hits_block.keys()})
+    return numbers
+
 class PreciseBetEngine:
     def __init__(self):
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -215,6 +236,8 @@ class PreciseBetEngine:
         self.pattern_config = self.load_enhanced_pattern_intelligence()
         self.adaptive_packs = self.load_adaptive_pattern_packs()
         self.golden_insights = self.load_golden_insights()
+        self.quant_stats = quant_stats or {}
+        self.bet_engine_debug: Dict[str, Dict] = {}
 
         self.topn_roi_profile = {}
         self.topn_shortlist_profile = {}
@@ -225,6 +248,27 @@ class PreciseBetEngine:
             return compute_topn_roi(window_days=window_days) or {}
         except Exception:
             return {}
+
+    def _get_slot_quant(self, key: str, slot: str) -> Dict:
+        block = _safe_slot_block(key)
+        slot_block = block.get(slot) if isinstance(block, dict) else None
+        return slot_block if isinstance(slot_block, dict) else {}
+
+    def _get_number_families(self, number: object) -> List[str]:
+        families = []
+        if is_s40_number(number):
+            families.append("S40")
+        if is_164950_family(number):
+            families.append("FAMILY_164950")
+        try:
+            if PATTERN_PACKS_AVAILABLE and hasattr(pattern_packs, "get_digit_pack_tags"):
+                extra = [str(t).upper() for t in pattern_packs.get_digit_pack_tags(number)]
+                for fam in extra:
+                    if fam not in families:
+                        families.append(fam)
+        except Exception:
+            pass
+        return families
 
     def _load_topn_shortlist_profile(self) -> Dict:
         base_dir = Path(__file__).resolve().parent
@@ -877,6 +921,123 @@ class PreciseBetEngine:
             print(f"⚠️  Error loading golden insights: {e}")
         return {}
 
+    def _script_hero_boost(self, slot: str, number_str: str) -> float:
+        scripts_block = _safe_slot_block("scripts")
+        hero_block = scripts_block.get("hero", {}) if isinstance(scripts_block, dict) else {}
+        weak_block = scripts_block.get("weak", {}) if isinstance(scripts_block, dict) else {}
+        hero_entry = hero_block.get(slot, {}) if isinstance(hero_block, dict) else {}
+        weak_entry = weak_block.get(slot, {}) if isinstance(weak_block, dict) else {}
+        hero_numbers = _extract_script_numbers(hero_entry)
+        weak_numbers = _extract_script_numbers(weak_entry)
+        boost = 0.0
+        if number_str in hero_numbers:
+            boost += 0.12
+        if number_str in weak_numbers:
+            boost -= 0.08
+        return boost
+
+    def _topn_alignment_boost(self, slot: str, rank: int) -> float:
+        topn_root = _safe_slot_block("topn")
+        slots_block = topn_root.get("slots", {}) if isinstance(topn_root, dict) else {}
+        slot_topn = slots_block.get(slot, {}) if isinstance(slots_block, dict) else {}
+        roi_map = slot_topn.get("roi_by_N", {}) if isinstance(slot_topn, dict) else {}
+        best_n = slot_topn.get("best_N") if isinstance(slot_topn, dict) else None
+        best_roi = slot_topn.get("best_roi") if isinstance(slot_topn, dict) else None
+        try:
+            roi_map = {int(k): float(v) for k, v in roi_map.items()}
+        except Exception:
+            roi_map = {}
+        if best_n is None and roi_map:
+            try:
+                best_roi = max(roi_map.values()) if roi_map else None
+                best_candidates = [n for n, rv in roi_map.items() if rv == best_roi]
+                best_n = min(best_candidates) if best_candidates else None
+            except Exception:
+                best_n = None
+        align = 0.0
+        if best_n and best_roi is not None and best_roi > 0:
+            if rank <= int(best_n):
+                align += 0.25 * (int(best_n) - rank + 1) / max(1, int(best_n))
+        if roi_map:
+            top_band = [roi_map.get(n) for n in range(1, 6) if roi_map.get(n) is not None]
+            deep_positive = [(n, v) for n, v in roi_map.items() if n > 5 and v is not None and v > 0]
+            if top_band and all((r is not None and r <= 0) for r in top_band) and deep_positive:
+                if rank <= 5:
+                    align -= 0.08
+                elif best_n and rank <= int(best_n):
+                    align += 0.18
+                else:
+                    align += 0.05
+        return align
+
+    def _pattern_regime_bonus(self, slot: str, families: List[str]) -> (float, Dict[str, float], Dict[str, str]):
+        patterns_root = _safe_slot_block("patterns")
+        slot_block = patterns_root.get("slots", {}) if isinstance(patterns_root, dict) else {}
+        slot_patterns = slot_block.get(slot, {}) if isinstance(slot_block, dict) else {}
+        fam_block = slot_patterns.get("families", {}) if isinstance(slot_patterns, dict) else {}
+        total = 0.0
+        boosts: Dict[str, float] = {}
+        regimes: Dict[str, str] = {}
+        for fam in families:
+            fam_key = str(fam).upper()
+            fam_info = fam_block.get(fam_key, {}) if isinstance(fam_block, dict) else {}
+            regime30 = str(fam_info.get("regime_30d", fam_info.get("regime" ,"NORMAL"))).upper()
+            regime90 = str(fam_info.get("regime_90d", "" )).upper()
+            bonus = 0.0
+            if regime30 == "BOOST" or regime90 == "BOOST":
+                bonus = 0.12
+            elif regime30 == "OFF":
+                bonus = -0.10
+            if bonus != 0:
+                boosts[fam_key] = bonus
+                total += bonus
+            if regime30:
+                regimes[fam_key] = regime30
+        return total, boosts, regimes
+
+    def calculate_quant_scores(self, numbers_list, slot):
+        if not numbers_list:
+            return [], {}
+        scored_numbers = []
+        debug_reasons = {}
+        slot_key = str(slot).upper()
+        for rank, number in enumerate(numbers_list, 1):
+            num_str = to_2d_str(number)
+            base_score = 1.0 / rank
+            hero_boost = self._script_hero_boost(slot_key, num_str)
+            topn_boost = self._topn_alignment_boost(slot_key, rank)
+            families = self._get_number_families(number)
+            pattern_bonus, pattern_boosts, regimes = self._pattern_regime_bonus(slot_key, families)
+            final_score = base_score + hero_boost + topn_boost + pattern_bonus
+            scored_numbers.append({
+                'number': number,
+                'rank': rank,
+                'base_score': base_score,
+                'pattern_bonus': pattern_bonus,
+                'memory_bonus': 0.0,
+                'final_score': final_score,
+                'is_s40': 'S40' in families,
+                'digit_pack_tags': ','.join(families),
+                'direct_hits_30d': 0,
+                'cross_hits_30d': 0,
+                's40_hits_30d': 0,
+                'quantum_boosted_score': final_score,
+                'quantum_boost_components': {},
+                'pattern_multiplier': 1.0,
+            })
+            debug_reasons[num_str] = {
+                "base_rank": rank,
+                "base_score": base_score,
+                "script_hero_boost": hero_boost,
+                "topn_align": topn_boost,
+                "pattern_boosts": pattern_boosts,
+                "final_score": final_score,
+                "pattern_tags": families,
+                "regimes": regimes,
+            }
+        scored_numbers = sorted(scored_numbers, key=lambda x: (-x['final_score'], x['rank']))
+        return scored_numbers, debug_reasons
+
     def calculate_enhanced_scores(self, numbers_list, slot, history, target_date):
         if not numbers_list:
             return []
@@ -1348,13 +1509,9 @@ class PreciseBetEngine:
             numbers_list = slot_data['numbers'].iloc[0]
             
             # ✅ INTRADAY SUPPORT: Apply family multipliers if provided
-            if mode == "intraday" and family_multipliers:
-                print(f"🎯 Processing {slot} with intraday learning...")
-                scored_numbers = self.calculate_enhanced_scores_intraday(numbers_list, slot, history, target_date, family_multipliers)
-            else:
-                # ✅ EXACT v1 BEHAVIOR PRESERVED
-                print(f"🎯 Processing {slot}: {len(numbers_list)} numbers")
-                scored_numbers = self.calculate_enhanced_scores(numbers_list, slot, history, target_date)
+            print(f"🎯 Processing {slot}: {len(numbers_list)} numbers")
+            scored_numbers, slot_debug = self.calculate_quant_scores(numbers_list, slot)
+            self.bet_engine_debug.setdefault(slot, {})["candidates"] = slot_debug
             
             if not scored_numbers:
                 print(f"   Empty scored list - using fallback")
@@ -1363,6 +1520,8 @@ class PreciseBetEngine:
             shortlist_k = self._get_shortlist_width(slot, len(numbers_list))
             shortlist, all_scored = self.build_dynamic_shortlist(scored_numbers, desired_k=shortlist_k)
             tiers = self.assign_tiers(shortlist)
+
+            slot_debug_numbers = []
             
             for item in all_scored:
                 diagnostic_data.append({
@@ -1408,6 +1567,20 @@ class PreciseBetEngine:
                 print(f"   Empty shortlist - using fallback")
                 shortlist = scored_numbers[:3]
                 tiers = self.assign_tiers(shortlist)
+
+            for item in shortlist:
+                num_str = to_2d_str(item['number'])
+                reasons = (self.bet_engine_debug.get(slot, {}) or {}).get("candidates", {})
+                candidate_debug = reasons.get(num_str, {}) if isinstance(reasons, dict) else {}
+                pattern_tags = candidate_debug.get("pattern_tags") or self._get_number_families(item['number'])
+                regimes = candidate_debug.get("regimes", {}) if isinstance(candidate_debug, dict) else {}
+                slot_debug_numbers.append({
+                    "number": num_str,
+                    "tier": tiers.get(item['number'], 'C'),
+                    "final_score": float(item.get('final_score', 0.0)),
+                    "pattern_tags": pattern_tags,
+                    "regimes": {k: v for k, v in regimes.items() if v},
+                })
             
             andar_digit, bahar_digit = self.get_andar_bahar(shortlist)
             main_stake_total = 0
@@ -1517,6 +1690,9 @@ class PreciseBetEngine:
                 'ultra_mode': True,
                 'dynamic_top_n': True
             })
+
+            self.bet_engine_debug.setdefault(slot, {})['numbers'] = slot_debug_numbers
+            self.bet_engine_debug.setdefault(slot, {})['target_date'] = target_date.strftime('%Y-%m-%d')
             
             print(f"   Main: {len(shortlist)} numbers, {fmt_rupees(main_stake_total)} stake")
             print(f"   ANDAR: {andar_digit}, BAHAR: {bahar_digit}")
@@ -1679,6 +1855,25 @@ class PreciseBetEngine:
 
         return file_path
 
+    def write_debug_payload(self, target_date: datetime.date):
+        try:
+            debug_path = Path(__file__).resolve().parent / "data" / "bet_engine_debug.json"
+            debug_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "generated_at": datetime.now().isoformat(),
+                "target_date": target_date.strftime('%Y-%m-%d'),
+                "slots": {},
+            }
+            for slot, info in (self.bet_engine_debug or {}).items():
+                payload["slots"][slot] = {
+                    "numbers": info.get("numbers", []),
+                    "target_date": info.get("target_date", target_date.strftime('%Y-%m-%d')),
+                }
+            with open(debug_path, "w") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as exc:
+            print(f"⚠️  Could not write bet_engine_debug.json: {exc}")
+
 
 def analyze_near_miss_history(days: int = 30):
     """Analyze near-miss candidates using the same logic as the bet engine."""
@@ -1784,6 +1979,7 @@ def main():
             return 1
 
         bets_df, summary_df = engine.apply_stake_overlays(bets_df, summary_df, target_date)
+        engine.write_debug_payload(target_date)
 
         output_path = engine.save_bet_plan(bets_df, summary_df, diagnostic_df, quantum_debug_df, ultra_debug_df, explainability_df, target_date)
         print(f"💾 Bet plan saved: {output_path}")
