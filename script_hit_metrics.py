@@ -49,24 +49,38 @@ def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, O
 
 
 def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    empty_summary = {
+        "requested_window_days": window_days,
+        "effective_window_days": 0,
+        "available_days": 0,
+        "window_start": None,
+        "window_end": None,
+        "latest_date": None,
+        "earliest_date": None,
+        "total_rows": 0,
+    }
+
     if df.empty or not date_col:
-        return pd.DataFrame(), {}
+        return pd.DataFrame(), empty_summary
 
-    total_days_available = int(df[date_col].dropna().nunique())
-    if total_days_available <= 0:
-        return pd.DataFrame(), {}
-
-    effective_days = min(window_days, total_days_available)
-    filtered, used_days = filter_hits_by_window(df, window_days=effective_days)
+    filtered, _ = filter_hits_by_window(df, window_days=window_days)
     if filtered.empty:
-        return pd.DataFrame(), {}
+        return pd.DataFrame(), empty_summary
+
+    filtered_dates = pd.to_datetime(filtered[date_col], errors="coerce").dt.date
+    available_days = int(filtered_dates.dropna().nunique())
+    effective_days = min(window_days, available_days) if available_days else 0
+    filtered[date_col] = filtered_dates
 
     latest_date = filtered[date_col].max()
     earliest_date = filtered[date_col].min()
 
     summary = {
         "requested_window_days": window_days,
-        "effective_window_days": int(used_days or effective_days),
+        "effective_window_days": int(effective_days),
+        "available_days": available_days,
+        "window_end": latest_date,
+        "window_start": earliest_date,
         "latest_date": latest_date,
         "earliest_date": earliest_date,
         "total_rows": len(filtered),
@@ -236,6 +250,11 @@ def _export_hero_weak_json(
             "overall": overall,
             "meta": {
                 "window_days": summary.get("effective_window_days") or summary.get("requested_window_days"),
+                "requested_window_days": summary.get("requested_window_days"),
+                "effective_window_days": summary.get("effective_window_days"),
+                "available_days": summary.get("available_days"),
+                "window_start": summary.get("window_start") or summary.get("earliest_date"),
+                "window_end": summary.get("window_end") or summary.get("latest_date"),
                 "rows": summary.get("total_rows", len(metrics_df)),
             },
         }
@@ -438,10 +457,12 @@ def load_script_hit_metrics(window_days: int = 30, base_dir: Optional[Path] = No
 # CLI utilities -------------------------------------------------------------------------
 
 def _print_metrics(metrics_df: pd.DataFrame, summary: Dict[str, Any], mode: str) -> None:
+    rows_display = summary.get("total_rows") if isinstance(summary, dict) else None
+    rows_display = rows_display if rows_display is not None else len(metrics_df)
     header = (
         "Script hit metrics – "
         f"requested {summary.get('requested_window_days')}d, used {summary.get('effective_window_days')}d "
-        f"(rows={summary.get('total_rows')})"
+        f"(rows={rows_display})"
     )
     print(header)
     if metrics_df.empty:
