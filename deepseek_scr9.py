@@ -23,7 +23,7 @@ from script_hit_metrics import (
 )
 warnings.filterwarnings('ignore')
 
-USE_SCRIPT_WEIGHTS = False
+USE_SCRIPT_WEIGHTS = True
 SCRIPT_WEIGHTS_WINDOW_DAYS = 30
 SCRIPT_WEIGHTS_MIN_SCORE = 0.01
 

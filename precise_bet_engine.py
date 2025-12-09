@@ -174,8 +174,6 @@ class PreciseBetEngine:
 
     def _slot_roi_dampener(self, slot: str, health: SlotHealth, topn_per_slot: Dict[str, object]) -> float:
         slot_key = str(slot).upper()
-        if slot_key != "FRBD":
-            return 1.0
 
         roi_block = topn_per_slot.get(slot_key, {}) if isinstance(topn_per_slot, dict) else {}
         roi_map = roi_block.get("roi_by_N", {}) if isinstance(roi_block, dict) else {}
