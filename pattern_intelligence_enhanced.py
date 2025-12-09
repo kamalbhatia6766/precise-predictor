@@ -9,6 +9,8 @@ import pandas as pd
 
 from quant_core import hit_core, pattern_core
 from pattern_intelligence_engine import compute_pattern_metrics
+from quant_stats_core import compute_pack_hit_stats
+import quant_paths
 
 WINDOW_DAYS = 120
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -98,8 +100,76 @@ class PatternIntelligenceEnhanced:
             "slots": slots,
         }
         self.save(payload, df)
+        self._export_regime_summary(summary)
         self.print_summary(df, scripts, slots)
         return True
+
+    def _export_regime_summary(self, summary: Dict) -> None:
+        try:
+            base_dir = quant_paths.get_base_dir()
+            output_path = Path(base_dir) / "logs" / "performance" / "pattern_regimes_summary.json"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            pattern_window = int(summary.get("window_days", self.window_days))
+            short_window = 30
+            short_stats = compute_pack_hit_stats(window_days=short_window, base_dir=base_dir) or {}
+
+            def _regime_score(label: str) -> int:
+                mapping = {"BOOST": 2, "NORMAL": 1, "OFF": 0}
+                return mapping.get(str(label).upper(), 0)
+
+            def _family_block(key: str, label: str) -> Dict:
+                fam = summary.get(key, {}) or {}
+                per_slot_block = {}
+                best_slot = None
+                weak_slot = None
+                best_score = (float("-inf"), float("-inf"))
+                weak_score = (float("inf"), float("inf"))
+                for slot in SLOTS:
+                    slot_stats = fam.get("per_slot", {}).get(slot, {}) if isinstance(fam, dict) else {}
+                    hits = int(slot_stats.get("hits_total", 0) or 0)
+                    cover = int(slot_stats.get("daily_cover_days", 0) or 0)
+                    rate = float(slot_stats.get("hit_rate", 0.0) or 0.0)
+                    regime = slot_stats.get("regime", "NORMAL")
+                    per_slot_block[slot] = {
+                        "regime": regime,
+                        "hits": hits,
+                        "days_covered": cover,
+                    }
+                    score = (rate, _regime_score(regime))
+                    if score > best_score:
+                        best_score = score
+                        best_slot = slot
+                    if score < weak_score:
+                        weak_score = score
+                        weak_slot = slot
+
+                return {
+                    "per_slot": per_slot_block,
+                    "overall": {
+                        "daily_cover_percent": float(fam.get("daily_cover_pct", 0.0) or 0.0),
+                        "total_hits": int(fam.get("hits_total", 0) or 0),
+                        "best_slot": best_slot,
+                        "weak_slot": weak_slot,
+                    },
+                }
+
+            payload = {
+                "window_days": pattern_window,
+                "short_window_days": short_window,
+                "families": {
+                    "S40": _family_block("s40", "S40"),
+                    "FAMILY_164950": _family_block("family_164950", "FAMILY_164950"),
+                },
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            if short_stats:
+                payload["short_window"] = {"available_days": short_stats.get("days_total")}
+
+            output_path.write_text(json.dumps(payload, indent=2))
+        except Exception as exc:
+            print(f"[pattern_intelligence_enhanced] Warning: unable to write pattern_regimes_summary.json: {exc}")
 
 
 def main() -> int:

@@ -1135,6 +1135,56 @@ def print_topn_roi_insight(insight: Optional[Dict] = None) -> Optional[Dict]:
     return insight
 
 
+def print_arjun_section(base_dir: Optional[Path] = None) -> None:
+    print()
+    print("7️⃣ ARJUN MODE (FOCUSED SHOT)")
+    try:
+        project_root = Path(base_dir) if base_dir else quant_paths.get_base_dir()
+        arjun_path = project_root / "data" / "arjun_pick.json"
+        if not arjun_path.exists():
+            print("   No Arjun pick available (run quant_arjun_mode.py after bet_pnl_tracker & precise_bet_engine).")
+            return
+
+        data = json.loads(arjun_path.read_text())
+        slot = data.get("slot") if isinstance(data, dict) else None
+        number = data.get("number") if isinstance(data, dict) else None
+        andar = data.get("andar") if isinstance(data, dict) else None
+        bahar = data.get("bahar") if isinstance(data, dict) else None
+        if not slot or not number:
+            print("   No Arjun pick available (run quant_arjun_mode.py after bet_pnl_tracker & precise_bet_engine).")
+            return
+
+        sources = data.get("sources", {}) if isinstance(data, dict) else {}
+        slot_health = sources.get("slot_health", {}) if isinstance(sources, dict) else {}
+        hero_script = sources.get("hero_script") if isinstance(sources, dict) else None
+        patterns = sources.get("patterns", {}) if isinstance(sources, dict) else {}
+        topn = sources.get("topn", {}) if isinstance(sources, dict) else {}
+
+        reason_parts: List[str] = []
+        if slot_health:
+            if not slot_health.get("slump"):
+                reason_parts.append("non-slump")
+            roi_val = slot_health.get("roi")
+            if roi_val is not None:
+                reason_parts.append(f"ROI {float(roi_val):+.1f}%")
+        s40_regime = patterns.get("S40") if isinstance(patterns, dict) else None
+        fam_regime = patterns.get("FAMILY_164950") if isinstance(patterns, dict) else None
+        if s40_regime:
+            reason_parts.append(f"S40 {s40_regime}")
+        if fam_regime:
+            reason_parts.append(f"164950 {fam_regime}")
+        if isinstance(topn, dict) and topn.get("roi") is not None:
+            reason_parts.append(f"TopN {float(topn.get('roi', 0.0)):+.1f}%")
+        if hero_script:
+            reason_parts.append(f"hero {hero_script}")
+
+        print(f"   Slot: {slot} | Number: {number} (ANDAR={andar}, BAHAR={bahar})")
+        if reason_parts:
+            print(f"   Source: {', '.join(reason_parts)}")
+    except Exception:
+        print("   No Arjun pick available (run quant_arjun_mode.py after bet_pnl_tracker & precise_bet_engine).")
+
+
 def print_header(bet_date: date, target_date: date, mode: str, strategy: StrategySummary, execution: ExecutionReadiness, plan: Optional[PlanSummary]):
     print("=" * 80)
     print(f"🎯 QUANT DAILY BRIEF – {target_date.isoformat()} (MODE: {mode})")
@@ -1180,6 +1230,7 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     print_risk_section(strategy, money, execution, confidence)
     print_script_performance_section(window_days=SCRIPT_METRICS_WINDOW_DAYS)
     topn_insight = print_topn_roi_insight(topn_insight)
+    print_arjun_section()
     print("=" * 80)
     best_roi = None
     if topn_insight:

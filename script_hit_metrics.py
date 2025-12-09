@@ -1,11 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import timedelta
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-import argparse
+import json
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -187,6 +183,61 @@ def hero_weak_table(metrics_df: pd.DataFrame, min_predictions: int = 10) -> pd.D
             }
         )
     return pd.DataFrame(rows)
+
+
+def _export_hero_weak_json(
+    heroes_df: pd.DataFrame, metrics_df: pd.DataFrame, summary: Dict[str, Any], base_dir: Optional[Path] = None
+) -> None:
+    try:
+        if heroes_df is None or heroes_df.empty or metrics_df is None or metrics_df.empty:
+            return
+
+        project_root = Path(base_dir) if base_dir else quant_paths.get_base_dir()
+        output_path = project_root / "logs" / "performance" / "script_hero_weak.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        per_slot: Dict[str, Dict[str, Any]] = {}
+        for _, row in heroes_df.iterrows():
+            slot = row.get("slot")
+            if not slot:
+                continue
+            per_slot[str(slot)] = {
+                "hero_script": row.get("hero_script"),
+                "hero_score": row.get("hero_score"),
+                "hero_hit_rate_exact": row.get("hero_hit_rate_exact"),
+                "weak_script": row.get("weak_script"),
+                "weak_score": row.get("weak_score"),
+                "weak_hit_rate_exact": row.get("weak_hit_rate_exact"),
+            }
+
+        eligible = metrics_df[metrics_df.get("script_id") != "ALL"]
+        pred_counts = pd.to_numeric(eligible.get("total_predictions"), errors="coerce").fillna(0)
+        eligible = eligible[pred_counts >= 10]
+
+        hero_row = eligible.loc[eligible["score"].idxmax()] if not eligible.empty else None
+        weak_row = eligible.loc[eligible["score"].idxmin()] if not eligible.empty else None
+
+        overall = {
+            "hero_script": hero_row.get("script_id") if hero_row is not None else None,
+            "hero_score": hero_row.get("score") if hero_row is not None else None,
+            "hero_hit_rate_exact": hero_row.get("hit_rate_exact") if hero_row is not None else None,
+            "weak_script": weak_row.get("script_id") if weak_row is not None else None,
+            "weak_score": weak_row.get("score") if weak_row is not None else None,
+            "weak_hit_rate_exact": weak_row.get("hit_rate_exact") if weak_row is not None else None,
+        }
+
+        hero_weak = {
+            "per_slot": per_slot,
+            "overall": overall,
+            "meta": {
+                "window_days": summary.get("effective_window_days") or summary.get("requested_window_days"),
+                "rows": summary.get("total_rows", len(metrics_df)),
+            },
+        }
+
+        output_path.write_text(json.dumps(hero_weak, indent=2))
+    except Exception as exc:
+        print(f"[script_hit_metrics] Warning: unable to write script_hero_weak.json: {exc}")
 
 
 def build_script_weights_by_slot(
@@ -419,6 +470,7 @@ def main() -> None:
         if not heroes_df.empty:
             print("\nHero/Weak per slot:")
             print(heroes_df.to_string(index=False))
+        _export_hero_weak_json(heroes_df, metrics_df, summary)
 
 
 if __name__ == "__main__":
