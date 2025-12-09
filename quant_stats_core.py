@@ -101,6 +101,13 @@ def compute_pack_hit_stats(window_days: int = 30, base_dir: Optional[Path] = Non
     if window_df.empty:
         return {}
 
+    # ``filter_hits_by_window`` converts the date column to ``datetime.date`` to
+    # perform window slicing. Convert it back to a normalised ``datetime64``
+    # series so downstream ``.dt`` accessors (for unique-day counts, etc.) are
+    # safe and consistent.
+    window_df["result_date"] = pd.to_datetime(window_df["result_date"], errors="coerce").dt.normalize()
+    window_df = window_df.dropna(subset=["result_date"])
+
     window_df["is_s40"] = pd.to_numeric(window_df.get("is_s40", 0), errors="coerce").fillna(0).astype(int)
     window_df["is_family_164950"] = pd.to_numeric(window_df.get("is_family_164950", 0), errors="coerce").fillna(0).astype(int)
 
