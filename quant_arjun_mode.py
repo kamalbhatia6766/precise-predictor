@@ -66,9 +66,56 @@ def _load_topn_summary(base_dir: Path) -> Dict:
     return _load_json(path) or {}
 
 
-def _load_pattern_regimes(base_dir: Path) -> Dict:
-    path = base_dir / "logs" / "performance" / "pattern_regimes_summary.json"
-    return _load_json(path) or {}
+def _load_pattern_regimes(base_dir: Path) -> Optional[Dict]:
+    candidates = [
+        base_dir / "logs" / "performance" / "pattern_regimes_summary.json",
+        base_dir / "logs" / "performance" / "pattern_regime_summary.json",
+    ]
+    data: Optional[Dict] = None
+    for path in candidates:
+        data = _load_json(path)
+        if data:
+            break
+    if not data:
+        return None
+
+    regimes = {slot: {"S40": "NORMAL", "FAMILY_164950": "NORMAL"} for slot in SLOTS}
+    extra_best = {
+        slot: {"family": None, "regime": "NORMAL", "score": (-float("inf"), -float("inf"), -float("inf"))}
+        for slot in SLOTS
+    }
+
+    def _score(regime_label: str, hits: int, cover: int):
+        mapping = {"BOOST": 2, "NORMAL": 1, "OFF": 0}
+        return (int(hits), int(cover), mapping.get(str(regime_label).upper(), 0))
+
+    families = data.get("families", {}) if isinstance(data, dict) else {}
+
+    for fam_key in ["S40", "FAMILY_164950"]:
+        fam_block = families.get(fam_key, {}) if isinstance(families, dict) else {}
+        per_slot_block = fam_block.get("per_slot", {}) if isinstance(fam_block, dict) else {}
+        for slot in SLOTS:
+            slot_stats = per_slot_block.get(slot, {}) if isinstance(per_slot_block, dict) else {}
+            regime = slot_stats.get("regime", "NORMAL")
+            regimes[slot][fam_key] = str(regime).upper()
+
+    for fam_name, fam_block in families.items():
+        if fam_name in ("S40", "FAMILY_164950"):
+            continue
+        per_slot_block = fam_block.get("per_slot", {}) if isinstance(fam_block, dict) else {}
+        for slot in SLOTS:
+            slot_stats = per_slot_block.get(slot, {}) if isinstance(per_slot_block, dict) else {}
+            regime = slot_stats.get("regime", "NORMAL")
+            hits = slot_stats.get("hits", 0) or 0
+            cover = slot_stats.get("days_covered", 0) or 0
+            score = _score(regime, hits, cover)
+            if score > tuple(extra_best[slot]["score"]):
+                extra_best[slot] = {"family": fam_name, "regime": str(regime).upper(), "score": score}
+
+    return {
+        "per_slot": regimes,
+        "extra_family": {slot: {"family": info["family"], "regime": info["regime"]} for slot, info in extra_best.items()},
+    }
 
 
 def _load_hero_weak(base_dir: Path) -> Dict:
@@ -76,7 +123,14 @@ def _load_hero_weak(base_dir: Path) -> Dict:
     return _load_json(path) or {}
 
 
-def _slot_pattern_regime(patterns: Dict, slot: str, family: str) -> Optional[str]:
+def _slot_pattern_regime(patterns: Optional[Dict], slot: str, family: str) -> Optional[str]:
+    if not patterns:
+        return None
+    per_slot_summary = patterns.get("per_slot", {}) if isinstance(patterns, dict) else {}
+    if per_slot_summary:
+        slot_entry = per_slot_summary.get(slot, {}) if isinstance(per_slot_summary, dict) else {}
+        return slot_entry.get(family)
+
     families = patterns.get("families", {}) if isinstance(patterns, dict) else {}
     fam_block = families.get(family, {}) if isinstance(families, dict) else {}
     per_slot = fam_block.get("per_slot", {}) if isinstance(fam_block, dict) else {}
@@ -84,28 +138,77 @@ def _slot_pattern_regime(patterns: Dict, slot: str, family: str) -> Optional[str
     return slot_entry.get("regime")
 
 
-def _select_slot(slot_health: Dict[str, Dict[str, object]], topn: Dict, patterns: Dict) -> Optional[str]:
+def _slot_extra_family(patterns: Optional[Dict], slot: str) -> Optional[Dict[str, Optional[str]]]:
+    if not patterns:
+        return None
+    extra_family = patterns.get("extra_family", {}) if isinstance(patterns, dict) else {}
+    slot_entry = extra_family.get(slot) if isinstance(extra_family, dict) else None
+    if slot_entry:
+        return {"family": slot_entry.get("family"), "regime": slot_entry.get("regime")}
+    return None
+
+
+def _pattern_score_for_slot(patterns: Optional[Dict], slot: str) -> Dict[str, object]:
+    if not patterns:
+        return {"score": 0.0, "s40": None, "fam": None, "extra": None}
+
+    s40_regime = _slot_pattern_regime(patterns, slot, "S40") or "NORMAL"
+    fam_regime = _slot_pattern_regime(patterns, slot, "FAMILY_164950") or "NORMAL"
+    extra = _slot_extra_family(patterns, slot)
+
+    def _single(label: Optional[str]) -> int:
+        if label is None:
+            return 0
+        label = str(label).upper()
+        if label == "BOOST":
+            return 1
+        if label == "OFF":
+            return -1
+        return 0
+
+    extra_score = _single(extra.get("regime")) if extra else 0
+    score = _single(s40_regime) + _single(fam_regime) + extra_score
+    return {"score": float(score), "s40": s40_regime, "fam": fam_regime, "extra": extra}
+
+
+def _topn_score_for_slot(topn: Dict, slot: str) -> Dict[str, object]:
+    per_slot_topn = topn.get("per_slot", {}) if isinstance(topn, dict) else {}
+    best_n_per_slot = topn.get("best_n_per_slot", {}) if isinstance(topn, dict) else {}
+    topn_slot = per_slot_topn.get(slot, {}) if isinstance(per_slot_topn, dict) else {}
+    best_n = topn_slot.get("best_N", best_n_per_slot.get(slot)) if isinstance(topn_slot, dict) else None
+    roi = float(topn_slot.get("roi", 0.0) or 0.0) if isinstance(topn_slot, dict) else 0.0
+
+    score = 0.0
+    if roi > 0:
+        score += min(roi / 200.0, 1.0)
+    if best_n:
+        score += 0.3 if 2 <= int(best_n) <= 6 else 0.1
+
+    return {"score": score, "roi": roi, "best_n": best_n}
+
+
+def _select_slot(slot_health: Dict[str, Dict[str, object]], topn: Dict, patterns: Optional[Dict]) -> Optional[str]:
     if not slot_health:
         return None
-
-    per_slot_topn = topn.get("per_slot", {}) if isinstance(topn, dict) else {}
 
     candidates = []
     for slot, stats in slot_health.items():
         roi = float(stats.get("roi", 0.0) or 0.0)
         slump = bool(stats.get("slump", False))
-        s40_regime = _slot_pattern_regime(patterns, slot, "S40") or "NORMAL"
-        fam_regime = _slot_pattern_regime(patterns, slot, "FAMILY_164950") or "NORMAL"
-        topn_slot = per_slot_topn.get(slot, {}) if isinstance(per_slot_topn, dict) else {}
+        pattern_info = _pattern_score_for_slot(patterns, slot)
+        topn_info = _topn_score_for_slot(topn, slot)
+        base_score = roi / 50.0
+        if slump:
+            base_score -= 2.0
+        slot_score = base_score + 0.8 * pattern_info["score"] + 0.5 * topn_info["score"]
         candidates.append(
             {
                 "slot": slot,
                 "roi": roi,
                 "slump": slump,
-                "s40_regime": s40_regime,
-                "fam_regime": fam_regime,
-                "topn_roi": float(topn_slot.get("roi", 0.0) or 0.0),
-                "topn_best_n": topn_slot.get("best_N"),
+                "slot_score": slot_score,
+                "pattern": pattern_info,
+                "topn": topn_info,
             }
         )
 
@@ -116,10 +219,11 @@ def _select_slot(slot_health: Dict[str, Dict[str, object]], topn: Dict, patterns
 
     ranked_pool.sort(
         key=lambda c: (
+            -float(c.get("slot_score", 0.0) or 0.0),
             -float(c.get("roi", 0.0) or 0.0),
-            -_regime_score(c.get("s40_regime")),
-            -_regime_score(c.get("fam_regime")),
-            -float(c.get("topn_roi", 0.0) or 0.0),
+            -_regime_score((c.get("pattern") or {}).get("s40")),
+            -_regime_score((c.get("pattern") or {}).get("fam")),
+            -float((c.get("topn") or {}).get("roi", 0.0) or 0.0),
         )
     )
     return ranked_pool[0].get("slot")
@@ -213,7 +317,9 @@ def _pick_number_from_plan(slot: str, base_dir: Path) -> Optional[Dict[str, str]
     return None
 
 
-def _build_reason(slot: str, slot_health: Dict[str, object], patterns: Dict, topn: Dict, hero: Optional[str]) -> str:
+def _build_reason(
+    slot: str, slot_health: Dict[str, object], patterns: Optional[Dict], topn: Dict, hero: Optional[str]
+) -> str:
     notes = []
     if slot_health:
         if not slot_health.get("slump"):
@@ -223,13 +329,32 @@ def _build_reason(slot: str, slot_health: Dict[str, object], patterns: Dict, top
             notes.append("strong ROI" if roi_val > 0 else "weak ROI")
     s40 = _slot_pattern_regime(patterns, slot, "S40")
     fam = _slot_pattern_regime(patterns, slot, "FAMILY_164950")
+    extra = _slot_extra_family(patterns, slot)
+    pattern_bits = []
     if s40:
-        notes.append(f"pattern {s40}")
-    elif fam:
-        notes.append(f"164950 {fam}")
+        pattern_bits.append(f"S40{'+' if str(s40).upper() == 'BOOST' else '-' if str(s40).upper() == 'OFF' else '='}")
+    if fam:
+        pattern_bits.append(
+            f"164950{'+' if str(fam).upper() == 'BOOST' else '-' if str(fam).upper() == 'OFF' else '='}"
+        )
+    if extra and extra.get("family"):
+        regime = str(extra.get("regime") or "").upper()
+        tag = f"{extra['family']}" + (
+            "+" if regime == "BOOST" else "-" if regime == "OFF" else "="
+        )
+        pattern_bits.append(tag)
+    if pattern_bits:
+        notes.append("patterns=" + ",".join(pattern_bits))
+
     topn_slot = (topn.get("per_slot", {}) or {}).get(slot, {}) if isinstance(topn, dict) else {}
-    if topn_slot.get("roi") is not None:
-        notes.append(f"TopN ROI {float(topn_slot.get('roi', 0.0)):+.1f}%")
+    topn_best = (topn.get("best_n_per_slot", {}) or {}).get(slot) if isinstance(topn, dict) else None
+    if isinstance(topn_slot, dict) and topn_slot.get("roi") is not None:
+        roi_val = float(topn_slot.get("roi", 0.0) or 0.0)
+        best_n = topn_slot.get("best_N", topn_best)
+        if best_n:
+            notes.append(f"TopN N={best_n} ROI {roi_val:+.1f}%")
+        else:
+            notes.append(f"TopN ROI {roi_val:+.1f}%")
     if hero:
         notes.append(f"hero script={hero}")
     return ", ".join(notes) if notes else "signals unavailable"
@@ -282,6 +407,7 @@ def main() -> int:
             "patterns": {
                 "S40": _slot_pattern_regime(patterns, chosen_slot, "S40"),
                 "FAMILY_164950": _slot_pattern_regime(patterns, chosen_slot, "FAMILY_164950"),
+                "extra_family": _slot_extra_family(patterns, chosen_slot),
             },
             "hero_script": hero_script,
         },
