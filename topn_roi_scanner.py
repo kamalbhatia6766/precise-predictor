@@ -6,6 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from quant_stats_core import compute_topn_roi
+import quant_paths
 
 TOP_N_VALUES = list(range(1, 11))
 
@@ -78,6 +79,38 @@ def _json_default(obj):
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 
+def _write_best_roi_json(summary: Dict, target_window: int) -> None:
+    try:
+        base_dir = quant_paths.get_base_dir()
+        output_path = Path(base_dir) / "logs" / "performance" / "topn_roi_summary.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        overall = summary.get("overall", {}) or {}
+        per_slot_summary = summary.get("per_slot", {}) or {}
+
+        overall_best_n = overall.get("best_N") if isinstance(overall, dict) else None
+        overall_best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
+
+        per_slot: Dict[str, Dict[str, float]] = {}
+        for slot, slot_map in per_slot_summary.items():
+            roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
+            if not roi_map:
+                continue
+            best_n = max(roi_map, key=lambda k: roi_map.get(k, float("-inf")))
+            per_slot[slot] = {"best_N": int(best_n), "roi": float(roi_map.get(best_n, 0.0))}
+
+        payload = {
+            "window_days": summary.get("available_days", target_window),
+            "overall": {"best_N": overall_best_n, "roi": overall_best_roi},
+            "per_slot": per_slot,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        output_path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    except Exception as exc:
+        print(f"[topn_roi_scanner] Warning: unable to write topn_roi_summary.json: {exc}")
+
+
 def main() -> int:
     target_window = 30
     summary = compute_topn_roi(window_days=target_window)
@@ -120,6 +153,7 @@ def main() -> int:
     best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
     if best_n is not None:
         print(f"Best N = {best_n} with ROI = {best_roi:+.1f}%")
+    _write_best_roi_json(summary, target_window=target_window)
     return 0
 
 
