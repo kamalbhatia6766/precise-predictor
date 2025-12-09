@@ -11,6 +11,7 @@ import argparse
 import json
 import quant_data_core
 from quant_slot_health import get_slot_health, SlotHealth
+from quant_stats_core import compute_topn_roi
 from utils_2digit import is_valid_2d_number, to_2d_str
 warnings.filterwarnings('ignore')
 
@@ -162,6 +163,37 @@ class PreciseBetEngine:
         self.pattern_config = self.load_enhanced_pattern_intelligence()
         self.adaptive_packs = self.load_adaptive_pattern_packs()
         self.golden_insights = self.load_golden_insights()
+
+        self.topn_roi_profile = {}
+
+    def _load_topn_roi_profile(self, window_days: int = 30) -> Dict:
+        try:
+            return compute_topn_roi(window_days=window_days) or {}
+        except Exception:
+            return {}
+
+    def _slot_roi_dampener(self, slot: str, health: SlotHealth, topn_per_slot: Dict[str, object]) -> float:
+        slot_key = str(slot).upper()
+        if slot_key != "FRBD":
+            return 1.0
+
+        roi_block = topn_per_slot.get(slot_key, {}) if isinstance(topn_per_slot, dict) else {}
+        roi_map = roi_block.get("roi_by_N", {}) if isinstance(roi_block, dict) else {}
+        roi1 = roi_map.get(1)
+        roi5 = roi_map.get(5)
+        candidates = [roi_map.get(n) for n in range(1, 6) if roi_map.get(n) is not None]
+
+        if (
+            getattr(health, "slump", False)
+            and roi1 is not None
+            and roi5 is not None
+            and candidates
+            and roi1 <= 0.0
+            and roi5 <= 0.0
+            and max(candidates) <= 0.0
+        ):
+            return 0.5
+        return 1.0
 
     def _compute_slot_multiplier(self, health: SlotHealth) -> float:
         """Decide per-slot stake multiplier based on slot health."""
@@ -1320,6 +1352,9 @@ class PreciseBetEngine:
         slot_health_map: Dict[str, SlotHealth] = {}
         slot_multipliers: Dict[str, float] = {}
 
+        topn_profile = self._load_topn_roi_profile(window_days=30)
+        topn_per_slot = topn_profile.get("per_slot", {}) if isinstance(topn_profile, dict) else {}
+
         for slot in self.slots:
             key = str(slot).upper()
             # Always ask quant_slot_health for the latest SlotHealth
@@ -1340,6 +1375,7 @@ class PreciseBetEngine:
 
             slot_health_map[key] = health
             mult = self._compute_slot_multiplier(health)
+            mult *= self._slot_roi_dampener(key, health, topn_per_slot)
             slot_multipliers[key] = mult
 
             print(

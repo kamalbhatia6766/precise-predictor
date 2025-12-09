@@ -27,11 +27,12 @@ class PatternIntelligenceEnhanced:
             return summaries
         for slot, group in df.groupby("slot"):
             total = len(group)
+            exact_hits = int(pd.to_numeric(group.get("is_exact_hit", False), errors="coerce").fillna(0).astype(int).sum())
             summaries[slot] = {
                 "rows": total,
-                "exact_hits": total,
+                "exact_hits": exact_hits,
                 "near_hits": 0,
-                "hit_rate_exact": 1.0 if total else 0.0,
+                "hit_rate_exact": exact_hits / total if total else 0.0,
                 "near_miss_rate": 0.0,
             }
         return summaries
@@ -42,11 +43,12 @@ class PatternIntelligenceEnhanced:
             return summaries
         for slot, group in df.groupby("slot"):
             total = len(group)
+            exact_hits = int(pd.to_numeric(group.get("is_exact_hit", False), errors="coerce").fillna(0).astype(int).sum())
             summaries[slot] = {
                 "rows": total,
-                "exact_hits": total,
+                "exact_hits": exact_hits,
                 "near_hits": 0,
-                "hit_rate_exact": 1.0 if total else 0.0,
+                "hit_rate_exact": exact_hits / total if total else 0.0,
                 "near_miss_rate": 0.0,
             }
         return summaries
@@ -64,7 +66,7 @@ class PatternIntelligenceEnhanced:
         return path
 
     def print_summary(self, df: pd.DataFrame, scripts: Dict[str, Dict[str, float]], slots: Dict[str, Dict[str, float]]) -> None:
-        total_exact = len(df.get("is_exact_hit", [])) if not df.empty else 0
+        total_exact = int(pd.to_numeric(df.get("is_exact_hit", False), errors="coerce").fillna(0).astype(int).sum()) if not df.empty else 0
         result_days = df["result_date"].dt.date.nunique() if not df.empty and "result_date" in df.columns else 0
         print(
             f"[PatternIntel+] Window: {self.window_days}d, rows: {len(df)}, result_days: {result_days}, exact hits: {total_exact}"

@@ -13,7 +13,11 @@ from typing import Tuple
 import pandas as pd
 
 from quant_excel_loader import load_results_excel
-from script_hit_memory_utils import get_script_hit_memory_xlsx_path, load_script_hit_memory
+from script_hit_memory_utils import (
+    classify_relation,
+    get_script_hit_memory_xlsx_path,
+    load_script_hit_memory,
+)
 
 
 def _format_percent(value: float) -> float:
@@ -29,6 +33,13 @@ def _filter_window(df: pd.DataFrame, window_start: pd.Timestamp, window_end: pd.
     result_dates = pd.to_datetime(df["result_date"], errors="coerce")
     mask = (result_dates >= window_start) & (result_dates <= window_end)
     return df[mask].copy()
+
+
+def _coerce_bool(series: pd.Series, default: bool = False) -> pd.Series:
+    filled = series.copy()
+    filled = filled.where(pd.notna(filled), default)
+    lowered = filled.astype(str).str.lower()
+    return lowered.isin({"true", "1", "yes", "y", "t"})
 
 
 def _build_metrics(df: pd.DataFrame) -> pd.DataFrame:
@@ -49,8 +60,25 @@ def _build_metrics(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for (script, slot), group in grouped:
         total = len(group)
-        exact = int(group.get("is_exact_hit", pd.Series(dtype=int)).sum())
-        near = int(group.get("is_near_miss", pd.Series(dtype=int)).sum())
+        relations = group.get("_relation") if "_relation" in group.columns else None
+        if relations is None:
+            relations = group.apply(
+                lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1
+            )
+
+        if "is_exact_hit" in group.columns:
+            exact_series = _coerce_bool(group.get("is_exact_hit"))
+            exact = int(exact_series.sum())
+        else:
+            exact = int((relations == "EXACT").sum())
+
+        if "is_near_miss" in group.columns:
+            near_series = _coerce_bool(group.get("is_near_miss"))
+            near = int(near_series.sum())
+        else:
+            near = int(
+                relations.isin({"MIRROR", "ADJACENT", "DIAGONAL_11", "REVERSE_CARRY", "SAME_DIGIT_COOL"}).sum()
+            )
         hit_rate = _format_percent(exact / total) if total else 0.0
         near_rate = _format_percent(near / total) if total else 0.0
         rows.append(
@@ -160,6 +188,8 @@ def main() -> int:
     hit_df["result_date"] = hit_df["result_date"].dt.date
     hit_df["slot"] = hit_df.get("slot", "").astype(str).str.upper()
     hit_df["script_id"] = hit_df.get("script_id", "").astype(str).str.upper()
+    hit_df["is_exact_hit"] = _coerce_bool(hit_df.get("is_exact_hit", False))
+    hit_df["is_near_miss"] = _coerce_bool(hit_df.get("is_near_miss", False))
 
     latest_date = hit_df["result_date"].max() if not hit_df.empty else None
     if latest_date is not None:
