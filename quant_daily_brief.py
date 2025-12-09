@@ -85,6 +85,7 @@ class PatternSummary:
     total_hits: Optional[int]
     s40: Optional[Dict[str, float]]
     fam_164950: Optional[Dict[str, float]]
+    extra_family: Optional[Dict[str, object]]
     notes: List[str]
     per_slot: Dict[str, Dict[str, Dict[str, float]]]
 
@@ -589,9 +590,83 @@ def _empty_pattern_summary(notes: Optional[List[str]] = None) -> PatternSummary:
             "daily_days": 0,
             "total_days": 0,
         },
+        extra_family=None,
         notes=notes,
         per_slot={},
     )
+
+
+def _extract_extra_family(summary_json: Dict) -> Optional[Dict[str, object]]:
+    families = summary_json.get("families", {}) if isinstance(summary_json, dict) else {}
+    best: Optional[Dict[str, object]] = None
+    best_score = (-float("inf"), -float("inf"), -float("inf"))
+
+    def _slot_score(info: Dict) -> Tuple[float, int, int]:
+        rate = info.get("hit_rate") or info.get("hit_rate_exact") or info.get("hit_rate_overall")
+        hits = info.get("hits") or info.get("exact_hits") or 0
+        cover = (
+            info.get("days_covered")
+            or info.get("covered_days")
+            or info.get("days")
+            or info.get("active_days")
+            or 0
+        )
+        rate_val = float(rate) if rate is not None else 0.0
+        if rate is not None and rate_val <= 1:
+            rate_val *= 100.0
+        return rate_val, int(hits or 0), int(cover or 0)
+
+    for fam_name, fam_block in families.items():
+        key = str(fam_name).upper()
+        if key in ("S40", "FAMILY_164950", "PACK_164950"):
+            continue
+        if not isinstance(fam_block, dict):
+            continue
+
+        hit_rate_val = (
+            fam_block.get("hit_rate")
+            or fam_block.get("hit_rate_exact")
+            or fam_block.get("hit_rate_overall")
+        )
+        hits = fam_block.get("hits") or fam_block.get("exact_hits") or 0
+        cover_block = fam_block.get("daily_cover") or fam_block.get("cover") or {}
+        covered = (
+            cover_block.get("covered_days")
+            or cover_block.get("days")
+            or fam_block.get("days_covered")
+            or fam_block.get("active_days")
+            or fam_block.get("days")
+            or 0
+        )
+        total_days = cover_block.get("total_days") or cover_block.get("days_total") or fam_block.get("total_days") or covered
+        hit_rate_pct = float(hit_rate_val) if hit_rate_val is not None else 0.0
+        if hit_rate_val is not None and hit_rate_pct <= 1:
+            hit_rate_pct *= 100.0
+
+        per_slot = fam_block.get("per_slot", {}) if isinstance(fam_block.get("per_slot"), dict) else {}
+        best_slot = None
+        weak_slot = None
+        if per_slot:
+            slot_items = [(s, info) for s, info in per_slot.items() if isinstance(info, dict)]
+            sorted_slots = sorted(slot_items, key=lambda kv: _slot_score(kv[1]), reverse=True)
+            if sorted_slots:
+                best_slot = sorted_slots[0][0]
+                weak_slot = sorted(slot_items, key=lambda kv: _slot_score(kv[1]))[0][0]
+
+        score = (hit_rate_pct, int(hits or 0), int(covered or 0))
+        if score > best_score:
+            best_score = score
+            best = {
+                "name": fam_name,
+                "hit_rate": hit_rate_pct,
+                "hits": hits,
+                "covered_days": int(covered or 0),
+                "total_days": int(total_days or 0),
+                "best_slot": best_slot,
+                "weak_slot": weak_slot,
+            }
+
+    return best
 
 
 def load_pattern_summary_from_intel(window_days: int = 90) -> PatternSummary:
@@ -631,10 +706,13 @@ def load_pattern_summary_from_intel(window_days: int = 90) -> PatternSummary:
             "PACK_164950": fam_slot,
         }
 
+    extra_family = _extract_extra_family(summary_json)
+
     return PatternSummary(
         total_hits=int(summary_json.get("rows", 0) or 0),
         s40=s40_block,
         fam_164950=fam_block,
+        extra_family=extra_family,
         notes=notes,
         per_slot=per_slot,
     )
@@ -916,6 +994,18 @@ def print_pattern_section(patterns: PatternSummary) -> None:
             f"   164950 daily     : {patterns.fam_164950.get('daily_rate', 0.0):.1f}% of days "
             f"({patterns.fam_164950.get('daily_days', 0)}/{patterns.fam_164950.get('total_days', 0)}) with ≥1 164950 result"
         )
+    if patterns.extra_family:
+        fam = patterns.extra_family
+        fam_name = fam.get("name") or fam.get("family")
+        hit_rate = float(fam.get("hit_rate", 0.0) or 0.0)
+        covered = fam.get("covered_days") or fam.get("daily_days") or 0
+        total_days = fam.get("total_days") or fam.get("daily_total") or covered
+        best_slot = fam.get("best_slot") or "n/a"
+        weak_slot = fam.get("weak_slot") or "n/a"
+        print(
+            f"   - Extra family (best): {fam_name} – hit_rate={hit_rate:.2f}%, "
+            f"daily_cover={covered}/{total_days} days, best_slot={best_slot}, weak_slot={weak_slot}"
+        )
     best_s40 = patterns.s40.get("best_slot") if patterns.s40 else None
     weak_s40 = patterns.s40.get("weak_slot") if patterns.s40 else None
     best_164 = patterns.fam_164950.get("best_slot") if patterns.fam_164950 else None
@@ -1108,6 +1198,68 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
         )
 
 
+def _derive_topn_best(insight: Optional[Dict]) -> Tuple[Optional[int], Dict[str, int]]:
+    if not insight:
+        return None, {}
+
+    overall = insight.get("overall", {}) if isinstance(insight, dict) else {}
+    per_slot = insight.get("per_slot", {}) if isinstance(insight, dict) else {}
+
+    def _best_from_map(roi_map: Dict[int, float]) -> Optional[int]:
+        if not roi_map:
+            return None
+        best_roi = max(roi_map.values())
+        best_candidates = [n for n, roi_val in roi_map.items() if roi_val == best_roi]
+        return min(best_candidates) if best_candidates else None
+
+    overall_best = overall.get("best_N") if isinstance(overall, dict) else None
+    if overall_best is None:
+        overall_roi_map = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
+        overall_best = _best_from_map(overall_roi_map)
+
+    per_slot_best: Dict[str, int] = {}
+    if isinstance(per_slot, dict):
+        for slot, slot_map in per_slot.items():
+            roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
+            slot_best = slot_map.get("best_N") if isinstance(slot_map, dict) else None
+            if slot_best is None:
+                slot_best = _best_from_map(roi_map)
+            if slot_best is not None:
+                try:
+                    per_slot_best[str(slot).upper()] = int(slot_best)
+                except Exception:
+                    continue
+
+    return (int(overall_best) if overall_best is not None else None), per_slot_best
+
+
+def _load_topn_best_profile(insight: Optional[Dict] = None) -> Tuple[Optional[int], Dict[str, int]]:
+    overall_best, per_slot_best = _derive_topn_best(insight)
+    if overall_best or per_slot_best:
+        return overall_best, per_slot_best
+
+    try:
+        base_dir = quant_paths.get_base_dir()
+    except Exception:
+        return None, {}
+    path = Path(base_dir) / "logs" / "performance" / "topn_roi_summary.json"
+    profile = _load_json(path) or {}
+    if not profile:
+        return None, {}
+
+    overall_block = profile.get("overall", {}) if isinstance(profile, dict) else {}
+    overall_best = overall_block.get("best_N") or profile.get("overall_best_N")
+    per_slot_block = profile.get("best_n_per_slot", {}) if isinstance(profile, dict) else {}
+    per_slot_best = {}
+    if isinstance(per_slot_block, dict):
+        for slot, value in per_slot_block.items():
+            try:
+                per_slot_best[str(slot).upper()] = int(value)
+            except Exception:
+                continue
+    return (int(overall_best) if overall_best is not None else None), per_slot_best
+
+
 def print_topn_roi_insight(insight: Optional[Dict] = None) -> Optional[Dict]:
     window_days = 30
     if insight is None:
@@ -1132,6 +1284,15 @@ def print_topn_roi_insight(insight: Optional[Dict] = None) -> Optional[Dict]:
         roi_map = per_slot.get(slot, {}).get("roi_by_N", {}) if isinstance(per_slot.get(slot), dict) else {}
         parts = [f"Top{n}:{roi_map.get(n, 0.0):+.1f}%" for n in range(1, 11)]
         print(f"   {slot}: {' | '.join(parts)}")
+
+    overall_best, per_slot_best = _load_topn_best_profile(insight)
+    if overall_best is not None or per_slot_best:
+        default_n = overall_best or 3
+        print("\n   Top-N mode recommendation:")
+        print(f"      Overall best N : {overall_best if overall_best is not None else default_n}")
+        for slot in SLOTS:
+            slot_best = per_slot_best.get(slot, default_n)
+            print(f"      {slot} best N    : {slot_best}")
     return insight
 
 
@@ -1233,6 +1394,7 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     print_arjun_section()
     print("=" * 80)
     best_roi = None
+    best_n, _ = _load_topn_best_profile(topn_insight)
     if topn_insight:
         overall = topn_insight.get("overall", {}) if isinstance(topn_insight, dict) else {}
         best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
@@ -1241,6 +1403,8 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     if pnl.last7_roi and pnl.last30_roi and pnl.last7_roi > 0 and pnl.last30_roi > 0:
         if best_roi is not None and best_roi < 0:
             verdict += "Core P&L positive; short-window hit-rate weak — keep stakes disciplined."
+        elif pnl.overall_roi and pnl.overall_roi > 0 and best_n and 5 <= best_n <= 15:
+            verdict += f"System learning healthy; balanced Top-N ({best_n}) looks OK — stakes can stay disciplined."
         else:
             verdict += "System learning healthy; stakes can stay disciplined."
     else:
