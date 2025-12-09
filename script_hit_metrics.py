@@ -52,7 +52,12 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
     if df.empty or not date_col:
         return pd.DataFrame(), {}
 
-    filtered, used_days = filter_hits_by_window(df, window_days=window_days)
+    total_days_available = int(df[date_col].dropna().nunique())
+    if total_days_available <= 0:
+        return pd.DataFrame(), {}
+
+    effective_days = min(window_days, total_days_available)
+    filtered, used_days = filter_hits_by_window(df, window_days=effective_days)
     if filtered.empty:
         return pd.DataFrame(), {}
 
@@ -61,7 +66,7 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
 
     summary = {
         "requested_window_days": window_days,
-        "effective_window_days": int(used_days),
+        "effective_window_days": int(used_days or effective_days),
         "latest_date": latest_date,
         "earliest_date": earliest_date,
         "total_rows": len(filtered),
