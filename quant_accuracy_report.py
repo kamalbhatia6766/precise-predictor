@@ -141,9 +141,8 @@ def main() -> int:
     if latest_date is not None:
         window_start = latest_date - timedelta(days=args.window_days - 1)
         window_end = latest_date
-        df_window = hit_df[
-            (hit_df["result_date"] >= window_start) & (hit_df["result_date"] <= window_end)
-        ].copy()
+        mask = (hit_df["result_date"] >= window_start) & (hit_df["result_date"] <= window_end)
+        df_window = hit_df.loc[mask].copy()
     else:
         window_start = window_end = None
         df_window = hit_df.copy()
