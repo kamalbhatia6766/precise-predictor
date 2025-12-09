@@ -14,6 +14,7 @@ import pandas as pd
 
 import quant_paths
 from quant_core import hit_core
+from quant_stats_core import compute_pack_hit_stats as compute_pack_hit_stats_core, compute_script_slot_stats
 from script_hit_memory_utils import classify_relation, load_script_hit_memory, filter_hits_by_window
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -66,52 +67,7 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
 
 
 def _aggregate_metrics(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame()
-
-    rows: List[Dict[str, Any]] = []
-    grouped = df.groupby(group_cols, dropna=False)
-
-    for keys, group in grouped:
-        key_values = keys if isinstance(keys, tuple) else (keys,)
-        record: Dict[str, Any] = {col: val for col, val in zip(group_cols, key_values)}
-
-        total_predictions = len(group)
-        relations = group.get("_relation") if "_relation" in group.columns else None
-        if relations is None:
-            relations = group.apply(lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1)
-        exact_hits = int((relations == "EXACT").sum())
-        near_hits = int(relations.isin({"MIRROR", "ADJACENT", "DIAGONAL_11", "REVERSE_CARRY", "SAME_DIGIT_COOL"}).sum())
-
-        if total_predictions == 0:
-            hit_rate_exact = near_miss_rate = blind_miss_rate = 0.0
-            score = 0.0
-            blind_misses = 0
-        else:
-            blind_misses = max(total_predictions - exact_hits - near_hits, 0)
-            hit_rate_exact = exact_hits / total_predictions
-            near_miss_rate = near_hits / total_predictions
-            blind_miss_rate = max(blind_misses / total_predictions, 0)
-            score = (
-                120.0 * hit_rate_exact
-                + 40.0 * near_miss_rate
-                - 30.0 * blind_miss_rate
-            )
-
-        rows.append(
-            {
-                **record,
-                "total_predictions": int(total_predictions),
-                "exact_hits": int(exact_hits),
-                "near_hits": int(near_hits),
-                "hit_rate_exact": hit_rate_exact,
-                "near_miss_rate": near_miss_rate,
-                "blind_miss_rate": blind_miss_rate,
-                "score": score,
-            }
-        )
-
-    return pd.DataFrame(rows)
+    return compute_script_slot_stats(df, group_cols)
 
 
 def get_metrics_table(
@@ -274,48 +230,7 @@ def build_script_weights_by_slot(
 
 
 def compute_pack_hit_stats(window_days: int = 30, base_dir: Optional[Path] = None) -> Dict[str, Any]:
-    df, date_col = _prepare_memory_df(base_dir=base_dir)
-    window_df, _ = _window_memory(df, date_col, window_days)
-    if window_df.empty:
-        return {}
-
-    window_df["is_s40"] = pd.to_numeric(window_df.get("is_s40", 0), errors="coerce").fillna(0).astype(int)
-    window_df["is_family_164950"] = pd.to_numeric(window_df.get("is_family_164950", 0), errors="coerce").fillna(0).astype(int)
-
-    total_rows = len(window_df)
-    days_total = window_df["result_date"].nunique()
-    s40_hits = int(window_df["is_s40"].sum())
-    fam_hits = int(window_df["is_family_164950"].sum())
-    s40_days = window_df.loc[window_df["is_s40"] > 0, "result_date"].nunique()
-    fam_days = window_df.loc[window_df["is_family_164950"] > 0, "result_date"].nunique()
-    summary = {
-        "total_rows": total_rows,
-        "days_total": int(days_total),
-        "S40": {"hits": s40_hits, "hit_rate": s40_hits / total_rows if total_rows else 0.0},
-        "FAMILY_164950": {"hits": fam_hits, "hit_rate": fam_hits / total_rows if total_rows else 0.0},
-        "per_slot": {},
-        "days_with_s40": int(s40_days),
-        "days_with_fam": int(fam_days),
-    }
-
-    for slot in SLOTS:
-        slot_df = window_df[window_df["slot"] == slot]
-        if slot_df.empty:
-            continue
-        total_slot = len(slot_df)
-        s40_slot_hits = int(slot_df["is_s40"].sum())
-        fam_slot_hits = int(slot_df["is_family_164950"].sum())
-        summary["per_slot"][slot] = {
-            "total": total_slot,
-            "s40_hits": s40_slot_hits,
-            "fam_hits": fam_slot_hits,
-            "s40_rate": s40_slot_hits / total_slot if total_slot else 0.0,
-            "fam_rate": fam_slot_hits / total_slot if total_slot else 0.0,
-            "days_total": int(slot_df["result_date"].nunique()),
-            "s40_days": int(slot_df.loc[slot_df["is_s40"] > 0, "result_date"].nunique()),
-            "fam_days": int(slot_df.loc[slot_df["is_family_164950"] > 0, "result_date"].nunique()),
-        }
-    return summary
+    return compute_pack_hit_stats_core(window_days=window_days, base_dir=base_dir)
 
 
 def _recommend_topn(hit_rate: float, near_rate: float) -> int:

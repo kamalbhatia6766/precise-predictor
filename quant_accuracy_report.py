@@ -6,18 +6,9 @@ from typing import Tuple
 
 import pandas as pd
 
-import argparse
-from datetime import timedelta
-from typing import Tuple
-
-import pandas as pd
-
 from quant_excel_loader import load_results_excel
-from script_hit_memory_utils import (
-    classify_relation,
-    get_script_hit_memory_xlsx_path,
-    load_script_hit_memory,
-)
+from quant_stats_core import compute_script_slot_stats
+from script_hit_memory_utils import get_script_hit_memory_xlsx_path, load_script_hit_memory
 
 
 def _format_percent(value: float) -> float:
@@ -43,57 +34,12 @@ def _coerce_bool(series: pd.Series, default: bool = False) -> pd.Series:
 
 
 def _build_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame(
-            columns=[
-                "script_id",
-                "slot",
-                "total_predictions",
-                "exact_hits",
-                "near_hits",
-                "hit_rate_exact",
-                "near_miss_rate",
-            ]
-        )
+    metrics = compute_script_slot_stats(df, ["script_id", "slot"])
+    if metrics.empty:
+        return metrics
 
-    grouped = df.groupby(["script_id", "slot"], dropna=False)
-    rows = []
-    for (script, slot), group in grouped:
-        total = len(group)
-        relations = group.get("_relation") if "_relation" in group.columns else None
-        if relations is None:
-            relations = group.apply(
-                lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1
-            )
-
-        if "is_exact_hit" in group.columns:
-            exact_series = _coerce_bool(group.get("is_exact_hit"))
-            exact = int(exact_series.sum())
-        else:
-            exact = int((relations == "EXACT").sum())
-
-        if "is_near_miss" in group.columns:
-            near_series = _coerce_bool(group.get("is_near_miss"))
-            near = int(near_series.sum())
-        else:
-            near = int(
-                relations.isin({"MIRROR", "ADJACENT", "DIAGONAL_11", "REVERSE_CARRY", "SAME_DIGIT_COOL"}).sum()
-            )
-        hit_rate = _format_percent(exact / total) if total else 0.0
-        near_rate = _format_percent(near / total) if total else 0.0
-        rows.append(
-            {
-                "script_id": str(script),
-                "slot": str(slot),
-                "total_predictions": total,
-                "exact_hits": exact,
-                "near_hits": near,
-                "hit_rate_exact": hit_rate,
-                "near_miss_rate": near_rate,
-            }
-        )
-
-    metrics = pd.DataFrame(rows)
+    metrics["hit_rate_exact"] = metrics["hit_rate_exact"].apply(_format_percent)
+    metrics["near_miss_rate"] = metrics["near_miss_rate"].apply(_format_percent)
     metrics = metrics.sort_values(["script_id", "slot"]).reset_index(drop=True)
     return metrics
 
