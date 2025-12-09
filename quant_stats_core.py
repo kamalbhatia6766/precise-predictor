@@ -82,8 +82,18 @@ def compute_pack_hit_stats(window_days: int = 30, base_dir: Optional[Path] = Non
         return {}
 
     df = df.copy()
-    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
+    if "result_date" not in df.columns:
+        raise ValueError("compute_pack_hit_stats: 'result_date' column missing from script-hit memory")
+
+    df["result_date"] = pd.to_datetime(df["result_date"], errors="coerce")
     df = df.dropna(subset=["result_date"])
+    if not pd.api.types.is_datetime64_any_dtype(df["result_date"]):
+        df["result_date"] = pd.to_datetime(df["result_date"], errors="coerce")
+        df = df.dropna(subset=["result_date"])
+
+    if df.empty:
+        return {}
+
     df["result_date"] = df["result_date"].dt.normalize()
     df["slot"] = df.get("slot", "").astype(str).str.upper()
 
