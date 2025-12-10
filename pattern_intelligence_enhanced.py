@@ -275,6 +275,24 @@ class PatternIntelligenceEnhanced:
                             regime = "NORMAL"
                         fam_block[f"regime_{label}"] = regime
 
+                # Drift computation (R5/R6): compare 30d vs 90d behaviour
+                for family in families:
+                    fam_block = slot_payload["families"].setdefault(family, {})
+                    hit_rate_90d = fam_block.get("hit_rate_90d", 0.0)
+                    hit_rate_30d = fam_block.get("hit_rate_30d", 0.0)
+                    drift_value = hit_rate_30d - hit_rate_90d
+                    drift_label = "NORMAL"
+                    # Thresholds tuned to be conservative to avoid over-smoothing
+                    if drift_value >= max(0.0, abs(hit_rate_90d) * 0.25 + 0.002):
+                        drift_label = "BOOST_DRIFT"
+                    elif drift_value <= -(abs(hit_rate_90d) * 0.25 + 0.002):
+                        drift_label = "COOL_OFF"
+
+                    fam_block["hit_rate_90d"] = hit_rate_90d
+                    fam_block["hit_rate_30d"] = hit_rate_30d
+                    fam_block["drift_value"] = drift_value
+                    fam_block["drift_label"] = drift_label
+
                 for family in families:
                     fam_block = slot_payload["families"].setdefault(family, {})
                     fam_block["last_hit_date"] = _last_hit_date(slot_df_all, family)
