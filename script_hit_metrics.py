@@ -53,6 +53,7 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
         "requested_window_days": window_days,
         "effective_window_days": 0,
         "available_days": 0,
+        "available_days_total": 0,
         "window_start": None,
         "window_end": None,
         "latest_date": None,
@@ -70,6 +71,8 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
         return pd.DataFrame(), empty_summary
 
     latest_date = df[date_col].max()
+    earliest_date = df[date_col].min()
+    total_available_days = int(df[date_col].nunique())
     window_start = latest_date - timedelta(days=window_days - 1)
 
     filtered = df[(df[date_col] >= window_start) & (df[date_col] <= latest_date)].copy()
@@ -84,10 +87,12 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
         "requested_window_days": int(window_days),
         "effective_window_days": int(available_days),
         "available_days": available_days,
+        "available_days_total": total_available_days,
         "window_end": latest_date,
         "window_start": window_start,
         "latest_date": latest_date,
-        "earliest_date": filtered[date_col].min(),
+        "earliest_date": earliest_date,
+        "window_earliest_date": filtered[date_col].min(),
         "total_rows": len(filtered),
     }
     return filtered, summary
@@ -490,12 +495,18 @@ def load_script_hit_metrics(window_days: int = 30, base_dir: Optional[Path] = No
 def _print_metrics(metrics_df: pd.DataFrame, summary: Dict[str, Any], mode: str) -> None:
     rows_display = summary.get("total_rows") if isinstance(summary, dict) else None
     rows_display = rows_display if rows_display is not None else len(metrics_df)
+    effective_days = summary.get("effective_window_days") or summary.get("available_days")
     header = (
         "Script hit metrics – "
-        f"requested {summary.get('requested_window_days')}d, used {summary.get('effective_window_days')}d "
+        f"requested {summary.get('requested_window_days')}d, used {effective_days}d "
         f"(rows={rows_display})"
     )
     print(header)
+    if summary.get("window_start") and summary.get("window_end"):
+        print(
+            f"Window range: {summary.get('window_start')} → {summary.get('window_end')} | "
+            f"available days: {summary.get('available_days')} / total distinct: {summary.get('available_days_total')}"
+        )
     if metrics_df.empty:
         print("No script hit metrics rows to display.")
         return
