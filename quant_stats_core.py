@@ -40,6 +40,67 @@ def _pick_best_n(roi_map: Dict[int, float]) -> Optional[int]:
     return min(tied) if tied else None
 
 
+def _parse_numbers_list(value: Any) -> List[str]:
+    """
+    Best-effort parser that converts the stored numbers list (stringified list, CSV,
+    or already-materialised list) into a normalised list of 2-digit strings.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x).zfill(2) for x in value]
+    if isinstance(value, str):
+        txt = value.strip()
+        if not txt:
+            return []
+        # JSON-style list
+        if txt.startswith("[") and txt.endswith("]"):
+            try:
+                parsed = json.loads(txt)
+                if isinstance(parsed, list):
+                    return [str(x).zfill(2) for x in parsed]
+            except Exception:
+                pass
+        # Fallback: comma-separated string
+        parts = [p.strip() for p in txt.split(",") if p.strip()]
+        return [str(p).zfill(2) for p in parts]
+    return []
+
+
+def _collect_top_numbers(window_df: pd.DataFrame, max_n: int) -> Dict[str, Dict[int, List[str]]]:
+    """
+    Build frequency-ranked top-number lists per slot for each N bucket. The intent
+    is to expose which numbers were most responsible for the Top-N ROI bands within
+    the evaluation window, without re-scanning rows repeatedly.
+    """
+    number_counts: Dict[str, Dict[str, int]] = {}
+    if "top_numbers" in window_df.columns:
+        source_col = "top_numbers"
+    elif "numbers" in window_df.columns:
+        source_col = "numbers"
+    else:
+        source_col = None
+
+    if source_col:
+        for slot, slot_df in window_df.groupby("slot"):
+            slot_counts: Dict[str, int] = {}
+            for raw in slot_df[source_col]:
+                for num in _parse_numbers_list(raw):
+                    slot_counts[num] = slot_counts.get(num, 0) + 1
+            if slot_counts:
+                number_counts[slot] = slot_counts
+
+    result: Dict[str, Dict[int, List[str]]] = {}
+    for slot, counts in number_counts.items():
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        numbers_only = [num for num, _ in ranked]
+        slot_map: Dict[int, List[str]] = {}
+        for n in range(1, max_n + 1):
+            slot_map[n] = numbers_only[:n]
+        result[slot] = slot_map
+    return result
+
+
 def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
     df = _load_ultimate_performance()
     if df.empty:
@@ -78,6 +139,8 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
     best_N = _pick_best_n(roi_by_n)
     best_roi = roi_by_n.get(best_N) if best_N is not None else None
 
+    numbers_by_slot = _collect_top_numbers(window_df, max_n=max_n)
+
     per_slot: Dict[str, Dict[str, Dict[int, float]]] = {}
     for slot, slot_df in window_df.groupby("slot"):
         slot_roi = _roi_for_subset(slot_df)
@@ -87,6 +150,8 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
         if slot_best_n is not None:
             per_slot[slot]["best_N"] = slot_best_n
             per_slot[slot]["best_roi"] = slot_best_roi
+        if slot in numbers_by_slot:
+            per_slot[slot]["numbers_by_N"] = numbers_by_slot.get(slot, {})
 
     return {
         "window_days_requested": window_days,
@@ -96,6 +161,7 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
         "available_days": available_days,
         "overall": {"best_N": best_N, "best_roi": best_roi, "roi_by_N": roi_by_n},
         "per_slot": per_slot,
+        "numbers_by_slot": numbers_by_slot,
     }
 
 

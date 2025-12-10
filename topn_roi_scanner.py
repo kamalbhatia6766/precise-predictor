@@ -131,6 +131,43 @@ def _write_best_roi_json(summary: Dict, target_window: int) -> None:
         print(f"[topn_roi_scanner] Warning: unable to write topn_roi_summary.json: {exc}")
 
 
+def _write_numbers_summary(summary: Dict) -> None:
+    try:
+        base_dir = quant_paths.get_base_dir()
+        output_path = Path(base_dir) / "logs" / "performance" / "topn_roi_summary.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        window_start = summary.get("window_start")
+        window_end = summary.get("window_end")
+        available_days = summary.get("available_days")
+
+        per_slot_summary = summary.get("per_slot", {}) or {}
+        payload_slots: Dict[str, Dict] = {}
+        for slot, slot_map in per_slot_summary.items():
+            roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
+            num_map = slot_map.get("numbers_by_N", {}) if isinstance(slot_map, dict) else {}
+            best_n = slot_map.get("best_N")
+            payload_slots[slot] = {
+                "best_N": best_n,
+                "best_roi": slot_map.get("best_roi"),
+                "roi_by_N": {str(k): v for k, v in roi_map.items()},
+                "numbers_by_N": {str(k): v for k, v in num_map.items()},
+            }
+
+        payload = {
+            "window": {
+                "start": window_start.isoformat() if hasattr(window_start, "isoformat") else window_start,
+                "end": window_end.isoformat() if hasattr(window_end, "isoformat") else window_end,
+                "days": int(available_days) if available_days is not None else None,
+            },
+            "slots": payload_slots,
+        }
+
+        output_path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    except Exception as exc:
+        print(f"[topn_roi_scanner] Warning: unable to write topn_roi_summary.json: {exc}")
+
+
 def _write_scan_json(summary: Dict, target_window: int, max_n: int) -> None:
     try:
         base_dir = quant_paths.get_base_dir()
@@ -143,6 +180,8 @@ def _write_scan_json(summary: Dict, target_window: int, max_n: int) -> None:
         def _roi_map(raw: Dict[int, float]) -> Dict[str, float]:
             return {str(k): v for k, v in raw.items() if k <= max_n}
 
+        numbers_by_slot = summary.get("numbers_by_slot", {}) if isinstance(summary, dict) else {}
+
         slots_payload: Dict[str, Dict] = {}
         for slot, slot_map in per_slot_summary.items():
             roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
@@ -150,6 +189,7 @@ def _write_scan_json(summary: Dict, target_window: int, max_n: int) -> None:
                 "best_N": slot_map.get("best_N"),
                 "best_roi": slot_map.get("best_roi"),
                 "roi_by_N": _roi_map(roi_map),
+                "numbers_by_N": {str(k): v for k, v in numbers_by_slot.get(slot, {}).items()},
             }
 
         payload = {
@@ -208,6 +248,7 @@ def main() -> int:
         print(f"\nPer-slot ROI ({effective_label}):")
         for slot, n_map in sorted(per_slot.items()):
             roi_by_n = n_map.get("roi_by_N", {}) if isinstance(n_map, dict) else {}
+            nums_by_n = n_map.get("numbers_by_N", {}) if isinstance(n_map, dict) else {}
             parts = []
             for n in range(1, min(max_n, 10) + 1):
                 if n in roi_by_n:
@@ -218,12 +259,24 @@ def main() -> int:
             best_n = n_map.get("best_N")
             if best_n:
                 print(f"    Best N: {best_n}")
+            if nums_by_n:
+                normalized_keys = []
+                for k in nums_by_n.keys():
+                    try:
+                        normalized_keys.append(int(k))
+                    except Exception:
+                        continue
+                key_n = best_n if best_n in normalized_keys else (min(normalized_keys) if normalized_keys else None)
+                if key_n:
+                    top_numbers = nums_by_n.get(key_n) or nums_by_n.get(str(key_n), [])
+                    print(f"    Top{key_n} numbers (last 30d): {', '.join(top_numbers)}")
 
     best_n = overall.get("best_N") if isinstance(overall, dict) else None
     best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
     if best_n is not None:
         print(f"Best N = {best_n} with ROI = {best_roi:+.1f}%")
     _write_best_roi_json(summary, target_window=target_window)
+    _write_numbers_summary(summary)
     _write_scan_json(summary, target_window=target_window, max_n=max_n)
     return 0
 

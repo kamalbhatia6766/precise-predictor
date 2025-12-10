@@ -17,6 +17,33 @@ warnings.filterwarnings('ignore')
 
 quant_stats = get_quant_stats()
 
+# Pre-compute family memberships for speed and consistency across the chain.
+PATTERN_FAMILY_CACHE: Dict[str, List[str]] = {}
+
+
+def _precompute_family_cache() -> None:
+    if PATTERN_FAMILY_CACHE:
+        return
+    for i in range(100):
+        num_str = to_2d_str(i)
+        tags: List[str] = []
+        if is_s40_number(num_str):
+            tags.append("S40")
+        if is_164950_family(num_str):
+            tags.append("FAMILY_164950")
+        try:
+            if PATTERN_PACKS_AVAILABLE and hasattr(pattern_packs, "get_number_families"):
+                extra = [str(t).upper() for t in pattern_packs.get_number_families(num_str)]
+                for fam in extra:
+                    if fam not in tags:
+                        tags.append(fam)
+        except Exception:
+            pass
+        PATTERN_FAMILY_CACHE[num_str] = tags
+
+
+_precompute_family_cache()
+
 PATTERN_BOOST_S40 = 1.20
 PATTERN_PENALTY_S40 = 0.85
 PATTERN_BOOST_164950 = 1.15
@@ -255,20 +282,31 @@ class PreciseBetEngine:
         return slot_block if isinstance(slot_block, dict) else {}
 
     def _get_number_families(self, number: object) -> List[str]:
-        families = []
-        if is_s40_number(number):
-            families.append("S40")
-        if is_164950_family(number):
-            families.append("FAMILY_164950")
+        num_str = to_2d_str(number)
+        return PATTERN_FAMILY_CACHE.get(num_str, [])
+
+    def _get_family_regime(self, slot: str, family: str) -> Dict:
         try:
-            if PATTERN_PACKS_AVAILABLE and hasattr(pattern_packs, "get_digit_pack_tags"):
-                extra = [str(t).upper() for t in pattern_packs.get_digit_pack_tags(number)]
-                for fam in extra:
-                    if fam not in families:
-                        families.append(fam)
+            slot_block = (self.pattern_regime_summary or {}).get("slots", {}).get(slot, {})
+            fam_block = slot_block.get("families", {}).get(family, {})
+            return fam_block if isinstance(fam_block, dict) else {}
         except Exception:
-            pass
-        return families
+            return {}
+
+    def _family_drift_label(self, slot: str, family: str) -> str:
+        fam_block = self._get_family_regime(slot, family)
+        return fam_block.get("drift_label") or "NORMAL"
+
+    def _slot_health_multiplier(self, slot: str) -> float:
+        health_block = (self.quant_stats.get("slot_health") or {}).get(slot, {}) if isinstance(self.quant_stats, dict) else {}
+        slump = bool(health_block.get("slump")) if isinstance(health_block, dict) else False
+        roi_pct = float(health_block.get("roi_percent", 0.0) or 0.0) if isinstance(health_block, dict) else 0.0
+        multiplier = 1.0
+        if slump:
+            multiplier *= 0.92
+        elif roi_pct > 150:
+            multiplier *= 1.05
+        return multiplier
 
     def _load_topn_shortlist_profile(self) -> Dict:
         base_dir = Path(__file__).resolve().parent
@@ -1089,7 +1127,20 @@ class PreciseBetEngine:
             pattern_bonus = min(pattern_bonus, max_pattern)
             
             pattern_multiplier = self._compute_pattern_multiplier(slot, number)
-            final_score = (quantum_boosted_score + pattern_bonus + memory_bonus) * pattern_multiplier
+            pattern_tags = self._get_number_families(number)
+
+            drift_bonus = 0.0
+            drift_penalty = 0.0
+            for fam in pattern_tags:
+                drift_label = self._family_drift_label(slot, fam)
+                if drift_label == "BOOST_DRIFT":
+                    drift_bonus += 0.05
+                elif drift_label == "COOL_OFF":
+                    drift_penalty += 0.05
+
+            pattern_score = pattern_multiplier + drift_bonus - drift_penalty
+            slot_health_mult = self._slot_health_multiplier(slot)
+            final_score = (quantum_boosted_score + pattern_bonus + memory_bonus) * max(pattern_score, 0.5) * slot_health_mult
             
             direct_hits = history[history_key]['direct_hits'] if history_key in history else 0
             cross_hits = history[history_key]['cross_hits'] if history_key in history else 0
@@ -1110,6 +1161,10 @@ class PreciseBetEngine:
                 'quantum_boosted_score': quantum_boosted_score,
                 'quantum_boost_components': quantum_debug,
                 'pattern_multiplier': pattern_multiplier,
+                'pattern_tags': ','.join(pattern_tags),
+                'pattern_score': max(pattern_score, 0.5),
+                'slot_health_multiplier': slot_health_mult,
+                'drift_families': ','.join([f for f in pattern_tags if self._family_drift_label(slot, f) in {"BOOST_DRIFT", "COOL_OFF"}]),
             })
         return scored_numbers
 
@@ -1614,7 +1669,13 @@ class PreciseBetEngine:
                     'hit_flag_main': '',
                     'hit_flag_andar': '',
                     'hit_flag_bahar': '',
-                    'net_pnl': ''
+                    'net_pnl': '',
+                    'families': item.get('pattern_tags', ''),
+                    'score_base': item.get('base_score', 0.0),
+                    'score_pattern': item.get('pattern_score', 0.0),
+                    'score_slot_health': item.get('slot_health_multiplier', 1.0),
+                    'score_final': item.get('final_score', 0.0),
+                    'drift_families': item.get('drift_families', ''),
                 })
             
             if andar_digit is not None:
@@ -1699,6 +1760,15 @@ class PreciseBetEngine:
             print(
                 f"   Total stake: {fmt_rupees(total_stake)}, Max return: {fmt_rupees(max_total_return)}"
             )
+
+            # Compact family focus line for transparency
+            family_focus_parts = []
+            for item in shortlist:
+                fams = item.get('pattern_tags', '')
+                fam_label = fams if fams else 'single'
+                family_focus_parts.append(f"{to_2d_str(item['number'])}[{fam_label}]")
+            if family_focus_parts:
+                print(f"{slot} family-focus: {', '.join(family_focus_parts)}")
         
         bets_df = pd.DataFrame(bets_data)
         summary_df = pd.DataFrame(summary_data)
