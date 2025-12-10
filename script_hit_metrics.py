@@ -63,26 +63,31 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
     if df.empty or not date_col:
         return pd.DataFrame(), empty_summary
 
-    filtered, _ = filter_hits_by_window(df, window_days=window_days)
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    df = df.dropna(subset=[date_col])
+    if df.empty:
+        return pd.DataFrame(), empty_summary
+
+    latest_date = df[date_col].max()
+    window_start = latest_date - timedelta(days=window_days - 1)
+
+    filtered = df[(df[date_col] >= window_start) & (df[date_col] <= latest_date)].copy()
     if filtered.empty:
         return pd.DataFrame(), empty_summary
 
     filtered_dates = pd.to_datetime(filtered[date_col], errors="coerce").dt.date
-    available_days = int(filtered_dates.dropna().nunique())
-    effective_days = min(window_days, available_days) if available_days else 0
     filtered[date_col] = filtered_dates
-
-    latest_date = filtered[date_col].max()
-    earliest_date = filtered[date_col].min()
+    available_days = int(filtered_dates.dropna().nunique())
 
     summary = {
-        "requested_window_days": window_days,
-        "effective_window_days": int(effective_days),
+        "requested_window_days": int(window_days),
+        "effective_window_days": int(available_days),
         "available_days": available_days,
         "window_end": latest_date,
-        "window_start": earliest_date,
+        "window_start": window_start,
         "latest_date": latest_date,
-        "earliest_date": earliest_date,
+        "earliest_date": filtered[date_col].min(),
         "total_rows": len(filtered),
     }
     return filtered, summary
@@ -259,7 +264,33 @@ def _export_hero_weak_json(
             },
         }
 
-        output_path.write_text(json.dumps(hero_weak, indent=2))
+        def _json_safe(val: Any) -> Any:
+            if isinstance(val, (pd.Timestamp,)):
+                return val.date().isoformat()
+            if hasattr(val, "isoformat"):
+                try:
+                    return val.isoformat()
+                except Exception:
+                    pass
+            if isinstance(val, (pd.Series, pd.DataFrame)):
+                return val.to_dict()
+            if isinstance(val, (pd.Int64Dtype,)):
+                return int(val)
+            if isinstance(val, (pd.Float64Dtype,)):
+                return float(val)
+            try:
+                import numpy as np
+
+                if isinstance(val, (np.integer,)):
+                    return int(val)
+                if isinstance(val, (np.floating,)):
+                    return float(val)
+            except Exception:
+                pass
+            return val
+
+        safe_payload = json.loads(json.dumps(hero_weak, default=_json_safe))
+        output_path.write_text(json.dumps(safe_payload, indent=2))
     except Exception as exc:
         print(f"[script_hit_metrics] Warning: unable to write script_hero_weak.json: {exc}")
 

@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import json
 import argparse
+from typing import List
 from precise_bet_engine import PreciseBetEngine
 
 # 🆕 Import central pack registry
