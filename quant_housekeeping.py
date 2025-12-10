@@ -54,30 +54,50 @@ class QuantHousekeeping:
         """Check if file is in whitelist"""
         return file_path.name in self.whitelist
 
-    def _infer_file_datetime(self, file_path: Path) -> datetime:
-        """Infer file timestamp from filename (YYYYMMDD or YYYYMMDD_HHMMSS) or fall back to mtime."""
+    def _infer_file_datetime(self, file_path: Path):
+        """Infer file timestamp from filename (YYYYMMDD or YYYYMMDD_HHMMSS); may return None if unknown."""
         digits = "".join(filter(str.isdigit, file_path.name))
         for fmt in ("%Y%m%d_%H%M%S", "%Y%m%d%H%M%S", "%Y%m%d"):
             try:
                 return datetime.strptime(digits[: len(datetime.now().strftime(fmt))], fmt)
             except ValueError:
                 continue
-        return datetime.fromtimestamp(file_path.stat().st_mtime)
+        return None
 
-    def _collect_old_in_folder(self, files, cutoff_date):
-        """Keep newest N files and flag anything older than cutoff or beyond retain_latest_per_slot."""
+    def _collect_old_in_folder(self, files, retention_days, retain_latest_per_slot):
+        """Keep everything inside retention window; thin only older history while keeping a recent tail."""
         old_files = []
-        files_sorted = sorted(files, key=self._infer_file_datetime, reverse=True)
-        keep = set(files_sorted[: self.config["retain_latest_per_slot"]])
-        for file in files_sorted:
-            if file in keep:
+        now = datetime.now()
+        cutoff_date = now - timedelta(days=retention_days)
+
+        recent_files = []
+        older_files = []
+
+        for file in files:
+            if self.is_protected_file(file):
                 continue
+
             file_dt = self._infer_file_datetime(file)
-            if file_dt < cutoff_date:
-                old_files.append(file)
+            if file_dt is None:
+                try:
+                    file_dt = datetime.fromtimestamp(file.stat().st_mtime)
+                except OSError:
+                    continue
+
+            if retention_days > 0 and file_dt >= cutoff_date:
+                recent_files.append((file_dt, file))
             else:
-                # Beyond retain_latest_per_slot: still eligible for cleanup to keep folders light
-                old_files.append(file)
+                older_files.append((file_dt, file))
+
+        older_files.sort(key=lambda x: x[0], reverse=True)
+        keep_tail = {file for _, file in older_files[:retain_latest_per_slot]}
+
+        for _, file in older_files:
+            if file in keep_tail:
+                continue
+            old_files.append(file)
+
+        # Files in the retention window are always kept and never added to old_files
         return old_files
 
     def scan_predictions_dir(self):
@@ -86,7 +106,8 @@ class QuantHousekeeping:
         if not predictions_dir.exists():
             return []
 
-        cutoff_date = datetime.now() - timedelta(days=self.config["retention_days_predictions"])
+        retention_days = self.config["retention_days_predictions"]
+        retain_latest = self.config["retain_latest_per_slot"]
         old_files = []
 
         # Scan bet_engine files (keep latest N per pattern)
@@ -99,7 +120,11 @@ class QuantHousekeeping:
             }
 
             for files in pattern_files.values():
-                old_files.extend(self._collect_old_in_folder(files, cutoff_date))
+                old_files.extend(
+                    self._collect_old_in_folder(
+                        files, retention_days=retention_days, retain_latest_per_slot=retain_latest
+                    )
+                )
 
         # Scan individual script folders (deepseek_scr*, scr9, etc.)
         for subdir in predictions_dir.iterdir():
@@ -110,7 +135,11 @@ class QuantHousekeeping:
             if not files:
                 continue
 
-            old_files.extend(self._collect_old_in_folder(files, cutoff_date))
+            old_files.extend(
+                self._collect_old_in_folder(
+                    files, retention_days=retention_days, retain_latest_per_slot=retain_latest
+                )
+            )
 
         return old_files
 
@@ -120,15 +149,54 @@ class QuantHousekeeping:
         if not logs_dir.exists():
             return []
 
-        cutoff_date = datetime.now() - timedelta(days=self.config["retention_days_logs"])
+        retention_days = self.config["retention_days_logs"]
+        retain_latest = self.config["retain_latest_per_slot"]
         old_files = []
 
-        # Recursively scan logs directory
+        performance_dir = logs_dir / "performance"
+        performance_files = []
+        if performance_dir.exists():
+            performance_files = [p for p in performance_dir.rglob("*") if p.is_file()]
+            if performance_files:
+                old_files.extend(
+                    self._collect_old_in_folder(
+                        performance_files,
+                        retention_days=retention_days,
+                        retain_latest_per_slot=retain_latest,
+                    )
+                )
+
+        debug_markers = ["_debug", "_tmp", "_test", "scratch", "temp"]
+        debug_files = []
+        other_logs = []
         for file_path in logs_dir.rglob("*"):
-            if file_path.is_file() and not self.is_protected_file(file_path):
-                # Check if file is older than retention period
-                if file_path.stat().st_mtime < cutoff_date.timestamp():
-                    old_files.append(file_path)
+            if not file_path.is_file():
+                continue
+            if performance_dir in file_path.parents:
+                continue
+            name_lower = file_path.name.lower()
+            if any(marker in name_lower for marker in debug_markers):
+                debug_files.append(file_path)
+            else:
+                other_logs.append(file_path)
+
+        if other_logs:
+            old_files.extend(
+                self._collect_old_in_folder(
+                    other_logs,
+                    retention_days=retention_days,
+                    retain_latest_per_slot=retain_latest,
+                )
+            )
+
+        if debug_files:
+            old_files.extend(
+                self._collect_old_in_folder(
+                    debug_files,
+                    retention_days=7,
+                    retain_latest_per_slot=5,
+                )
+            )
 
         return old_files
 
