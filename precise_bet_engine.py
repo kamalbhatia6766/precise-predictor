@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import re
 from collections import Counter, defaultdict
-from typing import Dict
+from typing import Dict, List
 import warnings
 import argparse
 import json
