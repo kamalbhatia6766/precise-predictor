@@ -13,6 +13,11 @@ import quant_data_core
 from quant_slot_health import get_slot_health, SlotHealth
 from quant_stats_core import compute_topn_roi, get_quant_stats
 from utils_2digit import is_valid_2d_number, to_2d_str
+from pattern_helpers import (
+    get_families_for_number,
+    is_164950_number,
+    is_s40_number,
+)
 warnings.filterwarnings('ignore')
 
 quant_stats = get_quant_stats()
@@ -26,19 +31,7 @@ def _precompute_family_cache() -> None:
         return
     for i in range(100):
         num_str = to_2d_str(i)
-        tags: List[str] = []
-        if is_s40_number(num_str):
-            tags.append("S40")
-        if is_164950_family(num_str):
-            tags.append("FAMILY_164950")
-        try:
-            if PATTERN_PACKS_AVAILABLE and hasattr(pattern_packs, "get_number_families"):
-                extra = [str(t).upper() for t in pattern_packs.get_number_families(num_str)]
-                for fam in extra:
-                    if fam not in tags:
-                        tags.append(fam)
-        except Exception:
-            pass
+        tags = get_families_for_number(num_str)
         PATTERN_FAMILY_CACHE[num_str] = tags
 
 
@@ -165,32 +158,8 @@ except ImportError:
     print("⚠️  pattern_packs.py not found - pattern bonuses disabled")
     PATTERN_PACKS_AVAILABLE = False
 
-S40_FALLBACK = {
-    '00', '06', '07', '09', '15', '16', '18', '19', '24', '25', '27', '28',
-    '33', '34', '36', '37', '42', '43', '45', '46', '51', '52', '54', '55',
-    '60', '61', '63', '64', '70', '72', '73', '79', '81', '82', '88', '89',
-    '90', '91', '97', '98'
-}
-FAMILY_164950_DIGITS = {'0', '1', '4', '5', '6', '9'}
-
-
-def is_s40_number(num: object) -> bool:
-    try:
-        if PATTERN_PACKS_AVAILABLE:
-            return pattern_packs.is_s40(num)
-        return to_2d_str(num) in S40_FALLBACK
-    except Exception:
-        return False
-
-
-def is_164950_family(num: object) -> bool:
-    try:
-        if PATTERN_PACKS_AVAILABLE and hasattr(pattern_packs, "is_164950_family"):
-            return pattern_packs.is_164950_family(num)
-        digits = to_2d_str(num)
-        return digits[0] in FAMILY_164950_DIGITS and digits[1] in FAMILY_164950_DIGITS
-    except Exception:
-        return False
+# Compatibility alias to maintain older naming used in this file
+is_164950_family = is_164950_number
 
 
 def belongs_to_family(num: object, family_name: str) -> bool:
@@ -198,12 +167,10 @@ def belongs_to_family(num: object, family_name: str) -> bool:
         return False
     family_upper = str(family_name).upper()
     try:
-        if PATTERN_PACKS_AVAILABLE and hasattr(pattern_packs, "get_digit_pack_tags"):
-            tags = [str(t).upper() for t in pattern_packs.get_digit_pack_tags(num)]
-            return family_upper in tags
+        tags = [str(t).upper() for t in get_families_for_number(num)]
+        return family_upper in tags
     except Exception:
         return False
-    return False
 
 
 def _safe_slot_block(key: str) -> Dict:

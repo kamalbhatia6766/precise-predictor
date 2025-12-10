@@ -8,6 +8,12 @@ import argparse
 from typing import List
 from precise_bet_engine import PreciseBetEngine
 
+from pattern_helpers import (
+    get_families_for_number,
+    is_164950_number,
+    is_s40_number,
+)
+
 # 🆕 Import central pack registry
 import pattern_packs
 
@@ -138,14 +144,15 @@ class SlotRecalcEngine:
     def calculate_stake_multiplier(self, number, slot, family_performance):
         multiplier = 1.0
         
-        # 🆕 Use central pattern_packs instead of local definitions
+        # 🆕 Use central pattern helpers instead of local definitions
         try:
-            # Get number's pattern families using central registry
-            digit_tags = pattern_packs.get_digit_pack_tags(number)
+            digit_tags = [str(t).upper() for t in get_families_for_number(number)]
             families = self._get_family_categories(digit_tags)
-            
-            if pattern_packs.is_s40(number):
+
+            if is_s40_number(number):
                 families.add("S40")
+            if is_164950_number(number):
+                families.update({"PACK_164950", "FAMILY_164950"})
                 
             # Apply multipliers based on family performance
             for family in families:
@@ -172,19 +179,22 @@ class SlotRecalcEngine:
         """🆕 Convert fine-grained pack tags to family categories using central registry"""
         families = set()
         for tag in digit_tags:
-            if tag.startswith("pack2_"):
+            tag_str = str(tag)
+            tag_lower = tag_str.lower()
+            tag_upper = tag_str.upper()
+            if tag_lower.startswith("pack2_"):
                 families.add("PACK_2DIGIT")
-            elif tag.startswith("pack3_"):
+            elif tag_lower.startswith("pack3_"):
                 families.add("PACK_3DIGIT")
-            elif tag.startswith("pack4_"):
+            elif tag_lower.startswith("pack4_"):
                 families.add("PACK_4DIGIT")
-            elif tag.startswith("pack5_"):
+            elif tag_lower.startswith("pack5_"):
                 families.add("PACK_5DIGIT")
-            elif tag.startswith("pack6_"):
+            elif tag_lower.startswith("pack6_"):
                 families.add("PACK_6DIGIT")
-            elif tag == "PACK_164950":
-                families.add("PACK_164950")
-            elif tag == "S40":
+            elif tag_upper in {"PACK_164950", "FAMILY_164950"}:
+                families.update({"PACK_164950", "FAMILY_164950"})
+            elif tag_upper == "S40":
                 families.add("S40")
         return families
 
