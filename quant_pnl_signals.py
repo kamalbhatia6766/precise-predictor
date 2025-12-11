@@ -8,6 +8,7 @@ import quant_paths
 
 
 DEFAULT_JSON_PATH = "logs/performance/quant_reality_pnl.json"
+METRICS_PATH = Path("data") / "script_metrics_30d.json"
 
 
 def read_slot_health_snapshot(json_path: str = DEFAULT_JSON_PATH) -> Dict[str, SlotHealth]:
@@ -33,11 +34,26 @@ def _coerce_date_string(value) -> Optional[str]:
 def _write_slot_health_json(slot_health_map: Dict[str, SlotHealth], output_path: Path) -> None:
     """Persist a structured slot health snapshot for downstream engines."""
 
+    metrics_path = quant_paths.get_base_dir() / METRICS_PATH
+    slot_metrics = {}
+    if metrics_path.exists():
+        try:
+            slot_metrics = json.loads(metrics_path.read_text()) or {}
+        except Exception:
+            print(f"[quant_pnl_signals] Warning: unable to parse metrics at {metrics_path}")
+
     payload: Dict[str, Dict[str, object]] = {}
     for slot, health in slot_health_map.items():
         if not isinstance(health, SlotHealth):
             continue
 
+        near_rate = 0.0
+        try:
+            near_rate = float(slot_metrics.get(slot, {}).get("near_miss_rate", 0.0) or 0.0)
+        except Exception:
+            near_rate = 0.0
+
+        slot_level = _compute_slot_level(health.roi_percent, near_rate)
         payload[slot] = {
             "roi_30": getattr(health, "roi_percent", 0.0),
             "roi_90": getattr(health, "roi_percent", 0.0),
@@ -48,6 +64,8 @@ def _write_slot_health_json(slot_health_map: Dict[str, SlotHealth], output_path:
             "slump": bool(getattr(health, "slump", False)),
             "last_win_date": _coerce_date_string(getattr(health, "last_win_date", None)),
             "last_loss_date": _coerce_date_string(getattr(health, "last_loss_date", None)),
+            "slot_level": slot_level,
+            "near_miss_rate": near_rate,
         }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +97,25 @@ def is_slot_in_slump(
         return True
 
     return health.roi_percent <= roi_threshold and health.current_streak >= losing_streak_min
+
+
+def _compute_slot_level(roi_percent: float, near_miss_rate: float) -> str:
+    try:
+        roi_value = float(roi_percent)
+    except Exception:
+        roi_value = 0.0
+    try:
+        near_rate = float(near_miss_rate)
+    except Exception:
+        near_rate = 0.0
+
+    if roi_value < -50.0 and near_rate < 0.05:
+        return "OFF"
+    if roi_value < 0:
+        return "LOW"
+    if roi_value <= 300.0:
+        return "MID"
+    return "HIGH"
 
 
 def _main():

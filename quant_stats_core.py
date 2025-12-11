@@ -118,13 +118,15 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
 
     topn_flags = {n: f"hit_top{n}" for n in range(1, max_n + 1)}
 
-    def _roi_for_subset(subset: pd.DataFrame) -> Dict[int, float]:
+    def _roi_for_subset(subset: pd.DataFrame) -> Dict[str, Dict[int, float]]:
         roi_map: Dict[int, float] = {}
+        days_map: Dict[int, float] = {}
+        hits_map: Dict[int, float] = {}
         for n, flag_col in topn_flags.items():
             raw_flags = subset.get(flag_col, None)
             if raw_flags is None:
                 continue
-            stake_rows = len(raw_flags)
+            stake_rows = int(raw_flags.notna().sum()) if hasattr(raw_flags, "notna") else len(raw_flags)
             stake = stake_rows * n
             hits = 0
             if stake and hasattr(raw_flags, "fillna"):
@@ -133,9 +135,12 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
             payout = hits * 90
             roi = ((payout - stake) / stake * 100.0) if stake else 0.0
             roi_map[n] = roi
-        return roi_map
+            days_map[n] = stake_rows
+            hits_map[n] = hits
+        return {"roi": roi_map, "days": days_map, "hits": hits_map}
 
-    roi_by_n = _roi_for_subset(window_df)
+    overall_maps = _roi_for_subset(window_df)
+    roi_by_n = overall_maps.get("roi", {})
     best_N = _pick_best_n(roi_by_n)
     best_roi = roi_by_n.get(best_N) if best_N is not None else None
 
@@ -143,10 +148,15 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
 
     per_slot: Dict[str, Dict[str, Dict[int, float]]] = {}
     for slot, slot_df in window_df.groupby("slot"):
-        slot_roi = _roi_for_subset(slot_df)
+        slot_maps = _roi_for_subset(slot_df)
+        slot_roi = slot_maps.get("roi", {})
         slot_best_n = _pick_best_n(slot_roi)
         slot_best_roi = slot_roi.get(slot_best_n) if slot_best_n is not None else None
-        per_slot[slot] = {"roi_by_N": slot_roi}
+        per_slot[slot] = {
+            "roi_by_N": slot_roi,
+            "days_by_N": slot_maps.get("days", {}),
+            "hits_by_N": slot_maps.get("hits", {}),
+        }
         if slot_best_n is not None:
             per_slot[slot]["best_N"] = slot_best_n
             per_slot[slot]["best_roi"] = slot_best_roi
@@ -159,7 +169,13 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
         "window_start": window_start,
         "window_end": window_end,
         "available_days": available_days,
-        "overall": {"best_N": best_N, "best_roi": best_roi, "roi_by_N": roi_by_n},
+        "overall": {
+            "best_N": best_N,
+            "best_roi": best_roi,
+            "roi_by_N": roi_by_n,
+            "days_by_N": overall_maps.get("days", {}),
+            "hits_by_N": overall_maps.get("hits", {}),
+        },
         "per_slot": per_slot,
         "numbers_by_slot": numbers_by_slot,
     }

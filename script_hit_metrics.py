@@ -153,6 +153,7 @@ def get_metrics_table(
     order_cols = ["script_id", "slot"] if "slot" in metrics.columns else ["script_id"]
     metrics = metrics.sort_values(order_cols + ["score"], ascending=[True] * len(order_cols) + [False]).reset_index(drop=True)
     export_nearhit_topn_analysis(metrics, summary, base_dir=base_dir)
+    _export_metrics_bundle(metrics, summary, window_days=window_days, base_dir=base_dir)
     return metrics, summary
 
 
@@ -349,6 +350,75 @@ def build_script_weights_by_slot(
 
 def compute_pack_hit_stats(window_days: int = 30, base_dir: Optional[Path] = None) -> Dict[str, Any]:
     return compute_pack_hit_stats_core(window_days=window_days, base_dir=base_dir)
+
+
+def _export_metrics_bundle(
+    metrics_df: pd.DataFrame, summary: Dict[str, Any], window_days: int, base_dir: Optional[Path] = None
+) -> None:
+    if metrics_df is None or metrics_df.empty:
+        return
+
+    project_root = Path(base_dir) if base_dir else quant_paths.get_project_root()
+    output_dir = project_root / "data"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _aggregate_slot(slot: str) -> Dict[str, Any]:
+        subset = metrics_df[(metrics_df.get("slot") == slot) & (metrics_df.get("script_id") != "ALL")]
+        total_predictions = int(subset.get("total_predictions", pd.Series(dtype=int)).sum()) if not subset.empty else 0
+        exact_hits = int(subset.get("exact_hits", pd.Series(dtype=int)).sum()) if not subset.empty else 0
+        near_hits = int(subset.get("near_hits", pd.Series(dtype=int)).sum()) if not subset.empty else 0
+        hit_rate_exact = exact_hits / total_predictions if total_predictions else 0.0
+        near_miss_rate = near_hits / total_predictions if total_predictions else 0.0
+        blind_misses = max(total_predictions - exact_hits - near_hits, 0)
+        blind_miss_rate = blind_misses / total_predictions if total_predictions else 0.0
+        score = (120.0 * hit_rate_exact + 40.0 * near_miss_rate - 30.0 * blind_miss_rate)
+        score = (score + 0.20) * 100.0 if total_predictions else 0.0
+        return {
+            "slot": slot,
+            "total_predictions": total_predictions,
+            "exact_hits": exact_hits,
+            "near_hits": near_hits,
+            "hit_rate_exact": hit_rate_exact,
+            "near_miss_rate": near_miss_rate,
+            "blind_miss_rate": blind_miss_rate,
+            "score": score,
+        }
+
+    slot_rows = [_aggregate_slot(slot) for slot in SLOTS]
+    total_predictions = sum(row["total_predictions"] for row in slot_rows)
+    exact_hits = sum(row["exact_hits"] for row in slot_rows)
+    near_hits = sum(row["near_hits"] for row in slot_rows)
+    hit_rate_exact = exact_hits / total_predictions if total_predictions else 0.0
+    near_miss_rate = near_hits / total_predictions if total_predictions else 0.0
+    blind_misses = max(total_predictions - exact_hits - near_hits, 0)
+    blind_miss_rate = blind_misses / total_predictions if total_predictions else 0.0
+    score = (120.0 * hit_rate_exact + 40.0 * near_miss_rate - 30.0 * blind_miss_rate)
+    score = (score + 0.20) * 100.0 if total_predictions else 0.0
+
+    summary_row = {
+        "slot": "ALL",
+        "total_predictions": total_predictions,
+        "exact_hits": exact_hits,
+        "near_hits": near_hits,
+        "hit_rate_exact": hit_rate_exact,
+        "near_miss_rate": near_miss_rate,
+        "blind_miss_rate": blind_miss_rate,
+        "score": score,
+    }
+
+    payload = {row["slot"]: {k: v for k, v in row.items() if k != "slot"} for row in slot_rows + [summary_row]}
+    json_path = output_dir / f"script_metrics_{window_days}d.json"
+    csv_path = output_dir / f"script_metrics_{window_days}d.csv"
+
+    try:
+        json_path.write_text(json.dumps(payload, indent=2))
+    except Exception as exc:
+        print(f"[script_hit_metrics] Warning: unable to write {json_path}: {exc}")
+
+    try:
+        pd.DataFrame(slot_rows + [summary_row]).to_csv(csv_path, index=False)
+    except Exception as exc:
+        print(f"[script_hit_metrics] Warning: unable to write {csv_path}: {exc}")
 
 
 def _recommend_topn(hit_rate: float, near_rate: float) -> int:

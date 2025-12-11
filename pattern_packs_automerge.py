@@ -23,10 +23,10 @@ class PatternPacksAutomerge:
     def load_suggested_patterns(self):
         """Dynamically import pattern_packs_suggested.py"""
         suggested_file = self.base_dir / "logs" / "performance" / "pattern_packs_suggested.py"
-        
+
         if not suggested_file.exists():
-            print("❌ pattern_packs_suggested.py not found")
-            return False
+            print("Pattern packs not available – skipping automerge")
+            return True
             
         try:
             # Dynamic import
@@ -200,8 +200,9 @@ print("✅ Golden Days overlay patterns loaded successfully")
 def main():
     automerger = PatternPacksAutomerge()
     success = automerger.run_automerge()
-    
+
     return 0 if success else 1
+
 
 if __name__ == "__main__":
     exit(main())
