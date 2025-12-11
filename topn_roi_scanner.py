@@ -14,6 +14,7 @@ from quant_stats_core import compute_topn_roi
 import quant_paths
 
 MAX_N = 40
+UNIT_STAKE = 10
 
 
 def _write_csv(summary: Dict) -> None:
@@ -210,6 +211,60 @@ def _write_scan_json(summary: Dict, target_window: int, max_n: int) -> None:
         print(f"[topn_roi_scanner] Warning: unable to write topn_roi_scan.json: {exc}")
 
 
+def _write_topn_policy(summary: Dict, max_n: int) -> None:
+    try:
+        base_dir = quant_paths.get_base_dir()
+        output_path = Path(base_dir) / "data" / "topn_policy.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        per_slot = summary.get("per_slot", {}) or {}
+        payload: Dict[str, Dict[str, object]] = {}
+
+        for slot, slot_map in per_slot.items():
+            roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
+            days_map = slot_map.get("days_by_N", {}) if isinstance(slot_map, dict) else {}
+            hits_map = slot_map.get("hits_by_N", {}) if isinstance(slot_map, dict) else {}
+
+            roi_curve: Dict[str, float] = {}
+            best_n_candidate = None
+            best_roi_val = None
+            for n in range(1, min(max_n, 10) + 1):
+                days_played = int(days_map.get(n, 0) or 0)
+                hits_in_top_n = int(hits_map.get(n, 0) or 0)
+                total_stake = days_played * n * UNIT_STAKE
+                total_return = hits_in_top_n * (90 * UNIT_STAKE)
+                roi_n = 0.0
+                if total_stake:
+                    roi_n = ((total_return - total_stake) / total_stake) * 100.0
+                roi_curve[str(n)] = roi_n
+
+                if hits_in_top_n > 0 and roi_n <= -99.0:
+                    print(f"[TopN] Inconsistency: slot {slot}, N={n} has hits>0 but ROI≈-100%")
+
+                if best_roi_val is None or roi_n > best_roi_val:
+                    best_roi_val = roi_n
+                    best_n_candidate = n
+            if best_n_candidate is None and roi_map:
+                best_roi_val = max(roi_curve.values()) if roi_curve else None
+                best_n_candidate = min(roi_curve.keys()) if roi_curve else None
+
+            try:
+                best_n_exact = int(best_n_candidate) if best_n_candidate else None
+            except Exception:
+                best_n_exact = None
+
+            payload[slot] = {
+                "roi_curve": roi_curve,
+                "best_N_exact": best_n_exact,
+                "best_N_overall": best_n_exact,
+            }
+
+        output_path.write_text(json.dumps(payload, indent=2, default=_json_default))
+        print(f"Saved Top-N policy to {output_path}")
+    except Exception as exc:
+        print(f"[topn_roi_scanner] Warning: unable to write topn_policy.json: {exc}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scan ROI performance across Top-N buckets.")
     parser.add_argument("--window_days", type=int, default=30, help="Window (in days) to evaluate ROI.")
@@ -278,6 +333,7 @@ def main() -> int:
     _write_best_roi_json(summary, target_window=target_window)
     _write_numbers_summary(summary)
     _write_scan_json(summary, target_window=target_window, max_n=max_n)
+    _write_topn_policy(summary, max_n=max_n)
     return 0
 
 
