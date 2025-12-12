@@ -3,18 +3,15 @@ import csv
 import json
 from datetime import date, datetime
 from pathlib import Path
-import argparse
-import csv
-import json
-from datetime import date, datetime
-from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from quant_stats_core import compute_topn_roi
 import quant_paths
 
 MAX_N = 40
 UNIT_STAKE = 10
+FULL_PAYOUT_PER_UNIT = 90
+NEAR_HIT_WEIGHT = 0.3
 
 
 def _write_csv(summary: Dict) -> None:
@@ -212,57 +209,159 @@ def _write_scan_json(summary: Dict, target_window: int, max_n: int) -> None:
 
 
 def _write_topn_policy(summary: Dict, max_n: int) -> None:
+    payload, debug_rows = _prepare_topn_policy_data(summary, max_n=max_n)
     try:
         base_dir = quant_paths.get_base_dir()
         output_path = Path(base_dir) / "data" / "topn_policy.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        per_slot = summary.get("per_slot", {}) or {}
-        payload: Dict[str, Dict[str, object]] = {}
-
-        for slot, slot_map in per_slot.items():
-            roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
-            days_map = slot_map.get("days_by_N", {}) if isinstance(slot_map, dict) else {}
-            hits_map = slot_map.get("hits_by_N", {}) if isinstance(slot_map, dict) else {}
-
-            roi_curve: Dict[str, float] = {}
-            best_n_candidate = None
-            best_roi_val = None
-            for n in range(1, min(max_n, 10) + 1):
-                days_played = int(days_map.get(n, 0) or 0)
-                hits_in_top_n = int(hits_map.get(n, 0) or 0)
-                total_stake = days_played * n * UNIT_STAKE
-                total_return = hits_in_top_n * (90 * UNIT_STAKE)
-                roi_n = 0.0
-                if total_stake:
-                    roi_n = ((total_return - total_stake) / total_stake) * 100.0
-                roi_curve[str(n)] = roi_n
-
-                if hits_in_top_n > 0 and roi_n <= -99.0:
-                    print(f"[TopN] Inconsistency: slot {slot}, N={n} has hits>0 but ROI≈-100%")
-
-                if best_roi_val is None or roi_n > best_roi_val:
-                    best_roi_val = roi_n
-                    best_n_candidate = n
-            if best_n_candidate is None and roi_map:
-                best_roi_val = max(roi_curve.values()) if roi_curve else None
-                best_n_candidate = min(roi_curve.keys()) if roi_curve else None
-
-            try:
-                best_n_exact = int(best_n_candidate) if best_n_candidate else None
-            except Exception:
-                best_n_exact = None
-
-            payload[slot] = {
-                "roi_curve": roi_curve,
-                "best_N_exact": best_n_exact,
-                "best_N_overall": best_n_exact,
-            }
-
         output_path.write_text(json.dumps(payload, indent=2, default=_json_default))
         print(f"Saved Top-N policy to {output_path}")
     except Exception as exc:
         print(f"[topn_roi_scanner] Warning: unable to write topn_policy.json: {exc}")
+    return debug_rows
+
+
+def _prepare_topn_policy_data(summary: Dict, max_n: int) -> Tuple[Dict[str, Dict[str, object]], List[Dict[str, object]]]:
+    per_slot = summary.get("per_slot", {}) or {}
+    overall = summary.get("overall", {}) or {}
+    payload: Dict[str, Dict[str, object]] = {}
+    debug_rows: List[Dict[str, object]] = []
+    window_end = summary.get("window_end")
+
+    def _parse_roi_map(raw_map: Dict) -> Dict[int, float]:
+        return {int(k): v for k, v in raw_map.items()} if isinstance(raw_map, dict) else {}
+
+    for slot, slot_map in per_slot.items():
+        roi_map = _parse_roi_map(slot_map.get("roi_by_N", {}))
+        days_map = _parse_roi_map(slot_map.get("days_by_N", {}))
+        hits_map = _parse_roi_map(slot_map.get("hits_by_N", {}))
+        near_hits_map = _parse_roi_map(slot_map.get("near_hits_by_N", {}))
+        entry, slot_debug = _compute_slot_policy(
+            slot,
+            roi_map,
+            days_map,
+            hits_map,
+            near_hits_map,
+            max_n,
+            window_end,
+        )
+        payload[slot] = entry
+        debug_rows.extend(slot_debug)
+
+    roi_map_all = _parse_roi_map(overall.get("roi_by_N", {}))
+    days_map_all = _parse_roi_map(overall.get("days_by_N", {}))
+    hits_map_all = _parse_roi_map(overall.get("hits_by_N", {}))
+    near_hits_map_all = _parse_roi_map(overall.get("near_hits_by_N", {}))
+    overall_entry, overall_debug = _compute_slot_policy(
+        "ALL", roi_map_all, days_map_all, hits_map_all, near_hits_map_all, max_n, window_end
+    )
+    payload["ALL"] = overall_entry
+    debug_rows.extend(overall_debug)
+
+    return payload, debug_rows
+
+
+def _compute_slot_policy(
+    slot: str,
+    roi_map: Dict[int, float],
+    days_map: Dict[int, float],
+    hits_map: Dict[int, float],
+    near_hits_map: Dict[int, float],
+    max_n: int,
+    window_end,
+) -> Tuple[Dict[str, object], List[Dict[str, object]]]:
+    roi_curve_exact: Dict[int, float] = {}
+    roi_curve_near: Dict[int, float] = {}
+    debug_rows: List[Dict[str, object]] = []
+    date_label = window_end.isoformat() if hasattr(window_end, "isoformat") else str(window_end or "")
+
+    for n in range(1, max_n + 1):
+        days_played = int(days_map.get(n, 0) or 0)
+        hits_in_top_n = int(hits_map.get(n, 0) or 0)
+        near_hits_in_top_n = int(near_hits_map.get(n, 0) or 0)
+
+        total_stake = days_played * n * UNIT_STAKE
+        total_return_exact = hits_in_top_n * (FULL_PAYOUT_PER_UNIT * UNIT_STAKE)
+        near_return = near_hits_in_top_n * (NEAR_HIT_WEIGHT * FULL_PAYOUT_PER_UNIT * UNIT_STAKE)
+        total_return_nearaware = total_return_exact + near_return
+
+        roi_exact = ((total_return_exact - total_stake) / total_stake) * 100.0 if total_stake else 0.0
+        roi_nearaware = ((total_return_nearaware - total_stake) / total_stake) * 100.0 if total_stake else 0.0
+
+        roi_curve_exact[n] = roi_exact
+        roi_curve_near[n] = roi_nearaware
+
+        debug_rows.append(
+            {
+                "date": date_label,
+                "slot": slot,
+                "N": n,
+                "band_type": "EXACT",
+                "total_bet": total_stake,
+                "total_return": total_return_exact,
+                "net_pnl": total_return_exact - total_stake,
+                "roi_pct": roi_exact,
+            }
+        )
+        debug_rows.append(
+            {
+                "date": date_label,
+                "slot": slot,
+                "N": n,
+                "band_type": "NEARAWARE",
+                "total_bet": total_stake,
+                "total_return": total_return_nearaware,
+                "net_pnl": total_return_nearaware - total_stake,
+                "roi_pct": roi_nearaware,
+            }
+        )
+
+    best_n_exact, roi_best_exact = _select_best_band(roi_curve_exact)
+    best_n_near, roi_best_near = _select_best_band(roi_curve_near)
+
+    if roi_best_near is not None and roi_best_near > (roi_best_exact or float("-inf")) and roi_best_near > 0:
+        final_best_n = best_n_near
+        roi_final_best = roi_best_near
+    else:
+        final_best_n = best_n_exact
+        roi_final_best = roi_best_exact
+
+    entry = {
+        "roi_curve_exact": {str(k): v for k, v in roi_curve_exact.items()},
+        "roi_curve_nearaware": {str(k): v for k, v in roi_curve_near.items()},
+        "best_n_exact": best_n_exact,
+        "roi_best_exact": roi_best_exact,
+        "best_n_nearaware": best_n_near,
+        "roi_best_nearaware": roi_best_near,
+        "final_best_n": final_best_n,
+        "roi_final_best": roi_final_best,
+    }
+
+    return entry, debug_rows
+
+
+def _select_best_band(roi_curve: Dict[int, float]) -> Tuple[int, float]:
+    best_n = None
+    best_roi = None
+    for n, roi in roi_curve.items():
+        if best_roi is None or roi > best_roi or (roi == best_roi and (best_n is None or n < best_n)):
+            best_roi = roi
+            best_n = n
+    return best_n, best_roi
+
+
+def _write_debug_csv(rows: List[Dict[str, object]]) -> None:
+    output_path = Path("logs/performance/topn_roi_debug.csv")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        output_path.write_text("date,slot,N,band_type,total_bet,total_return,net_pnl,roi_pct\n")
+        return
+    fieldnames = ["date", "slot", "N", "band_type", "total_bet", "total_return", "net_pnl", "roi_pct"]
+    with output_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def main() -> int:
@@ -333,7 +432,8 @@ def main() -> int:
     _write_best_roi_json(summary, target_window=target_window)
     _write_numbers_summary(summary)
     _write_scan_json(summary, target_window=target_window, max_n=max_n)
-    _write_topn_policy(summary, max_n=max_n)
+    debug_rows = _write_topn_policy(summary, max_n=max_n)
+    _write_debug_csv(debug_rows)
     return 0
 
 

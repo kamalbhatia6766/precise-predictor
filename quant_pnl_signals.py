@@ -9,6 +9,7 @@ import quant_paths
 
 DEFAULT_JSON_PATH = "logs/performance/quant_reality_pnl.json"
 METRICS_PATH = Path("data") / "script_metrics_30d.json"
+TOPN_POLICY_PATH = Path("data") / "topn_policy.json"
 
 
 def read_slot_health_snapshot(json_path: str = DEFAULT_JSON_PATH) -> Dict[str, SlotHealth]:
@@ -35,6 +36,8 @@ def _write_slot_health_json(slot_health_map: Dict[str, SlotHealth], output_path:
     """Persist a structured slot health snapshot for downstream engines."""
 
     metrics_path = quant_paths.get_base_dir() / METRICS_PATH
+    topn_policy_path = quant_paths.get_base_dir() / TOPN_POLICY_PATH
+    topn_policy = _load_topn_policy(topn_policy_path)
     slot_metrics = {}
     if metrics_path.exists():
         try:
@@ -52,8 +55,9 @@ def _write_slot_health_json(slot_health_map: Dict[str, SlotHealth], output_path:
             near_rate = float(slot_metrics.get(slot, {}).get("near_miss_rate", 0.0) or 0.0)
         except Exception:
             near_rate = 0.0
-
-        slot_level = _compute_slot_level(health.roi_percent, near_rate)
+        roi_topn = _extract_topn_roi(topn_policy, slot)
+        slot_level = _compute_slot_level(health.roi_percent, roi_topn)
+        slump_flag = bool(getattr(health, "slump", False)) or slot_level == "OFF"
         payload[slot] = {
             "roi_30": getattr(health, "roi_percent", 0.0),
             "roi_90": getattr(health, "roi_percent", 0.0),
@@ -61,11 +65,12 @@ def _write_slot_health_json(slot_health_map: Dict[str, SlotHealth], output_path:
             "losses": getattr(health, "losses", 0),
             "hit_rate": getattr(health, "hit_rate", 0.0),
             "current_streak": getattr(health, "current_streak", 0),
-            "slump": bool(getattr(health, "slump", False)),
+            "slump": slump_flag,
             "last_win_date": _coerce_date_string(getattr(health, "last_win_date", None)),
             "last_loss_date": _coerce_date_string(getattr(health, "last_loss_date", None)),
             "slot_level": slot_level,
             "near_miss_rate": near_rate,
+            "roi_topn": roi_topn,
         }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,23 +104,47 @@ def is_slot_in_slump(
     return health.roi_percent <= roi_threshold and health.current_streak >= losing_streak_min
 
 
-def _compute_slot_level(roi_percent: float, near_miss_rate: float) -> str:
+def _compute_slot_level(roi_percent: float, roi_topn: float) -> str:
     try:
         roi_value = float(roi_percent)
     except Exception:
         roi_value = 0.0
     try:
-        near_rate = float(near_miss_rate)
+        roi_policy = float(roi_topn)
     except Exception:
-        near_rate = 0.0
+        roi_policy = 0.0
 
-    if roi_value < -50.0 and near_rate < 0.05:
+    if roi_value < -25.0 and roi_policy <= 0:
         return "OFF"
-    if roi_value < 0:
+    if roi_value < 0 and roi_policy > 0:
         return "LOW"
-    if roi_value <= 300.0:
+    if 0 <= roi_value <= 300.0:
         return "MID"
-    return "HIGH"
+    if roi_value > 300.0:
+        return "HIGH"
+    return "MID"
+
+
+def _load_topn_policy(path: Path) -> Dict[str, Dict[str, object]]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        print(f"[quant_pnl_signals] Warning: unable to parse topn policy at {path}")
+        return {}
+
+
+def _extract_topn_roi(policy: Dict[str, Dict[str, object]], slot: str) -> float:
+    if not policy:
+        return 0.0
+    slot_key = str(slot).upper()
+    try:
+        slot_entry = policy.get(slot_key, {}) if isinstance(policy, dict) else {}
+        return float(slot_entry.get("roi_final_best", slot_entry.get("roi_best_exact", 0.0)) or 0.0)
+    except Exception:
+        return 0.0
 
 
 def _main():

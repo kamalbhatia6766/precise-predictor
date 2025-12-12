@@ -15,6 +15,17 @@ from script_hit_memory_utils import classify_relation, filter_hits_by_window, lo
 import pattern_packs
 
 
+NEAR_HIT_TYPES = {
+    "NEAR",
+    "NEIGHBOR",
+    "MIRROR",
+    "S40",
+    "FAMILY_164950",
+    "CROSS_SLOT",
+    "CROSS_DAY",
+}
+
+
 def _load_ultimate_performance() -> pd.DataFrame:
     path = quant_paths.get_performance_logs_dir() / "ultimate_performance.csv"
     if not path.exists():
@@ -122,6 +133,15 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
         roi_map: Dict[int, float] = {}
         days_map: Dict[int, float] = {}
         hits_map: Dict[int, float] = {}
+        near_hits_map: Dict[int, float] = {}
+
+        hit_type_series = subset.get("hit_type") if isinstance(subset, pd.DataFrame) else None
+        near_mask = None
+        if hit_type_series is not None:
+            try:
+                near_mask = hit_type_series.astype(str).str.upper().isin(NEAR_HIT_TYPES)
+            except Exception:
+                near_mask = None
         for n, flag_col in topn_flags.items():
             raw_flags = subset.get(flag_col, None)
             if raw_flags is None:
@@ -129,15 +149,25 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
             stake_rows = int(raw_flags.notna().sum()) if hasattr(raw_flags, "notna") else len(raw_flags)
             stake = stake_rows * n
             hits = 0
+            near_hits = 0
             if stake and hasattr(raw_flags, "fillna"):
                 flags = raw_flags.fillna(False).astype(bool)
                 hits = int(flags.sum())
+                if near_mask is not None:
+                    try:
+                        candidate_mask = near_mask
+                        if hasattr(raw_flags, "notna"):
+                            candidate_mask = candidate_mask & raw_flags.notna()
+                        near_hits = int(candidate_mask.sum())
+                    except Exception:
+                        near_hits = 0
             payout = hits * 90
             roi = ((payout - stake) / stake * 100.0) if stake else 0.0
             roi_map[n] = roi
             days_map[n] = stake_rows
             hits_map[n] = hits
-        return {"roi": roi_map, "days": days_map, "hits": hits_map}
+            near_hits_map[n] = near_hits
+        return {"roi": roi_map, "days": days_map, "hits": hits_map, "near_hits": near_hits_map}
 
     overall_maps = _roi_for_subset(window_df)
     roi_by_n = overall_maps.get("roi", {})
@@ -156,6 +186,7 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
             "roi_by_N": slot_roi,
             "days_by_N": slot_maps.get("days", {}),
             "hits_by_N": slot_maps.get("hits", {}),
+            "near_hits_by_N": slot_maps.get("near_hits", {}),
         }
         if slot_best_n is not None:
             per_slot[slot]["best_N"] = slot_best_n
@@ -175,6 +206,7 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
             "roi_by_N": roi_by_n,
             "days_by_N": overall_maps.get("days", {}),
             "hits_by_N": overall_maps.get("hits", {}),
+            "near_hits_by_N": overall_maps.get("near_hits", {}),
         },
         "per_slot": per_slot,
         "numbers_by_slot": numbers_by_slot,

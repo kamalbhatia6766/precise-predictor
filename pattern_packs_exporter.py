@@ -50,7 +50,7 @@ class PatternPacksExporter:
         
         # Load pattern packs
         pattern_data = self.load_pattern_packs()
-        if pattern_data is None:
+        if not pattern_data:
             print("Pattern packs not available – skipping export")
             return True
         
@@ -61,67 +61,75 @@ class PatternPacksExporter:
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Save JSON (existing functionality)
-        with open(output_dir / "pattern_packs.json", 'w') as f:
-            json.dump(pattern_data, f, indent=2)
+        try:
+            with open(output_dir / "pattern_packs.json", 'w') as f:
+                json.dump(pattern_data, f, indent=2)
+        except Exception as exc:
+            print(f"⚠️  Unable to persist pattern_packs.json: {exc}")
+            return True
         
         # Create Excel with multiple sheets
         excel_file = output_dir / "pattern_packs.xlsx"
         
-        with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
-            # Base pattern packs sheet
-            base_data = []
-            for slot in self.slots:
-                if slot in pattern_data:
-                    slot_data = pattern_data[slot]
-                    base_data.append({
-                        'Slot': slot,
-                        'Tens Core': ', '.join(map(str, slot_data.get('tens_core', []))),
-                        'Ones Core': ', '.join(map(str, slot_data.get('ones_core', []))),
-                        'S40 Numbers': ', '.join(map(str, slot_data.get('s40_numbers', []))),
-                        'Hit Rate': f"{slot_data.get('hit_rate', 0):.1f}%"
-                    })
-            
-            pd.DataFrame(base_data).to_excel(writer, sheet_name='base_pattern_packs', index=False)
-            
-            # ✅ PHASE 3: Adaptive packs sheet
-            if adaptive_data:
-                adaptive_sheets = []
-                
-                # Core digits comparison
-                core_data = {
-                    'Type': ['Base Tens', 'Base Ones', 'Golden Tens', 'Golden Ones'],
-                    'Digits': [
-                        ', '.join(map(str, adaptive_data.get('tens_core_base', []))),
-                        ', '.join(map(str, adaptive_data.get('ones_core_base', []))),
-                        ', '.join(map(str, adaptive_data.get('tens_core_golden', []))),
-                        ', '.join(map(str, adaptive_data.get('ones_core_golden', [])))
-                    ]
+        try:
+            with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
+                # Base pattern packs sheet
+                base_data = []
+                for slot in self.slots:
+                    if slot in pattern_data:
+                        slot_data = pattern_data[slot]
+                        base_data.append({
+                            'Slot': slot,
+                            'Tens Core': ', '.join(map(str, slot_data.get('tens_core', []))),
+                            'Ones Core': ', '.join(map(str, slot_data.get('ones_core', []))),
+                            'S40 Numbers': ', '.join(map(str, slot_data.get('s40_numbers', []))),
+                            'Hit Rate': f"{slot_data.get('hit_rate', 0):.1f}%"
+                        })
+
+                pd.DataFrame(base_data).to_excel(writer, sheet_name='base_pattern_packs', index=False)
+
+                # ✅ PHASE 3: Adaptive packs sheet
+                if adaptive_data:
+                    adaptive_sheets = []
+
+                    # Core digits comparison
+                    core_data = {
+                        'Type': ['Base Tens', 'Base Ones', 'Golden Tens', 'Golden Ones'],
+                        'Digits': [
+                            ', '.join(map(str, adaptive_data.get('tens_core_base', []))),
+                            ', '.join(map(str, adaptive_data.get('ones_core_base', []))),
+                            ', '.join(map(str, adaptive_data.get('tens_core_golden', []))),
+                            ', '.join(map(str, adaptive_data.get('ones_core_golden', [])))
+                        ]
+                    }
+                    pd.DataFrame(core_data).to_excel(writer, sheet_name='adaptive_cores', index=False)
+
+                    # Hero numbers
+                    hero_numbers = adaptive_data.get('hero_numbers', [])
+                    pd.DataFrame({'Hero Numbers': hero_numbers}).to_excel(writer, sheet_name='hero_numbers', index=False)
+
+                    # Cross-slot patterns
+                    cross_patterns = adaptive_data.get('cross_slot_pairs_top', [])
+                    pd.DataFrame({'Top Cross Patterns': cross_patterns}).to_excel(writer, sheet_name='cross_patterns', index=False)
+
+                    # Boost scripts
+                    boost_scripts = adaptive_data.get('boost_scripts', [])
+                    pd.DataFrame({'Boost Scripts': boost_scripts}).to_excel(writer, sheet_name='boost_scripts', index=False)
+
+                    print("   ✅ Adaptive packs integrated into Excel export")
+
+                # Summary sheet
+                summary_data = {
+                    'Export Time': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                    'Total Slots': [len(self.slots)],
+                    'Adaptive Packs Integrated': ['Yes' if adaptive_data else 'No'],
+                    'Hero Numbers Count': [len(adaptive_data.get('hero_numbers', [])) if adaptive_data else 0],
+                    'Golden Days Used': [len(adaptive_data.get('tens_core_golden', [])) if adaptive_data else 0]
                 }
-                pd.DataFrame(core_data).to_excel(writer, sheet_name='adaptive_cores', index=False)
-                
-                # Hero numbers
-                hero_numbers = adaptive_data.get('hero_numbers', [])
-                pd.DataFrame({'Hero Numbers': hero_numbers}).to_excel(writer, sheet_name='hero_numbers', index=False)
-                
-                # Cross-slot patterns
-                cross_patterns = adaptive_data.get('cross_slot_pairs_top', [])
-                pd.DataFrame({'Top Cross Patterns': cross_patterns}).to_excel(writer, sheet_name='cross_patterns', index=False)
-                
-                # Boost scripts
-                boost_scripts = adaptive_data.get('boost_scripts', [])
-                pd.DataFrame({'Boost Scripts': boost_scripts}).to_excel(writer, sheet_name='boost_scripts', index=False)
-                
-                print("   ✅ Adaptive packs integrated into Excel export")
-            
-            # Summary sheet
-            summary_data = {
-                'Export Time': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-                'Total Slots': [len(self.slots)],
-                'Adaptive Packs Integrated': ['Yes' if adaptive_data else 'No'],
-                'Hero Numbers Count': [len(adaptive_data.get('hero_numbers', [])) if adaptive_data else 0],
-                'Golden Days Used': [len(adaptive_data.get('tens_core_golden', [])) if adaptive_data else 0]
-            }
-            pd.DataFrame(summary_data).to_excel(writer, sheet_name='summary', index=False)
+                pd.DataFrame(summary_data).to_excel(writer, sheet_name='summary', index=False)
+        except Exception as exc:
+            print(f"⚠️  Unable to export pattern packs to Excel: {exc}")
+            return True
         
         print(f"✅ Pattern packs saved to: {output_dir / 'pattern_packs.json'}")
         print(f"✅ Pattern packs Excel saved to: {excel_file}")

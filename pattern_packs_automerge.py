@@ -19,6 +19,7 @@ class PatternPacksAutomerge:
     def __init__(self):
         self.base_dir = Path(__file__).resolve().parent
         self.suggested_patterns = {}
+        self.has_suggested_input = False
         
     def load_suggested_patterns(self):
         """Dynamically import pattern_packs_suggested.py"""
@@ -26,6 +27,8 @@ class PatternPacksAutomerge:
 
         if not suggested_file.exists():
             print("Pattern packs not available – skipping automerge")
+            self.has_suggested_input = False
+            self.suggested_patterns = {}
             return True
             
         try:
@@ -33,13 +36,17 @@ class PatternPacksAutomerge:
             spec = importlib.util.spec_from_file_location("pattern_packs_suggested", suggested_file)
             suggested_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(suggested_module)
-            
+
             # Extract all SUGGESTED_* variables
             for attr_name in dir(suggested_module):
                 if attr_name.startswith('SUGGESTED_'):
                     self.suggested_patterns[attr_name] = getattr(suggested_module, attr_name)
-            
-            print(f"✅ Loaded {len(self.suggested_patterns)} suggested patterns")
+
+            self.has_suggested_input = bool(self.suggested_patterns)
+            if self.has_suggested_input:
+                print(f"✅ Loaded {len(self.suggested_patterns)} suggested patterns")
+            else:
+                print("⚠️  No suggested pattern variables found in pattern_packs_suggested.py")
             return True
             
         except Exception as e:
@@ -48,6 +55,9 @@ class PatternPacksAutomerge:
     
     def generate_overlay_file(self):
         """Generate pattern_packs_auto.py overlay file"""
+        if not self.suggested_patterns:
+            print("ℹ️  No suggested patterns to merge – skipping overlay generation")
+            return None, {"range": [], "tens": [], "ones": []}
         overlay_content = '''"""
 PATTERN_PACKS_AUTO.PY - Auto-generated overlay from pattern_packs_suggested.py
 
@@ -153,7 +163,7 @@ print("✅ Golden Days overlay patterns loaded successfully")
         overlay_file = self.base_dir / "pattern_packs_auto.py"
         with open(overlay_file, 'w') as f:
             f.write(overlay_content)
-        
+
         return overlay_file, overlay_groups
     
     def display_summary(self, overlay_groups):
@@ -184,13 +194,19 @@ print("✅ Golden Days overlay patterns loaded successfully")
         """Run complete automerge process"""
         print("🔄 PATTERN PACKS AUTOMERGE - Generating Safe Overlay")
         print("=" * 60)
-        
+
         # Load suggested patterns
         if not self.load_suggested_patterns():
             return False
-        
+
+        if not self.has_suggested_input:
+            print("No suggested patterns available – nothing to merge")
+            return True
+
         # Generate overlay file
         overlay_file, overlay_groups = self.generate_overlay_file()
+        if overlay_file is None:
+            return True
         
         # Display summary
         self.display_summary(overlay_groups)
