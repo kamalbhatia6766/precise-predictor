@@ -39,6 +39,9 @@ quant_stats = get_quant_stats()
 PERFORMANCE_DIR = quant_paths.get_performance_logs_dir()
 BET_ENGINE_DIR = quant_paths.get_bet_engine_dir()
 SCRIPT_METRICS_WINDOW_DAYS = 30
+SLOT_HEALTH_PATH = Path("data") / "slot_health.json"
+TOPN_POLICY_PATH = Path("data") / "topn_policy.json"
+TOPN_WINDOW_DAYS = 30
 
 
 @dataclass
@@ -257,6 +260,24 @@ def _load_json(path: Path) -> Optional[dict]:
         return json.loads(path.read_text())
     except Exception:
         return None
+
+
+def _load_slot_health_snapshot() -> Dict[str, Dict[str, object]]:
+    try:
+        base_dir = quant_paths.get_base_dir()
+    except Exception:
+        return {}
+    path = Path(base_dir) / SLOT_HEALTH_PATH
+    data = _load_json(path) or {}
+    snapshot: Dict[str, Dict[str, object]] = {}
+    for slot in SLOTS:
+        record = data.get(slot, {}) if isinstance(data, dict) else {}
+        snapshot[slot] = {
+            "roi": float(record.get("roi_30", record.get("roi_percent", 0.0)) or 0.0),
+            "slump": bool(record.get("slump", False)),
+            "slot_level": str(record.get("slot_level", "MID")).upper(),
+        }
+    return snapshot
 
 
 def load_plan_from_excel(plan_path: Path) -> Optional[PlanSummary]:
@@ -1064,16 +1085,15 @@ def print_pattern_slot_section(window_days: int = 30) -> None:
 
 
 def _load_slot_roi() -> Dict[str, float]:
-    data = _load_json(PERFORMANCE_DIR / "quant_reality_pnl.json") or {}
-    by_slot = data.get("by_slot", [])
+    snapshot = _load_slot_health_snapshot()
     roi_map: Dict[str, float] = {}
-    for item in by_slot:
-        slot = str(item.get("slot", "")).upper()
-        roi = item.get("roi") or item.get("pnl")
-        try:
-            roi_map[slot] = float(roi)
-        except Exception:
-            continue
+    for slot, entry in snapshot.items():
+        roi_val = entry.get("roi") if isinstance(entry, dict) else None
+        if roi_val is not None:
+            try:
+                roi_map[slot] = float(roi_val)
+            except Exception:
+                continue
     return roi_map
 
 
@@ -1093,17 +1113,20 @@ def print_regime_snapshot(window_days: int = 30) -> None:
     print("3️⃣ REGIME SNAPSHOT")
     slot_pattern_stats = _pattern_slot_stats(window_days=window_days)
     regimes = _short_window_regimes(slot_pattern_stats)
-    roi_map = _load_slot_roi()
+    slot_health = _load_slot_health_snapshot()
+    roi_map = {slot: (slot_health.get(slot) or {}).get("roi") for slot in SLOTS}
     if not slot_pattern_stats and not roi_map:
         print("   Regime snapshot warming up (insufficient data).")
         return
     for slot in SLOTS:
         patterns = slot_pattern_stats.get(slot, {})
         slot_regime = regimes.get(slot, {})
-        pnl_label = _pnl_regime(roi_map.get(slot))
+        health_entry = slot_health.get(slot, {}) if isinstance(slot_health, dict) else {}
+        pnl_label = "SLUMP" if health_entry.get("slump") else _pnl_regime(roi_map.get(slot))
+        level_label = health_entry.get("slot_level", "MID")
         s40_label = slot_regime.get("s40_regime", "NORMAL")
         fam_label = slot_regime.get("fam_regime", "NORMAL")
-        print(f"   {slot}: P&L={pnl_label}, S40={s40_label}, 164950={fam_label}")
+        print(f"   {slot}: P&L={pnl_label}, Level={level_label}, S40={s40_label}, 164950={fam_label}")
 
 
 def print_pattern_family_snapshot() -> None:
@@ -1303,7 +1326,12 @@ def _load_topn_best_profile(insight: Optional[Dict] = None) -> Tuple[Optional[in
 
 
 def print_topn_roi_insight(insight: Optional[Dict] = None) -> Optional[Dict]:
-    window_days = 30
+    window_days = TOPN_WINDOW_DAYS
+    try:
+        base_dir = quant_paths.get_base_dir()
+    except Exception:
+        base_dir = Path(".")
+    topn_policy = _load_json(Path(base_dir) / TOPN_POLICY_PATH) or {}
     if insight is None:
         insight = quant_stats.get("topn") if isinstance(quant_stats, dict) else None
     if insight is None:
@@ -1347,6 +1375,17 @@ def print_topn_roi_insight(insight: Optional[Dict] = None) -> Optional[Dict]:
         for slot in SLOTS:
             slot_best = per_slot_best.get(slot, default_n)
             print(f"      {slot} best N    : {slot_best}")
+
+    if isinstance(topn_policy, dict) and topn_policy:
+        print("\n   Top-N policy (final-best guidance):")
+        for slot in SLOTS:
+            policy_block = topn_policy.get(slot, {}) if isinstance(topn_policy, dict) else {}
+            final_best_n = policy_block.get("final_best_n") if isinstance(policy_block, dict) else None
+            roi_final_best = policy_block.get("roi_final_best") if isinstance(policy_block, dict) else None
+            if final_best_n is None and roi_final_best is None:
+                continue
+            roi_text = f"{float(roi_final_best):+.1f}%" if roi_final_best is not None else "n/a"
+            print(f"      {slot}: final_best_n={final_best_n if final_best_n is not None else '-'} | roi≈{roi_text}")
     return insight
 
 
@@ -1447,6 +1486,12 @@ def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = Fa
     print_script_performance_section(window_days=SCRIPT_METRICS_WINDOW_DAYS)
     topn_insight = print_topn_roi_insight(topn_insight)
     print_arjun_section()
+    slot_health_snapshot = _load_slot_health_snapshot()
+    slot_level_parts = [
+        f"{slot}={slot_health_snapshot.get(slot, {}).get('slot_level', 'MID')}" for slot in SLOTS
+    ]
+    if slot_level_parts:
+        print(f"Slot levels: {', '.join(slot_level_parts)}")
     print("=" * 80)
     best_roi = None
     best_n, _ = _load_topn_best_profile(topn_insight)

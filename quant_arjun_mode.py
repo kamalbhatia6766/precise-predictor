@@ -13,6 +13,8 @@ from quant_stats_core import get_quant_stats
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 quant_stats = get_quant_stats()
+TOPN_POLICY_PATH = Path("data") / "topn_policy.json"
+SLOT_HEALTH_PATH = Path("data") / "slot_health.json"
 
 
 def _load_json(path: Path) -> Optional[Dict]:
@@ -31,7 +33,7 @@ def _regime_score(label: Optional[str]) -> int:
 
 
 def _load_slot_health(base_dir: Path) -> Dict[str, Dict[str, object]]:
-    snapshot_path = base_dir / "data" / "slot_health.json"
+    snapshot_path = base_dir / SLOT_HEALTH_PATH
     if snapshot_path.exists():
         data = _load_json(snapshot_path) or {}
         slot_health: Dict[str, Dict[str, object]] = {}
@@ -41,6 +43,7 @@ def _load_slot_health(base_dir: Path) -> Dict[str, Dict[str, object]]:
                 "roi": float(record.get("roi_30", record.get("roi_percent", 0.0)) or 0.0),
                 "hit_rate": float(record.get("hit_rate", 0.0) or 0.0),
                 "slump": bool(record.get("slump", False)),
+                "slot_level": str(record.get("slot_level", "MID")).upper(),
             }
         return slot_health
 
@@ -59,11 +62,26 @@ def _load_slot_health(base_dir: Path) -> Dict[str, Dict[str, object]]:
                     "roi": getattr(health, "roi_percent", 0.0),
                     "hit_rate": getattr(health, "hit_rate", 0.0),
                     "slump": bool(getattr(health, "slump", False)),
+                    "slot_level": "MID",
                 }
     return slot_map
 
 
 def _load_topn_summary(base_dir: Path) -> Dict:
+    policy_path = base_dir / TOPN_POLICY_PATH
+    if policy_path.exists():
+        data = _load_json(policy_path) or {}
+        per_slot: Dict[str, Dict[str, object]] = {}
+        if isinstance(data, dict):
+            for slot in SLOTS:
+                record = data.get(slot, {}) if isinstance(data, dict) else {}
+                per_slot[slot] = {
+                    "roi": float(record.get("roi_final_best", record.get("roi_best_exact", 0.0)) or 0.0),
+                    "roi_final_best": float(record.get("roi_final_best", record.get("roi_best_exact", 0.0)) or 0.0),
+                    "final_best_n": record.get("final_best_n", record.get("best_n_exact")),
+                }
+        return {"per_slot": per_slot}
+
     path = base_dir / "logs" / "performance" / "topn_roi_summary.json"
     return _load_json(path) or {}
 
@@ -222,11 +240,11 @@ def _quant_slot_score(slot: str) -> Dict[str, object]:
 
 
 def _topn_score_for_slot(topn: Dict, slot: str) -> Dict[str, object]:
-    per_slot_topn = topn.get("per_slot", {}) if isinstance(topn, dict) else {}
+    per_slot_topn = topn.get("per_slot", topn.get("slots", {})) if isinstance(topn, dict) else {}
     best_n_per_slot = topn.get("best_n_per_slot", {}) if isinstance(topn, dict) else {}
     topn_slot = per_slot_topn.get(slot, {}) if isinstance(per_slot_topn, dict) else {}
-    best_n = topn_slot.get("best_N", best_n_per_slot.get(slot)) if isinstance(topn_slot, dict) else None
-    roi = float(topn_slot.get("roi", 0.0) or 0.0) if isinstance(topn_slot, dict) else 0.0
+    best_n = topn_slot.get("final_best_n") or topn_slot.get("best_N", best_n_per_slot.get(slot)) if isinstance(topn_slot, dict) else None
+    roi = float(topn_slot.get("roi_final_best", topn_slot.get("roi", 0.0)) or 0.0) if isinstance(topn_slot, dict) else 0.0
 
     score = 0.0
     if roi > 0:
@@ -234,7 +252,7 @@ def _topn_score_for_slot(topn: Dict, slot: str) -> Dict[str, object]:
     if best_n:
         score += 0.3 if 2 <= int(best_n) <= 6 else 0.1
 
-    return {"score": score, "roi": roi, "best_n": best_n}
+    return {"score": score, "roi": roi, "best_n": best_n, "roi_final_best": roi, "final_best_n": best_n}
 
 
 def _select_slot(slot_health: Dict[str, Dict[str, object]], topn: Dict, patterns: Optional[Dict]) -> Optional[str]:
@@ -258,6 +276,9 @@ def _select_slot(slot_health: Dict[str, Dict[str, object]], topn: Dict, patterns
 
     candidates = []
     for slot, stats in slot_health.items():
+        level = str(stats.get("slot_level", "MID")).upper()
+        if level == "OFF":
+            continue
         roi = float(stats.get("roi", 0.0) or 0.0)
         slump = bool(stats.get("slump", False))
         pattern_info = _pattern_score_for_slot(patterns, slot)
@@ -265,19 +286,22 @@ def _select_slot(slot_health: Dict[str, Dict[str, object]], topn: Dict, patterns
         base_score = roi / 50.0
         if slump:
             base_score -= 2.0
-        slot_score = base_score + 0.8 * pattern_info["score"] + 0.5 * topn_info["score"]
+        level_bias = {"HIGH": 0.6, "MID": 0.3, "LOW": -0.2}.get(level, 0.0)
+        roi_bias = 0.4 if (topn_info.get("roi_final_best") or 0.0) > 0 else 0.0
+        slot_score = base_score + 0.8 * pattern_info["score"] + 0.5 * topn_info["score"] + level_bias + roi_bias
         candidates.append(
             {
                 "slot": slot,
                 "roi": roi,
                 "slump": slump,
+                "slot_level": level,
                 "slot_score": slot_score,
                 "pattern": pattern_info,
                 "topn": topn_info,
             }
         )
 
-    viable = [c for c in candidates if not c.get("slump")]
+    viable = [c for c in candidates if not c.get("slump") and c.get("slot_level") in {"HIGH", "MID"}]
     ranked_pool = viable if viable else candidates
     if not ranked_pool:
         return None
@@ -285,6 +309,7 @@ def _select_slot(slot_health: Dict[str, Dict[str, object]], topn: Dict, patterns
     ranked_pool.sort(
         key=lambda c: (
             -float(c.get("slot_score", 0.0) or 0.0),
+            -{"HIGH": 2, "MID": 1, "LOW": 0}.get(str(c.get("slot_level", "MID")), 0),
             -float(c.get("roi", 0.0) or 0.0),
             -_regime_score((c.get("pattern") or {}).get("s40")),
             -_regime_score((c.get("pattern") or {}).get("fam")),
@@ -401,6 +426,8 @@ def _build_reason(
 ) -> str:
     notes = []
     if slot_health:
+        level = str(slot_health.get("slot_level", "MID")).upper()
+        notes.append(f"level={level}")
         if not slot_health.get("slump"):
             notes.append("non-slump")
         roi_val = slot_health.get("roi")
@@ -427,11 +454,11 @@ def _build_reason(
 
     topn_slot = (topn.get("per_slot", {}) or {}).get(slot, {}) if isinstance(topn, dict) else {}
     topn_best = (topn.get("best_n_per_slot", {}) or {}).get(slot) if isinstance(topn, dict) else None
-    if isinstance(topn_slot, dict) and topn_slot.get("roi") is not None:
-        roi_val = float(topn_slot.get("roi", 0.0) or 0.0)
-        best_n = topn_slot.get("best_N", topn_best)
+    if isinstance(topn_slot, dict) and (topn_slot.get("roi") is not None or topn_slot.get("roi_final_best") is not None):
+        roi_val = float(topn_slot.get("roi_final_best", topn_slot.get("roi", 0.0)) or 0.0)
+        best_n = topn_slot.get("final_best_n") or topn_slot.get("best_N", topn_best)
         if best_n:
-            notes.append(f"TopN N={best_n} ROI {roi_val:+.1f}%")
+            notes.append(f"TopN final_best_n={best_n} ROI {roi_val:+.1f}%")
         else:
             notes.append(f"TopN ROI {roi_val:+.1f}%")
     if hero:
@@ -470,13 +497,20 @@ def main() -> int:
 
     slot_quant = _quant_slot_score(chosen_slot)
     reasons = []
+    slot_health_entry = slot_health.get(chosen_slot, {}) if isinstance(slot_health, dict) else {}
+    level_label = str(slot_health_entry.get("slot_level", "")).upper()
+    if level_label:
+        reasons.append(f"slot level {level_label}")
     roi_val = slot_quant.get("slot_roi") if slot_quant else None
     if roi_val is not None:
         reasons.append(f"slot ROI {float(roi_val):+.1f}%")
     if slot_quant and slot_quant.get("slump"):
         reasons.append("slot in slump")
-    best_n = slot_quant.get("best_n") if slot_quant else None
-    best_roi = slot_quant.get("best_roi") if slot_quant else None
+    topn_slot_info = (topn.get("per_slot", {}) or {}).get(chosen_slot, {}) if isinstance(topn, dict) else {}
+    best_n = topn_slot_info.get("final_best_n") or slot_quant.get("best_n") if slot_quant else topn_slot_info.get("final_best_n")
+    best_roi = topn_slot_info.get("roi_final_best") if isinstance(topn_slot_info, dict) else None
+    if best_roi is None:
+        best_roi = slot_quant.get("best_roi") if slot_quant else None
     if best_n:
         reasons.append(f"best_N={best_n} ROI {float(best_roi or 0.0):+.1f}%")
     s40_regime = slot_quant.get("s40_regime") if slot_quant else None
