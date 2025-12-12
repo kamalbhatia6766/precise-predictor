@@ -25,6 +25,26 @@ quant_stats = get_quant_stats()
 # Pre-compute family memberships for speed and consistency across the chain.
 PATTERN_FAMILY_CACHE: Dict[str, List[str]] = {}
 
+# Tunable horizons (kept as constants for easy future adjustments)
+ROI_WINDOW_DAYS_DEFAULT = 30
+NEAR_MISS_WINDOW_DAYS_DEFAULT = 30
+
+# Policy files
+TOPN_POLICY_PATH = Path("data") / "topn_policy.json"
+SLOT_HEALTH_PATH = Path("data") / "slot_health.json"
+
+# Defensive stake controls
+BAHAR_EXTRA_MULTIPLIER = 0.5
+SLOT_LEVEL_MULTIPLIERS = {
+    "OFF": 0.0,
+    "LOW": 0.5,
+    "MID": 1.0,
+    "HIGH": 1.25,
+}
+
+# Baseline main-stake total used for smooth distribution when expanding shortlist
+BASE_MAIN_TOTAL_UNITS = 3.5  # Equivalent to the legacy A/B/C pattern (2 + 1 + 0.5)
+
 
 def _precompute_family_cache() -> None:
     if PATTERN_FAMILY_CACHE:
@@ -236,12 +256,38 @@ class PreciseBetEngine:
         self.topn_roi_profile = {}
         self.topn_shortlist_profile = {}
         self.pattern_regime_summary = {}
+        self.topn_policy = self._load_topn_policy()
+        self.slot_health_snapshot = self._load_slot_health_snapshot()
 
-    def _load_topn_roi_profile(self, window_days: int = 30) -> Dict:
+    def _load_topn_roi_profile(self, window_days: int = ROI_WINDOW_DAYS_DEFAULT) -> Dict:
         try:
             return compute_topn_roi(window_days=window_days) or {}
         except Exception:
             return {}
+
+    def _load_topn_policy(self) -> Dict[str, Dict[str, object]]:
+        try:
+            path = TOPN_POLICY_PATH
+            if path.exists():
+                with open(path, "r") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as exc:
+            print(f"⚠️  Unable to load Top-N policy: {exc}")
+        return {}
+
+    def _load_slot_health_snapshot(self) -> Dict[str, Dict[str, object]]:
+        try:
+            path = SLOT_HEALTH_PATH
+            if path.exists():
+                with open(path, "r") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return {str(k).upper(): v for k, v in data.items() if isinstance(v, dict)}
+        except Exception as exc:
+            print(f"⚠️  Unable to load slot_health.json: {exc}")
+        return {}
 
     def _get_slot_quant(self, key: str, slot: str) -> Dict:
         block = _safe_slot_block(key)
@@ -1500,10 +1546,12 @@ class PreciseBetEngine:
 
         self.history = history
         print("🔍 Loading real numbers history for near-miss learning...")
-        self.real_numbers_history = self.load_real_numbers_history(30, target_date)
+        self.real_numbers_history = self.load_real_numbers_history(NEAR_MISS_WINDOW_DAYS_DEFAULT, target_date)
 
         self.topn_shortlist_profile = self._load_topn_shortlist_profile()
         self.pattern_regime_summary = self._load_pattern_regime_summary()
+        self.topn_policy = self._load_topn_policy()
+        self.slot_health_snapshot = self._load_slot_health_snapshot()
         
         long_df = self.convert_wide_to_long_format(df, target_rows)
         target_df = long_df.copy()
@@ -1539,9 +1587,24 @@ class PreciseBetEngine:
                 print(f"   Empty scored list - using fallback")
                 continue
             
-            shortlist_k = self._get_shortlist_width(slot, len(numbers_list))
+            policy_block = (self.topn_policy or {}).get(slot, {}) if isinstance(self.topn_policy, dict) else {}
+            n_star = policy_block.get("final_best_n") or policy_block.get("best_n_exact") or DEFAULT_BEST_N
+            try:
+                n_star_int = int(n_star)
+            except Exception:
+                n_star_int = DEFAULT_BEST_N
+            n_main = min(max(n_star_int, 1), 5)
+            n_main = min(n_main, len(scored_numbers)) if scored_numbers else n_main
+            shortlist_k = max(1, n_main)
+
             shortlist, all_scored = self.build_dynamic_shortlist(scored_numbers, desired_k=shortlist_k)
             tiers = self.assign_tiers(shortlist)
+            policy_roi = policy_block.get("roi_final_best") if isinstance(policy_block, dict) else None
+            print(
+                f"   Top-N policy: final_best_n={n_star_int}, roi_final_best={policy_roi:+.1f}%"
+                if policy_roi is not None
+                else f"   Top-N policy: final_best_n={n_star_int}"
+            )
 
             slot_debug_numbers = []
             
@@ -1607,21 +1670,34 @@ class PreciseBetEngine:
             andar_digit, bahar_digit = self.get_andar_bahar(shortlist)
             main_stake_total = 0
             main_max_return = 0
-            
-            for item in shortlist:
+
+            base_main_total = BASE_MAIN_TOTAL_UNITS * self.base_unit
+            use_weighted_pattern = len(shortlist) > 3
+            weights: List[float] = []
+            if use_weighted_pattern:
+                weights = list(range(len(shortlist), 0, -1))
+                weight_sum = sum(weights) or 1
+                scaled_weights = [w * base_main_total / weight_sum for w in weights]
+            else:
+                scaled_weights = []
+
+            for idx, item in enumerate(shortlist):
                 number = item['number']
                 tier = tiers.get(number, 'C')
-                if tier == 'A':
-                    stake = 2 * self.base_unit
-                elif tier == 'B':
-                    stake = 1 * self.base_unit
+                if use_weighted_pattern:
+                    stake = round(scaled_weights[idx], 2)
                 else:
-                    stake = 0.5 * self.base_unit
-                
+                    if tier == 'A':
+                        stake = 2 * self.base_unit
+                    elif tier == 'B':
+                        stake = 1 * self.base_unit
+                    else:
+                        stake = 0.5 * self.base_unit
+
                 potential_return = stake * 90
                 main_stake_total += stake
                 main_max_return += potential_return
-                
+
                 bets_data.append({
                     'date': target_date,
                     'slot': slot,
@@ -1747,8 +1823,9 @@ class PreciseBetEngine:
         # Build slot health map and per-slot multipliers
         slot_health_map: Dict[str, SlotHealth] = {}
         slot_multipliers: Dict[str, float] = {}
+        slot_level_map: Dict[str, str] = {}
 
-        topn_profile = self._load_topn_roi_profile(window_days=30)
+        topn_profile = self._load_topn_roi_profile(window_days=ROI_WINDOW_DAYS_DEFAULT)
         topn_per_slot = topn_profile.get("per_slot", {}) if isinstance(topn_profile, dict) else {}
 
         for slot in self.slots:
@@ -1768,6 +1845,13 @@ class PreciseBetEngine:
                     slump=False,
                     roi_bucket="UNKNOWN",
                 )
+
+            slot_snapshot = (self.slot_health_snapshot or {}).get(key, {}) if isinstance(self.slot_health_snapshot, dict) else {}
+            if isinstance(slot_snapshot, dict) and "slump" in slot_snapshot:
+                health.slump = bool(slot_snapshot.get("slump", health.slump))
+
+            slot_level = str(slot_snapshot.get("slot_level", "MID")).upper() if isinstance(slot_snapshot, dict) else "MID"
+            slot_level_map[key] = slot_level
 
             slot_health_map[key] = health
             mult = self._compute_slot_multiplier(health)
@@ -1859,6 +1943,81 @@ class PreciseBetEngine:
             print(f"❌ Error in slot-multiplier scaling: {e}")
             # Fail-safe: if anything goes wrong, we keep original bets_df/summary_df
             # and continue without crashing.
+
+        # Apply slot-level gating after quant slot multipliers
+        if not bets_df.empty:
+            if "slot_key" not in bets_df.columns:
+                bets_df["slot_key"] = bets_df["slot"].astype(str).str.upper()
+            for slot in self.slots:
+                slot_key = str(slot).upper()
+                level = slot_level_map.get(slot_key, "MID")
+                level_mult = SLOT_LEVEL_MULTIPLIERS.get(level, 1.0)
+                slot_mask = bets_df["slot_key"] == slot_key
+
+                if level == "OFF":
+                    main_mask = slot_mask & (bets_df["layer_type"] == "Main")
+                    bets_df.loc[main_mask, ["stake", "potential_return"]] = 0.0
+
+                    ab_mask = slot_mask & bets_df["layer_type"].isin(["ANDAR", "BAHAR"])
+                    bets_df.loc[ab_mask, "stake"] = 0.0
+                    bets_df.loc[ab_mask, "potential_return"] = 0.0
+                    print(f"{slot_key} in OFF mode – main stakes suppressed")
+                else:
+                    stake_numeric = pd.to_numeric(bets_df.loc[slot_mask, "stake"], errors="coerce")
+                    numeric_mask = slot_mask & stake_numeric.notna()
+                    bets_df.loc[numeric_mask, "stake"] = (stake_numeric[numeric_mask] * level_mult).round(2)
+
+                    potential_numeric = pd.to_numeric(bets_df.loc[slot_mask, "potential_return"], errors="coerce")
+                    potential_mask = slot_mask & potential_numeric.notna()
+                    bets_df.loc[potential_mask, "potential_return"] = (
+                        pd.to_numeric(bets_df.loc[potential_mask, "stake"], errors="coerce") * 90
+                    ).round(2)
+
+        # Defensive BAHAR down-weighting applied after other multipliers
+        if not bets_df.empty:
+            bahar_mask = bets_df["layer_type"] == "BAHAR"
+            bahar_numeric = pd.to_numeric(bets_df.loc[bahar_mask, "stake"], errors="coerce")
+            bahar_valid = bahar_mask & bahar_numeric.notna()
+            bets_df.loc[bahar_valid, "stake"] = (bahar_numeric[bahar_valid] * BAHAR_EXTRA_MULTIPLIER).round(2)
+
+            bahar_potential = pd.to_numeric(bets_df.loc[bahar_mask, "potential_return"], errors="coerce")
+            potential_valid = bahar_mask & bahar_potential.notna()
+            bets_df.loc[potential_valid, "potential_return"] = (
+                pd.to_numeric(bets_df.loc[potential_valid, "stake"], errors="coerce") * 90
+            ).round(2)
+
+        # Recompute summary totals to reflect slot-level and BAHAR adjustments
+        if not summary_df.empty and "slot" in summary_df.columns and not bets_df.empty:
+            summary_df["slot_key"] = summary_df["slot"].astype(str).str.upper()
+            for slot in self.slots:
+                slot_key = str(slot).upper()
+                slot_mask = bets_df["slot_key"] == slot_key
+                summary_mask = summary_df["slot_key"] == slot_key
+
+                main_total = pd.to_numeric(bets_df.loc[slot_mask & (bets_df["layer_type"] == "Main"), "stake"], errors="coerce").sum()
+                andar_total = pd.to_numeric(bets_df.loc[slot_mask & (bets_df["layer_type"] == "ANDAR"), "stake"], errors="coerce").sum()
+                bahar_total = pd.to_numeric(bets_df.loc[slot_mask & (bets_df["layer_type"] == "BAHAR"), "stake"], errors="coerce").sum()
+                max_total_return = pd.to_numeric(bets_df.loc[slot_mask, "potential_return"], errors="coerce").sum()
+
+                summary_df.loc[summary_mask, "main_stake"] = main_total
+                summary_df.loc[summary_mask, "andar_stake"] = andar_total
+                summary_df.loc[summary_mask, "bahar_stake"] = bahar_total
+                summary_df.loc[summary_mask, "total_stake"] = main_total + andar_total + bahar_total
+                summary_df.loc[summary_mask, "max_total_return"] = max_total_return
+                summary_df.loc[summary_mask, "slot_level"] = slot_level_map.get(slot_key, "MID")
+
+        for slot in self.slots:
+            slot_key = str(slot).upper()
+            total_slot_stake = 0.0
+            if not summary_df.empty and "slot_key" in summary_df.columns:
+                slot_mask = summary_df["slot_key"] == slot_key
+                total_slot_stake = float(summary_df.loc[slot_mask, "total_stake"].sum())
+            print(f"[STAKE-LEVEL] {slot_key}: level={slot_level_map.get(slot_key, 'MID')} total_stake={fmt_rupees(total_slot_stake)}")
+
+        if not bets_df.empty:
+            print(
+                f"BAHAR defensive mode: stakes scaled by {BAHAR_EXTRA_MULTIPLIER} due to negative historical ROI."
+            )
 
         bets_df = apply_overlay_policy_to_bets(bets_df, slot_health_map, self.base_unit)
 
