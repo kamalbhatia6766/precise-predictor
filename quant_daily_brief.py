@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 import quant_data_core
@@ -157,7 +158,9 @@ def parse_date(value: str) -> date:
 def load_results_df() -> pd.DataFrame:
     df = quant_data_core.load_results_dataframe()
     if not df.empty and "DATE" in df.columns:
-        df["DATE_ONLY"] = pd.to_datetime(df["DATE"], errors="coerce").dt.date
+        with np.errstate(over="ignore", invalid="ignore"):
+            safe_date = pd.to_datetime(df["DATE"], errors="coerce")
+        df["DATE_ONLY"] = safe_date.dt.date
     return df
 
 
@@ -443,7 +446,9 @@ def load_final_bet_plan_for_date(target_date: date) -> Optional[dict]:
         date_col = _find_column(df.columns, ["date"])
         enforce_date_match = path != exact_file
         if date_col:
-            df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+            with np.errstate(over="ignore", invalid="ignore"):
+                df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+            df[date_col] = df[date_col].dt.date
             df = df[df[date_col] == target_date]
         elif enforce_date_match:
             continue

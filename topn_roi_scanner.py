@@ -5,6 +5,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import numpy as np
 from quant_stats_core import compute_topn_roi
 import quant_paths
 
@@ -12,6 +13,10 @@ MAX_N = 40
 UNIT_STAKE = 10
 FULL_PAYOUT_PER_UNIT = 90
 NEAR_HIT_WEIGHT = 0.3
+
+
+def safe(value):
+    return float(np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0))
 
 
 def _write_csv(summary: Dict) -> None:
@@ -23,11 +28,11 @@ def _write_csv(summary: Dict) -> None:
 
     rows = []
     for n, roi in roi_by_n.items():
-        rows.append({"N": n, "slot": "ALL", "ROI": roi})
+        rows.append({"N": n, "slot": "ALL", "ROI": safe(roi)})
     for slot, slot_map in per_slot.items():
         roi_map = slot_map.get("roi_by_N", {}) if isinstance(slot_map, dict) else {}
         for n, roi in roi_map.items():
-            rows.append({"N": n, "slot": slot, "ROI": roi})
+            rows.append({"N": n, "slot": slot, "ROI": safe(roi)})
     if not rows:
         return
     with output_path.open("w", newline="") as f:
@@ -395,7 +400,7 @@ def main() -> int:
         roi_val = roi_map.get(n)
         if roi_val is None:
             continue
-        print(f"N={n}  → ROI = {roi_val:+.1f}%")
+        print(f"N={n}  → ROI = {safe(roi_val):+.1f}%")
 
     per_slot = summary.get("per_slot", {}) or {}
     if per_slot:
@@ -406,7 +411,7 @@ def main() -> int:
             parts = []
             for n in range(1, min(max_n, 10) + 1):
                 if n in roi_by_n:
-                    parts.append(f"Top{n}:{roi_by_n[n]:+.1f}%")
+                    parts.append(f"Top{n}:{safe(roi_by_n[n]):+.1f}%")
             if parts:
                 print(f"{slot}: {' | '.join(parts)}")
 

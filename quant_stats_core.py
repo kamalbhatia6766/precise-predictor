@@ -8,6 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
+import numpy as np
 import pandas as pd
 
 import quant_paths
@@ -25,6 +26,10 @@ NEAR_HIT_TYPES = {
     "CROSS_DAY",
 }
 
+UNIT_STAKE = 10
+FULL_PAYOUT_PER_UNIT = 90
+NEAR_HIT_WEIGHT = 0.3
+
 
 def _load_ultimate_performance() -> pd.DataFrame:
     path = quant_paths.get_performance_logs_dir() / "ultimate_performance.csv"
@@ -41,6 +46,10 @@ def _load_ultimate_performance() -> pd.DataFrame:
     df["date"] = df["date"].dt.normalize()
     df["slot"] = df.get("slot", "").astype(str).str.upper()
     return df
+
+
+def safe(value: object) -> float:
+    return float(np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0))
 
 
 def _pick_best_n(roi_map: Dict[int, float]) -> Optional[int]:
@@ -135,6 +144,10 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
         hits_map: Dict[int, float] = {}
         near_hits_map: Dict[int, float] = {}
 
+        per_number_stake = pd.to_numeric(subset.get("per_number_stake"), errors="coerce").fillna(UNIT_STAKE)
+        andar_stake = pd.to_numeric(subset.get("andar_stake"), errors="coerce").fillna(0)
+        bahar_stake = pd.to_numeric(subset.get("bahar_stake"), errors="coerce").fillna(0)
+
         hit_type_series = subset.get("hit_type") if isinstance(subset, pd.DataFrame) else None
         near_mask = None
         if hit_type_series is not None:
@@ -146,27 +159,39 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
             raw_flags = subset.get(flag_col, None)
             if raw_flags is None:
                 continue
-            stake_rows = int(raw_flags.notna().sum()) if hasattr(raw_flags, "notna") else len(raw_flags)
-            stake = stake_rows * n
+
+            valid_mask = raw_flags.notna() if hasattr(raw_flags, "notna") else None
+            stake_components = per_number_stake * n + andar_stake + bahar_stake
+            if valid_mask is not None:
+                total_stake = float(stake_components.where(valid_mask, 0).sum())
+            else:
+                total_stake = float(stake_components.sum())
+
             hits = 0
             near_hits = 0
-            if stake and hasattr(raw_flags, "fillna"):
+            total_return_exact = 0.0
+            near_return = 0.0
+            if total_stake and hasattr(raw_flags, "fillna"):
                 flags = raw_flags.fillna(False).astype(bool)
                 hits = int(flags.sum())
+                payout_per_row = FULL_PAYOUT_PER_UNIT * per_number_stake
+                total_return_exact = float((flags.astype(int) * payout_per_row).sum())
                 if near_mask is not None:
                     try:
                         candidate_mask = near_mask
                         if hasattr(raw_flags, "notna"):
                             candidate_mask = candidate_mask & raw_flags.notna()
                         near_hits = int(candidate_mask.sum())
+                        near_return = float((candidate_mask.astype(int) * payout_per_row * NEAR_HIT_WEIGHT).sum())
                     except Exception:
                         near_hits = 0
-            payout = hits * 90
-            roi = ((payout - stake) / stake * 100.0) if stake else 0.0
-            roi_map[n] = roi
-            days_map[n] = stake_rows
-            hits_map[n] = hits
-            near_hits_map[n] = near_hits
+                        near_return = 0.0
+
+            roi = ((total_return_exact - total_stake) / total_stake * 100.0) if total_stake else 0.0
+            roi_map[n] = safe(roi)
+            days_map[n] = safe(valid_mask.sum() if valid_mask is not None else len(raw_flags))
+            hits_map[n] = safe(hits)
+            near_hits_map[n] = safe(near_hits)
         return {"roi": roi_map, "days": days_map, "hits": hits_map, "near_hits": near_hits_map}
 
     overall_maps = _roi_for_subset(window_df)

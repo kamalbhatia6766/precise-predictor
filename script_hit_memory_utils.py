@@ -1,8 +1,9 @@
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 from zipfile import BadZipFile
 
+import numpy as np
 import pandas as pd
 from openpyxl.utils.exceptions import InvalidFileException
 import quant_paths
@@ -96,19 +97,28 @@ def _parse_excel_date_series(series: Optional[pd.Series]) -> pd.Series:
     if series is None:
         return pd.Series([], dtype="datetime64[ns]")
 
-    parsed = pd.to_datetime(series, errors="coerce")
+    def clean_dates(raw: Iterable) -> pd.Series:
+        cleaned = []
+        for v in raw:
+            if isinstance(v, (datetime, date)):
+                cleaned.append(v)
+                continue
+            try:
+                fv = float(v)
+                if fv < 40000 or fv > 50000:
+                    cleaned.append(np.nan)
+                    continue
+            except Exception:
+                cleaned.append(np.nan)
+                continue
+            cleaned.append(v)
+        return pd.Series(cleaned)
 
-    # Excel serials often sneak in as float/int; fill only the NA slots with
-    # a serial-aware conversion to avoid clobbering already-good values.
-    needs_serial = parsed.isna() & series.apply(lambda x: isinstance(x, (int, float)))
-    if needs_serial.any():
-        serial_source = pd.to_numeric(series.where(needs_serial), errors="coerce")
-        serial_parsed = pd.to_datetime(
-            serial_source, unit="d", origin="1899-12-30", errors="coerce"
-        )
-        parsed = parsed.where(~needs_serial, serial_parsed)
-
-    return parsed.dt.date
+    series = clean_dates(series)
+    with np.errstate(over="ignore", invalid="ignore"):
+        parsed = pd.to_datetime(series, errors="coerce", unit="D", origin="1899-12-30")
+    parsed = parsed.fillna(pd.NaT)
+    return parsed
 
 
 def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -277,6 +287,15 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
         if col not in out.columns:
             # If any new header was added later and not handled above
             out[col] = pd.NA
+
+    date_cols = ["predict_date", "result_date", "date"]
+    for col in date_cols:
+        if col in out.columns:
+            out[col] = pd.to_datetime(out[col], errors="coerce")
+    out = out.dropna(subset=["predict_date", "result_date"], how="any")
+    for col in ("predict_date", "result_date"):
+        if col in out.columns:
+            out[col] = out[col].dt.date
 
     return out[SCRIPT_HIT_MEMORY_HEADERS]
 
