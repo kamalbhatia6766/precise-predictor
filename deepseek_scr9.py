@@ -913,13 +913,9 @@ class UltimatePredictionEngine:
                         pred_numbers = predictions.get(slot, [])
                         
                         # Find rank of actual number
-                        rank_missing_reason = ""
                         rank = None
                         if actual_number in pred_numbers:
                             rank = pred_numbers.index(actual_number) + 1
-                        else:
-                            rank = 999
-                            rank_missing_reason = "not_in_predictions"
                         
                         # Check hits
                         hit_top1 = rank == 1 if rank else False
@@ -933,7 +929,6 @@ class UltimatePredictionEngine:
                             'actual': actual_number,
                             'predictions': ','.join(map(str, pred_numbers)),
                             'rank': rank,
-                            'rank_missing_reason': rank_missing_reason,
                             'hit_top1': hit_top1,
                             'hit_top5': hit_top5,
                             'hit_top10': hit_top10,
@@ -948,32 +943,17 @@ class UltimatePredictionEngine:
             results_df = pd.DataFrame(backtest_results)
             
             # Save to performance log
-            perf_file = 'logs/performance/ultimate_performance.csv'
             if not results_df.empty:
-                if "rank" in results_df.columns:
-                    missing_mask = results_df["rank"].isna()
-                    results_df["rank_missing"] = missing_mask.astype(int)
-                    results_df["rank"] = results_df["rank"].fillna(999).astype(int)
-                if "rank_missing_reason" in results_df.columns:
-                    results_df["rank_missing_reason"] = results_df["rank_missing_reason"].fillna("")
+                perf_file = 'logs/performance/ultimate_performance.csv'
                 if os.path.exists(perf_file):
                     existing_df = pd.read_csv(perf_file)
-                    if "rank" in existing_df.columns:
-                        existing_df["rank"] = existing_df["rank"].fillna(999).astype(int)
-                    if "rank_missing" in existing_df.columns:
-                        existing_df["rank_missing"] = existing_df["rank_missing"].fillna(0).astype(int)
-                    else:
-                        existing_df["rank_missing"] = existing_df.get("rank", pd.Series(dtype=int)).isna().astype(int)
-                    if "rank_missing_reason" in existing_df.columns:
-                        existing_df["rank_missing_reason"] = existing_df["rank_missing_reason"].fillna("")
                     combined_df = pd.concat([existing_df, results_df], ignore_index=True)
                     combined_df = combined_df.drop_duplicates(subset=['date', 'slot'], keep='last')
                     combined_df.to_csv(perf_file, index=False)
                 else:
                     results_df.to_csv(perf_file, index=False)
+                
                 print(f"✅ Backtest results saved to {perf_file}")
-            else:
-                print("⚠️ No backtest rows to save")
             
             return results_df
             
