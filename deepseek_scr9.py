@@ -43,6 +43,8 @@ BOOST_ALPHA = 3
 BOOST_BETA = 1
 BOOST_GAMMA = 2
 BOOST_DELTA = 1
+# Controls how noisy backtest printing is in FULL mode
+VERBOSE_BACKTEST = False  # default: compact output
 
 
 def _normalize_slot(slot_val):
@@ -757,7 +759,7 @@ class UltimatePredictionEngine:
             detail.update({"booster": booster, "final_score": final_score, "base_score": base_score})
             score_details[num] = detail
 
-        if boosters:
+        if boosters and VERBOSE_BACKTEST:
             top_boosted = sorted(boosters.items(), key=lambda x: x[1], reverse=True)[:3]
             boost_line = ", ".join(
                 f"{num:02d} (+{boosters[num]:.1f}→{adjusted_scores[num]:.1f})" for num, _ in top_boosted
@@ -930,6 +932,11 @@ class UltimatePredictionEngine:
                             'hit_top10': hit_top10,
                             'hit_top15': hit_top15
                         })
+
+                if not VERBOSE_BACKTEST:
+                    print(
+                        f"[SCR11] Backtest {test_date.date()}: done (FRBD,GZBD,GALI,DSWR boosts applied internally)"
+                    )
             
             results_df = pd.DataFrame(backtest_results)
             
@@ -1217,12 +1224,18 @@ class UltimatePredictionEngine:
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='SCR11 Ultimate Prediction Engine')
     parser.add_argument('--speed-mode', choices=['full', 'fast'], default='full',
                        help='Speed mode: full (backtest + tomorrow) or fast (tomorrow only)')
-    
+    parser.add_argument(
+        '--verbose-backtest',
+        action='store_true',
+        help='Show detailed BOOST logs during backtest',
+    )
+
     args = parser.parse_args()
-    
+    VERBOSE_BACKTEST = args.verbose_backtest
+
     predictor = UltimatePredictionEngine(speed_mode=args.speed_mode)
     predictor.run('number prediction learn.xlsx')
