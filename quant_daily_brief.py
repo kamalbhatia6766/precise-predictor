@@ -12,6 +12,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -1573,17 +1574,28 @@ def main() -> int:
 
     build_brief(mode, bet_date, target_date, dry_run=args.dry_run)
 
-    try:
-        run_anchor = get_run_anchor(default=bet_date.isoformat())
-        capture_progress_status(target_date=target_date, run_anchor=run_anchor)
-    except Exception as exc:  # pragma: no cover - logging only
-        print(f"⚠️ Unable to record progress gates: {exc}")
-
+    snapshot_dir = None
+    snapshot_ok = False
+    snapshot_ts = None
     try:
         snapshot_dir = create_snapshot()
+        snapshot_ts = datetime.now(tz=ZoneInfo("Asia/Kolkata"))
+        snapshot_ok = True
         print(f"📦 Snapshot saved to {snapshot_dir}")
     except Exception as exc:  # pragma: no cover - logging only
         print(f"⚠️ Unable to create snapshot: {exc}")
+
+    try:
+        run_anchor = get_run_anchor(default=bet_date.isoformat())
+        gate_overrides = {
+            "daily_brief_printed": (True, datetime.now(tz=ZoneInfo("Asia/Kolkata"))),
+            "snapshot_saved": (snapshot_ok, snapshot_ts),
+        }
+        capture_progress_status(
+            target_date=target_date, run_anchor=run_anchor, gate_overrides=gate_overrides
+        )
+    except Exception as exc:  # pragma: no cover - logging only
+        print(f"⚠️ Unable to record progress gates: {exc}")
     return 0
 
 

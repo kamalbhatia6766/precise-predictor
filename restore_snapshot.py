@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List
 
@@ -63,6 +64,10 @@ def restore_snapshot(snapshot_name: str) -> Path:
         if not _is_managed(rel_path, managed_patterns):
             continue
         dest = BASE_DIR / rel_path
+        if dest.exists():
+            stamp = datetime.now().strftime("%Y%m%d_%H%M")
+            backup = dest.with_name(dest.name + f".bak_{stamp}")
+            dest.rename(backup)
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(file_path, dest)
         restored.append(str(rel_path))
