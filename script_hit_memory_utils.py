@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+import logging
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 from zipfile import BadZipFile
@@ -389,7 +390,7 @@ def append_script_hit_row(row: Dict[str, object], base_dir: Optional[Path] = Non
 
 
 def _choose_date_column(df: pd.DataFrame) -> Optional[str]:
-    for col in ("result_date", "date"):
+    for col in ("predict_date", "result_date", "date"):
         if col in df.columns and not df[col].isna().all():
             return col
     return None
@@ -413,19 +414,27 @@ def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFr
         return pd.DataFrame(columns=df.columns), 0
 
     work_df = df.copy()
-    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce").dt.date
+    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce").dt.normalize()
     work_df = work_df.dropna(subset=[date_col])
     if work_df.empty:
         return work_df, 0
 
-    unique_days = sorted(work_df[date_col].dropna().unique())
-    if not unique_days:
-        return work_df.iloc[0:0], 0
+    window_end = work_df[date_col].max().normalize()
+    window_start = window_end - timedelta(days=window_days)
+    filtered = work_df[(work_df[date_col] >= window_start) & (work_df[date_col] <= window_end)]
 
-    selected_days = unique_days[-window_days:]
-    day_set = set(selected_days)
-    filtered = work_df[work_df[date_col].isin(day_set)]
-    used_days = len(day_set)
+    used_days = filtered[date_col].dt.date.nunique()
+    logger = logging.getLogger(__name__)
+    if logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "filter_hits_by_window: days=%s, start=%s, end=%s, rows=%s, column=%s",
+            window_days,
+            window_start.date(),
+            window_end.date(),
+            len(filtered),
+            date_col,
+        )
+
     return filtered, int(used_days)
 
 
