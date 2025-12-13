@@ -2235,7 +2235,15 @@ class PreciseBetEngine:
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = f"bet_plan_master_{target_date.strftime('%Y%m%d')}.xlsx"
         file_path = output_dir / filename
-        
+
+        if not bets_df.empty:
+            if "number" not in bets_df.columns:
+                bets_df["number"] = ""
+            main_mask = bets_df["layer_type"].astype(str).str.upper() == "MAIN"
+            bets_df.loc[main_mask, "number"] = (
+                bets_df.loc[main_mask, "number_or_digit"].apply(lambda x: to_2d_str(x) if is_valid_2d_number(x) else "")
+            )
+
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
             bets_df.to_excel(writer, sheet_name='bets', index=False)
             summary_df.to_excel(writer, sheet_name='summary', index=False)

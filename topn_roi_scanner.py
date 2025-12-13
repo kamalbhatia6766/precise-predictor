@@ -3,18 +3,20 @@ import csv
 import json
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import argparse
 import csv
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import numpy as np
-from quant_stats_core import compute_topn_roi
+import pandas as pd
 import quant_paths
+import quant_data_core
+
+SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 
 MAX_N = 40
 UNIT_STAKE = 10
@@ -24,6 +26,25 @@ NEAR_HIT_WEIGHT = 0.3
 
 def safe(value):
     return float(np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0))
+
+
+def _to_number(value: object) -> Optional[str]:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    try:
+        num = int(str(value).strip()) % 100
+        return f"{num:02d}"
+    except Exception:
+        return None
+
+
+def _normalise_slot(value: object) -> Optional[str]:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    text = str(value).strip().upper()
+    mapping = {"1": "FRBD", "2": "GZBD", "3": "GALI", "4": "DSWR"}
+    normalised = mapping.get(text, text)
+    return normalised if normalised in SLOTS else None
 
 
 def _write_csv(summary: Dict) -> None:
@@ -139,6 +160,74 @@ def _write_best_roi_json(summary: Dict, target_window: int) -> None:
         output_path.write_text(json.dumps(payload, indent=2, default=_json_default))
     except Exception as exc:
         print(f"[topn_roi_scanner] Warning: unable to write topn_roi_summary.json: {exc}")
+
+
+def _load_results_map() -> Dict[date, Dict[str, str]]:
+    df = quant_data_core.load_results_dataframe()
+    if df is None or df.empty:
+        return {}
+
+    df = df.copy()
+    df["DATE"] = pd.to_datetime(df.get("DATE"), errors="coerce")
+    df = df.dropna(subset=["DATE"])
+    results: Dict[date, Dict[str, str]] = {}
+    for _, row in df.iterrows():
+        day = row["DATE"].date()
+        slot_map: Dict[str, str] = results.setdefault(day, {})
+        for slot in SLOTS:
+            num = _to_number(row.get(slot))
+            if num:
+                slot_map[slot] = num
+    return results
+
+
+def _load_bet_plans(max_n: int) -> Dict[date, Dict[str, List[Tuple[str, float]]]]:
+    base_dir = quant_paths.get_base_dir()
+    bet_dir = Path(base_dir) / "predictions" / "bet_engine"
+    plans: Dict[date, Dict[str, List[Tuple[str, float]]]] = {}
+    if not bet_dir.exists():
+        return plans
+
+    for path in bet_dir.glob("bet_plan_master_*.xlsx"):
+        try:
+            date_str = path.stem.replace("bet_plan_master_", "")
+            plan_date = datetime.strptime(date_str, "%Y%m%d").date()
+        except Exception:
+            continue
+
+        try:
+            bets = pd.read_excel(path, sheet_name="bets")
+        except Exception:
+            continue
+
+        slot_map: Dict[str, List[Tuple[str, float]]] = plans.setdefault(plan_date, {})
+        for idx, row in bets.iterrows():
+            layer = str(row.get("layer_type", "")).strip().upper()
+            if layer != "MAIN":
+                continue
+            slot = _normalise_slot(row.get("slot"))
+            if not slot:
+                continue
+            number = _to_number(row.get("number") if "number" in row else row.get("number_or_digit"))
+            if not number:
+                continue
+            try:
+                stake_val = float(row.get("stake", 0) or 0)
+            except Exception:
+                stake_val = 0.0
+            rank_val = row.get("source_rank")
+            rank_num = None
+            try:
+                rank_num = float(rank_val)
+            except Exception:
+                rank_num = None
+            slot_map.setdefault(slot, []).append((number, stake_val, rank_num, idx))
+
+        # Stabilise ordering by explicit rank -> stake -> original index
+        for slot, items in slot_map.items():
+            items.sort(key=lambda t: (t[2] if t[2] is not None else float("inf"), -safe(t[1]), t[3]))
+            slot_map[slot] = [(num, stake) for num, stake, _, _ in items][:max_n]
+    return plans
 
 
 def _write_numbers_summary(summary: Dict) -> None:
@@ -388,6 +477,117 @@ def _write_debug_csv(rows: List[Dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
+def _compute_roi(window_days: int, max_n: int) -> Dict:
+    results_map = _load_results_map()
+    bet_plans = _load_bet_plans(max_n=max_n)
+    matched_dates = sorted(set(results_map.keys()) & set(bet_plans.keys()))
+    if not matched_dates:
+        return {}
+
+    latest = max(matched_dates)
+    cutoff = latest - timedelta(days=window_days - 1)
+    window_dates = [d for d in matched_dates if d >= cutoff]
+
+    per_slot: Dict[str, Dict[str, Dict[int, float]]] = {}
+    per_slot_numbers: Dict[str, Dict[int, Dict[str, int]]] = {}
+    overall_stake: Dict[int, float] = {n: 0.0 for n in range(1, max_n + 1)}
+    overall_return: Dict[int, float] = {n: 0.0 for n in range(1, max_n + 1)}
+    overall_days: Dict[int, int] = {n: 0 for n in range(1, max_n + 1)}
+    overall_hits: Dict[int, int] = {n: 0 for n in range(1, max_n + 1)}
+
+    for slot in SLOTS:
+        per_slot[slot] = {
+            "roi_by_N": {},
+            "days_by_N": {n: 0 for n in range(1, max_n + 1)},
+            "hits_by_N": {n: 0 for n in range(1, max_n + 1)},
+            "near_hits_by_N": {n: 0 for n in range(1, max_n + 1)},
+        }
+        per_slot_numbers[slot] = {n: {} for n in range(1, max_n + 1)}
+
+    for day in window_dates:
+        results = results_map.get(day, {})
+        bets_for_day = bet_plans.get(day, {})
+        for slot in SLOTS:
+            picks = bets_for_day.get(slot, [])
+            if not picks:
+                continue
+            actual = results.get(slot)
+            for n in range(1, max_n + 1):
+                chosen = picks[:n]
+                if not chosen:
+                    continue
+                stake_sum = sum(stake for _, stake in chosen)
+                if stake_sum <= 0:
+                    continue
+                per_slot[slot]["days_by_N"][n] += 1
+                overall_days[n] += 1
+                overall_stake[n] += stake_sum
+
+                hit_return = 0.0
+                if actual:
+                    hit_return = sum(stake for num, stake in chosen if num == actual) * FULL_PAYOUT_PER_UNIT
+                    if hit_return > 0:
+                        per_slot[slot]["hits_by_N"][n] += 1
+                        overall_hits[n] += 1
+
+                per_slot[slot].setdefault("stake_by_N", {n: 0 for n in range(1, max_n + 1)})[n] += stake_sum
+                per_slot[slot].setdefault("return_by_N", {n: 0 for n in range(1, max_n + 1)})[n] += hit_return
+                overall_return[n] += hit_return
+
+                freq_map = per_slot_numbers[slot].setdefault(n, {})
+                for num, _ in chosen:
+                    freq_map[num] = freq_map.get(num, 0) + 1
+
+    for slot, slot_maps in per_slot.items():
+        roi_by_n: Dict[int, float] = {}
+        best_n = None
+        best_roi = None
+        for n in range(1, max_n + 1):
+            stake_val = slot_maps.get("stake_by_N", {}).get(n, 0.0)
+            ret_val = slot_maps.get("return_by_N", {}).get(n, 0.0)
+            roi_val = ((ret_val - stake_val) / stake_val * 100.0) if stake_val else 0.0
+            roi_by_n[n] = safe(roi_val)
+            if best_roi is None or roi_val > best_roi or (roi_val == best_roi and (best_n is None or n < best_n)):
+                best_roi = roi_val
+                best_n = n
+            slot_maps["roi_by_N"][n] = roi_by_n[n]
+        slot_maps["best_N"] = best_n
+        slot_maps["best_roi"] = safe(best_roi) if best_roi is not None else None
+        numbers_by_n: Dict[int, List[str]] = {}
+        for n, freq in per_slot_numbers[slot].items():
+            ranked = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
+            numbers_by_n[n] = [num for num, _ in ranked][:n]
+        slot_maps["numbers_by_N"] = numbers_by_n
+
+    roi_overall: Dict[int, float] = {}
+    best_overall_n = None
+    best_overall_roi = None
+    for n in range(1, max_n + 1):
+        stake_val = overall_stake[n]
+        ret_val = overall_return[n]
+        roi_val = ((ret_val - stake_val) / stake_val * 100.0) if stake_val else 0.0
+        roi_overall[n] = safe(roi_val)
+        if best_overall_roi is None or roi_val > best_overall_roi or (roi_val == best_overall_roi and (best_overall_n is None or n < best_overall_n)):
+            best_overall_roi = roi_val
+            best_overall_n = n
+
+    return {
+        "window_start": min(window_dates),
+        "window_end": latest,
+        "available_days": len(window_dates),
+        "window_days_used": len(window_dates),
+        "overall": {
+            "roi_by_N": roi_overall,
+            "best_N": best_overall_n,
+            "best_roi": safe(best_overall_roi) if best_overall_roi is not None else None,
+            "days_by_N": overall_days,
+            "hits_by_N": overall_hits,
+        },
+        "per_slot": per_slot,
+        "numbers_by_slot": {slot: maps.get("numbers_by_N", {}) for slot, maps in per_slot.items()},
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scan ROI performance across Top-N buckets.")
     parser.add_argument("--window_days", type=int, default=30, help="Window (in days) to evaluate ROI.")
@@ -396,7 +596,7 @@ def main() -> int:
 
     target_window = args.window_days
     max_n = min(max(args.max_n, 1), MAX_N)
-    summary = compute_topn_roi(window_days=target_window, max_n=max_n)
+    summary = _compute_roi(window_days=target_window, max_n=max_n)
     if not summary:
         print("No data available for ROI scan.")
         return 0
@@ -416,17 +616,14 @@ def main() -> int:
     roi_map = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
     display_ns: List[int] = list(range(1, max_n + 1))
     roi_values = [v for v in roi_map.values() if v is not None]
-    min_days_required = 20
-    all_zero_roi = (
-        days_used < min_days_required
-        or not roi_values
-        or all(abs(float(v)) < 1e-9 for v in roi_values)
-    )
+    min_days_required = 15
+    all_zero_roi = days_used < min_days_required or not roi_values
 
     if all_zero_roi:
-        warm_note = "Top-N ROI module warming up – insufficient history for reliable ROI bands."
-        if days_used:
-            warm_note += f" (effective {days_used}d)"
+        warm_note = (
+            "Top-N ROI module warming up – insufficient matched bet/results days. "
+            f"Matched days: {days_used} (need >= {min_days_required})."
+        )
         print(warm_note)
     else:
         for n in display_ns:

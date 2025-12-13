@@ -1157,6 +1157,17 @@ class BetPnLTracker:
         slot_summary_df = pd.DataFrame(summary_data['by_slot'])
         layer_summary_df = pd.DataFrame(summary_data['by_layer'])
         daily_summary_df = pd.DataFrame(summary_data['daily'])
+
+        # Ensure optional validator columns are present on the first sheet
+        alias_map = {
+            'TOTAL_BET': 'total_stake',
+            'TOTAL_RETURN': 'total_return',
+            'NET_PNL': 'pnl',
+            'ROI_%': 'roi_pct',
+        }
+        for alias, source in alias_map.items():
+            if source in slot_pnl_df.columns and alias not in slot_pnl_df.columns:
+                slot_pnl_df[alias] = slot_pnl_df[source]
         
         # Save to Excel
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:

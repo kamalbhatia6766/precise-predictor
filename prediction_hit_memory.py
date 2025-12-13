@@ -18,6 +18,7 @@ from script_hit_memory_utils import (
     get_script_hit_memory_xlsx_path,
     load_script_hit_memory,
     overwrite_script_hit_memory,
+    _normalise_date_column,
 )
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -457,8 +458,15 @@ def _rebuild_script_hit_memory(window_days: int) -> None:
     rows = build_script_hit_rows_for_dates(real_df, predictions_map, dates)
     df = pd.DataFrame(rows)
     df = df.copy()
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "slot" in df.columns:
+        df["slot"] = df["slot"].apply(_normalise_slot_value)
+    if "script_id" in df.columns:
+        df["script_id"] = df["script_id"].astype(str).str.upper()
+    if "script_name" in df.columns:
+        df["script_name"] = df["script_name"].astype(str).str.upper()
+    df, chosen_col, _ = _normalise_date_column(df)
+    if chosen_col and "DATE" not in df.columns and chosen_col in df.columns:
+        df["DATE"] = df[chosen_col]
 
     memory_path = overwrite_script_hit_memory(df, base_dir=base_dir)
     print(f"Built {len(rows)} script-hit rows for {len(dates)} dates and 9 scripts.")
@@ -491,6 +499,15 @@ def _update_latest_script_hit_memory() -> None:
 
     if rows:
         new_df = pd.DataFrame(rows)
+        if "slot" in new_df.columns:
+            new_df["slot"] = new_df["slot"].apply(_normalise_slot_value)
+        if "script_id" in new_df.columns:
+            new_df["script_id"] = new_df["script_id"].astype(str).str.upper()
+        if "script_name" in new_df.columns:
+            new_df["script_name"] = new_df["script_name"].astype(str).str.upper()
+        new_df, chosen_col, _ = _normalise_date_column(new_df)
+        if chosen_col and "DATE" not in new_df.columns and chosen_col in new_df.columns:
+            new_df["DATE"] = new_df[chosen_col]
         combined = pd.concat([memory_df, new_df], ignore_index=True)
         combined = combined.drop_duplicates(
             subset=["result_date", "slot", "script_id", "predicted_number", "source_file"],
