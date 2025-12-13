@@ -12,6 +12,7 @@ import json
 import quant_data_core
 from quant_slot_health import get_slot_health, SlotHealth
 from quant_stats_core import compute_topn_roi, get_quant_stats
+from pattern_intelligence_engine import load_near_miss_boosts
 from utils_2digit import is_valid_2d_number, to_2d_str
 from pattern_helpers import (
     get_families_for_number,
@@ -260,6 +261,7 @@ class PreciseBetEngine:
         self.pattern_regime_summary = {}
         self.topn_policy = self._load_topn_policy()
         self.slot_health_snapshot = self._load_slot_health_snapshot()
+        self.near_miss_boosts = load_near_miss_boosts()
 
     def _load_topn_roi_profile(self, window_days: int = ROI_WINDOW_DAYS_DEFAULT) -> Dict:
         try:
@@ -1275,11 +1277,10 @@ class PreciseBetEngine:
                 quantum_boost += 0.03
                 debug_components['cross_slot_boost'] += 0.03
         
-        if hasattr(self, 'real_numbers_history'):
-            near_miss_boost = self.get_near_miss_boost(number, self.real_numbers_history)
-            quantum_boost += near_miss_boost
-            debug_components['near_miss_boost'] += near_miss_boost
-        
+        near_miss_multiplier, near_miss_score = self.get_near_miss_multiplier(slot, number)
+        if near_miss_multiplier > 1.0:
+            debug_components['near_miss_boost'] = near_miss_multiplier - 1.0
+
         mirror_boost = self.get_mirror_boost(number)
         quantum_boost += mirror_boost
         debug_components['mirror_boost'] += mirror_boost
@@ -1291,14 +1292,32 @@ class PreciseBetEngine:
         quantum_boost = min(quantum_boost, self.MAX_QUANTUM_BOOST)
         debug_components['total_quantum_boost'] = quantum_boost
         boosted_score = base_score * (1.0 + quantum_boost)
+        boosted_score *= near_miss_multiplier
+        try:
+            if near_miss_multiplier > 1.0:
+                print(
+                    f"[NEARMISS BOOST] {slot}: {to_2d_str(number)} base={base_score:.2f}, near_miss_boost={near_miss_score:.2f} → eff={boosted_score:.2f}"
+                )
+        except Exception:
+            pass
         return boosted_score, debug_components
 
-    def get_near_miss_boost(self, number, real_numbers_history):
-        boost = 0.0
-        for real_num in real_numbers_history:
-            if abs(number - real_num) == 1:
-                boost += self.NEAR_MISS_BOOST
-        return min(boost, self.NEAR_MISS_BOOST * 3)
+    def get_near_miss_multiplier(self, slot, number):
+        slot_key = str(slot).upper()
+        num_str = to_2d_str(number)
+        base_score = 0.0
+        try:
+            base_score = float((self.near_miss_boosts or {}).get(slot_key, {}).get(num_str, 0.0) or 0.0)
+        except Exception:
+            base_score = 0.0
+
+        if base_score <= 0 and hasattr(self, 'real_numbers_history'):
+            fallback_hits = sum(1 for real_num in self.real_numbers_history if abs(number - real_num) == 1)
+            base_score = fallback_hits * 0.2
+
+        k = 0.15
+        multiplier = 1.0 + min(base_score * k, 1.0)
+        return multiplier, base_score
 
     def get_mirror_boost(self, number):
         if number < 10:
@@ -1873,6 +1892,14 @@ class PreciseBetEngine:
         topn_profile = self._load_topn_roi_profile(window_days=ROI_WINDOW_DAYS_DEFAULT)
         topn_per_slot = topn_profile.get("per_slot", {}) if isinstance(topn_profile, dict) else {}
 
+        roi_map: Dict[str, float] = {}
+        for slot in self.slots:
+            key = str(slot).upper()
+            snapshot = (self.slot_health_snapshot or {}).get(key, {}) if isinstance(self.slot_health_snapshot, dict) else {}
+            base_health = get_slot_health(key)
+            roi_val = float(snapshot.get("roi_30", snapshot.get("roi_percent", getattr(base_health, "roi_percent", 0.0))) or getattr(base_health, "roi_percent", 0.0))
+            roi_map[key] = roi_val
+
         for slot in self.slots:
             key = str(slot).upper()
             # Always ask quant_slot_health for the latest SlotHealth
@@ -1896,6 +1923,14 @@ class PreciseBetEngine:
                 health.slump = bool(slot_snapshot.get("slump", health.slump))
 
             slot_level = str(slot_snapshot.get("slot_level", "MID")).upper() if isinstance(slot_snapshot, dict) else "MID"
+            roi_val = roi_map.get(key, getattr(health, "roi_percent", 0.0))
+            max_other_roi = max([v for sk, v in roi_map.items() if sk != key], default=0.0)
+            if roi_val < -30.0 and max_other_roi > 50.0:
+                slot_level = "OFF"
+            elif roi_val > 300.0:
+                slot_level = "HIGH"
+            if getattr(health, "slump", False) and slot_level == "HIGH":
+                slot_level = "MID"
             slot_level_map[key] = slot_level
 
             slot_health_map[key] = health

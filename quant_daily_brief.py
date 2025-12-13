@@ -277,6 +277,14 @@ def _load_slot_health_snapshot() -> Dict[str, Dict[str, object]]:
             "slump": bool(record.get("slump", False)),
             "slot_level": str(record.get("slot_level", "MID")).upper(),
         }
+    roi_values = {k: v.get("roi", 0.0) for k, v in snapshot.items()}
+    for slot, entry in snapshot.items():
+        roi_val = entry.get("roi", 0.0)
+        max_other_roi = max([v for k, v in roi_values.items() if k != slot], default=0.0)
+        if roi_val < -30.0 and max_other_roi > 50.0:
+            entry["slot_level"] = "OFF"
+        elif roi_val > 300.0:
+            entry["slot_level"] = "HIGH"
     return snapshot
 
 
