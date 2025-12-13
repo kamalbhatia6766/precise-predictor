@@ -152,9 +152,16 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
     cutoff = latest_date - timedelta(days=window_days - 1)
     window_df = df[df["date"] >= cutoff].copy()
     window_df = window_df.copy()
-    window_df["per_number_stake"] = pd.to_numeric(
-        window_df.get("per_number_stake", UNIT_STAKE), errors="coerce"
-    ).fillna(UNIT_STAKE)
+    # Safe handling for per_number_stake:
+    # - If column exists, coerce to numeric and fill NaN with UNIT_STAKE
+    # - If column missing, use constant UNIT_STAKE for all rows
+    if "per_number_stake" in window_df.columns:
+        window_df["per_number_stake"] = (
+            pd.to_numeric(window_df["per_number_stake"], errors="coerce")
+            .fillna(UNIT_STAKE)
+        )
+    else:
+        window_df["per_number_stake"] = UNIT_STAKE
     window_df["andar_stake"] = pd.to_numeric(window_df.get("andar_stake", 0), errors="coerce").fillna(0)
     window_df["bahar_stake"] = pd.to_numeric(window_df.get("bahar_stake", 0), errors="coerce").fillna(0)
     if window_df.empty:
