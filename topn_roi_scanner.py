@@ -216,9 +216,46 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
     def _ingest_frame(plan_date, df: pd.DataFrame, slot_map: Dict[str, List[Tuple[str, float, Optional[float], int]]]):
         if df is None or df.empty:
             return
-        cols = {str(c).upper(): c for c in df.columns}
-        slot_col = next((cols[k] for k in ["SLOT", "MARKET", "GAME", "SLOT_KEY"] if k in cols), None)
-        layer_col = next((cols[k] for k in ["LAYER_TYPE", "LAYER", "PICK_TYPE", "TYPE"] if k in cols), None)
+        cols: Dict[str, str] = {}
+        for col in df.columns:
+            key = str(col).strip()
+            upper = key.upper()
+            cols[upper] = col
+            cols[upper.replace(" ", "_")] = col
+
+        slot_col = next(
+            (
+                cols[k]
+                for k in [
+                    "SLOT",
+                    "MARKET",
+                    "GAME",
+                    "SLOT_KEY",
+                    "SLOT_NAME",
+                    "MARKET_NAME",
+                    "GAME_NAME",
+                ]
+                if k in cols
+            ),
+            None,
+        )
+        layer_col = next(
+            (
+                cols[k]
+                for k in [
+                    "LAYER_TYPE",
+                    "LAYER",
+                    "PICK_TYPE",
+                    "PICK TYPE",
+                    "TYPE",
+                    "BET_TYPE",
+                    "CATEGORY",
+                    "SIDE",
+                ]
+                if k in cols
+            ),
+            None,
+        )
         stake_cols = [
             cols[k]
             for k in [
@@ -228,10 +265,13 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
                 "BASE_STAKE",
                 "STAKE_PER_NUMBER",
                 "PER_NUMBER_STAKE",
+                "STAKE_PER_NUM",
                 "AMOUNT",
                 "BET",
                 "BET_AMOUNT",
                 "STAKE_AMOUNT",
+                "WAGER",
+                "STAKE_VALUE",
             ]
             if k in cols
         ]
@@ -247,6 +287,10 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
                 "MAIN_NUMBER",
                 "VALUE",
                 "BET_NUMBER",
+                "DIGIT",
+                "SELECTION",
+                "PICKED_NUMBER",
+                "BET_DIGIT",
             ]
             if k in cols
         ]
@@ -261,6 +305,8 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
                 "NUMBER_LIST",
                 "PICKS",
                 "VALUES",
+                "PICKS_LIST",
+                "NUMBERS_LIST",
             ]
             if k in cols
         ]
@@ -784,6 +830,11 @@ def main() -> int:
             f"Bet plan files scanned: {plan_files} | MAIN rows: {main_rows} | "
             f"Fallback unit stakes applied: {fallback_stakes}"
         )
+        print(
+            f"[SCAN DEBUG] files={plan_files} | matched_days={days_used} | "
+            f"main_rows={main_rows} | total_stake=₹{total_stake:,.2f} | "
+            f"total_return=₹{total_return:,.2f} | hits={total_hits}"
+        )
         print(f"No data available for ROI scan{detail}.")
         return 0
 
@@ -832,6 +883,11 @@ def main() -> int:
     )
     if total_stake == 0:
         print("No MAIN stakes detected in bet plans within the window; ROI is undefined.")
+    print(
+        f"[SCAN DEBUG] files={plan_files} | matched_days={days_used} | "
+        f"main_rows={main_rows} | total_stake=₹{total_stake:,.2f} | "
+        f"total_return=₹{total_return:,.2f} | hits={total_hits}"
+    )
 
     per_slot = summary.get("per_slot", {}) or {}
     if not all_zero_roi and per_slot:
