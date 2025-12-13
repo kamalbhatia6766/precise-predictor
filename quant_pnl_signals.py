@@ -114,7 +114,7 @@ def _compute_slot_level(roi_percent: float, roi_topn: float) -> str:
     except Exception:
         roi_policy = 0.0
 
-    if roi_value < -25.0 and roi_policy <= 0:
+    if roi_value < -30.0:
         return "OFF"
     if roi_value < 0 and roi_policy > 0:
         return "LOW"

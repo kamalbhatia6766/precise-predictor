@@ -102,28 +102,85 @@ def _aggregate_metrics(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
     return compute_script_slot_stats(df, group_cols)
 
 
+def _score_block(metrics: pd.DataFrame, label: str) -> pd.DataFrame:
+    """Return a compact score block with a suffix for merging."""
+
+    if metrics is None or metrics.empty:
+        return pd.DataFrame()
+
+    block = metrics.copy()
+    suffix = f"_{label}" if label else ""
+    rename_map = {
+        "score": f"score{suffix}",
+        "total_predictions": f"total_predictions{suffix}",
+        "exact_hits": f"exact_hits{suffix}",
+        "near_hits": f"near_hits{suffix}",
+        "hit_rate_exact": f"hit_rate_exact{suffix}",
+        "near_miss_rate": f"near_miss_rate{suffix}",
+        "blind_miss_rate": f"blind_miss_rate{suffix}",
+    }
+    existing = {k: v for k, v in rename_map.items() if k in block.columns}
+    return block.rename(columns=existing)
+
+
 def get_metrics_table(
     window_days: int = 30,
     base_dir: Optional[Path] = None,
     mode: str = "per_slot",
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     df, date_col = _prepare_memory_df(base_dir=base_dir)
-    window_df, summary = _window_memory(df, date_col, window_days)
-    if window_df.empty:
-        return pd.DataFrame(), summary
+    if df.empty:
+        return pd.DataFrame(), {"requested_window_days": window_days, "total_rows": 0}
 
     group_cols = ["script_id"] if mode == "overall" else ["script_id", "slot"]
-    metrics = _aggregate_metrics(window_df, group_cols)
-    if not metrics.empty and "score" in metrics.columns:
-        metrics["score"] = (metrics["score"] + 0.20) * 100.0
+
+    def _compute_window(label: str, days: Optional[int]) -> Tuple[pd.DataFrame, Dict[str, Any], pd.DataFrame]:
+        if days is None:
+            window_df = df.copy()
+            summary = {
+                "requested_window_days": "FULL",
+                "effective_window_days": int(window_df[date_col].nunique()) if date_col else 0,
+                "available_days": int(window_df[date_col].nunique()) if date_col else 0,
+                "available_days_total": int(window_df[date_col].nunique()) if date_col else 0,
+                "window_start": window_df[date_col].min() if date_col and not window_df.empty else None,
+                "window_end": window_df[date_col].max() if date_col and not window_df.empty else None,
+                "latest_date": window_df[date_col].max() if date_col and not window_df.empty else None,
+                "earliest_date": window_df[date_col].min() if date_col and not window_df.empty else None,
+                "window_earliest_date": window_df[date_col].min() if date_col and not window_df.empty else None,
+                "total_rows": len(window_df),
+            }
+        else:
+            window_df, summary = _window_memory(df, date_col, days)
+        if window_df.empty:
+            return pd.DataFrame(), summary, window_df
+        metrics = _aggregate_metrics(window_df, group_cols)
+        if not metrics.empty and "score" in metrics.columns:
+            metrics["score"] = (metrics["score"] + 0.20) * 100.0
+        return metrics, summary, window_df
+
+    # Base (requested) window for backward compatibility
+    base_metrics, summary, base_window_df = _compute_window(f"{window_days}d", window_days)
+    if base_metrics.empty:
+        return pd.DataFrame(), summary
+
+    window_defs = [("30d", 30), ("60d", 60), ("90d", 90), ("full", None)]
+    window_tables: Dict[str, pd.DataFrame] = {}
+    for label, days in window_defs:
+        metrics, _, _ = _compute_window(label, days if days is None or days > 0 else window_days)
+        if metrics is None or metrics.empty:
+            continue
+        window_tables[label] = _score_block(metrics, label)
+
+    metrics = base_metrics.copy()
+    merge_on = ["script_id"] if mode == "overall" else ["script_id", "slot"]
+    for label, table in window_tables.items():
+        metrics = metrics.merge(table[merge_on + [c for c in table.columns if c not in merge_on]], on=merge_on, how="outer")
 
     if mode == "per_slot":
-        total_predictions = len(window_df)
-        relations = window_df.get("_relation") if "_relation" in window_df.columns else None
-        if relations is None:
-            relations = window_df.apply(
-                lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1
-            )
+        total_predictions = len(base_window_df)
+        relations = base_window_df.get("_relation") if "_relation" in base_window_df.columns else base_window_df.apply(
+            lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1
+        )
         exact_hits = int((relations == "EXACT").sum())
         near_hits = int(
             relations.isin({"MIRROR", "ADJACENT", "DIAGONAL_11", "REVERSE_CARRY", "SAME_DIGIT_COOL"}).sum()
@@ -150,8 +207,29 @@ def get_metrics_table(
             ]
         )
         metrics = pd.concat([global_row, metrics], ignore_index=True)
+
+    for label, _ in window_defs:
+        score_col = f"score_{label}"
+        if score_col in metrics.columns:
+            continue
+        source_col = f"score_{label}" if f"score_{label}" in metrics.columns else None
+        if source_col:
+            metrics.rename(columns={source_col: score_col}, inplace=True)
+
+    # blended score using available window scores (defaults to 0)
+    metrics["score_30d"] = metrics.get("score_30d", 0.0)
+    metrics["score_60d"] = metrics.get("score_60d", metrics.get("score_60", 0.0))
+    metrics["score_90d"] = metrics.get("score_90d", metrics.get("score_90", 0.0))
+    metrics["score_full"] = metrics.get("score_full", 0.0)
+    metrics["blended_score"] = (
+        metrics["score_30d"].fillna(0.0) * 0.4
+        + metrics["score_60d"].fillna(0.0) * 0.3
+        + metrics["score_90d"].fillna(0.0) * 0.2
+        + metrics["score_full"].fillna(0.0) * 0.1
+    )
+
     order_cols = ["script_id", "slot"] if "slot" in metrics.columns else ["script_id"]
-    metrics = metrics.sort_values(order_cols + ["score"], ascending=[True] * len(order_cols) + [False]).reset_index(drop=True)
+    metrics = metrics.sort_values(order_cols + ["blended_score"], ascending=[True] * len(order_cols) + [False]).reset_index(drop=True)
     export_nearhit_topn_analysis(metrics, summary, base_dir=base_dir)
     _export_metrics_bundle(metrics, summary, window_days=window_days, base_dir=base_dir)
     return metrics, summary
@@ -196,19 +274,20 @@ def hero_weak_table(metrics_df: pd.DataFrame, min_predictions: int = 10) -> pd.D
                 "weak_hit_rate_exact": None,
             })
             continue
+        score_col = "blended_score" if "blended_score" in eligible.columns else "score"
         hero_pool = eligible[eligible["exact_hits"] > 0]
         if hero_pool.empty:
             hero_pool = eligible[eligible["near_hits"] > 0]
-        hero_row = hero_pool.sort_values("score", ascending=False).iloc[0] if not hero_pool.empty else None
-        weak_row = eligible.sort_values("score", ascending=True).iloc[0]
+        hero_row = hero_pool.sort_values(score_col, ascending=False).iloc[0] if not hero_pool.empty else None
+        weak_row = eligible.sort_values(score_col, ascending=True).iloc[0]
         rows.append(
             {
                 "slot": slot,
                 "hero_script": hero_row.get("script_id") if hero_row is not None else None,
-                "hero_score": hero_row.get("score") if hero_row is not None else None,
+                "hero_score": hero_row.get(score_col) if hero_row is not None else None,
                 "hero_hit_rate_exact": hero_row.get("hit_rate_exact") if hero_row is not None else None,
                 "weak_script": weak_row.get("script_id"),
-                "weak_score": weak_row.get("score"),
+                "weak_score": weak_row.get(score_col),
                 "weak_hit_rate_exact": weak_row.get("hit_rate_exact"),
             }
         )
@@ -244,15 +323,16 @@ def _export_hero_weak_json(
         pred_counts = pd.to_numeric(eligible.get("total_predictions"), errors="coerce").fillna(0)
         eligible = eligible[pred_counts >= 10]
 
-        hero_row = eligible.loc[eligible["score"].idxmax()] if not eligible.empty else None
-        weak_row = eligible.loc[eligible["score"].idxmin()] if not eligible.empty else None
+        score_col = "blended_score" if "blended_score" in eligible.columns else "score"
+        hero_row = eligible.loc[eligible[score_col].idxmax()] if not eligible.empty else None
+        weak_row = eligible.loc[eligible[score_col].idxmin()] if not eligible.empty else None
 
         overall = {
             "hero_script": hero_row.get("script_id") if hero_row is not None else None,
-            "hero_score": hero_row.get("score") if hero_row is not None else None,
+            "hero_score": hero_row.get(score_col) if hero_row is not None else None,
             "hero_hit_rate_exact": hero_row.get("hit_rate_exact") if hero_row is not None else None,
             "weak_script": weak_row.get("script_id") if weak_row is not None else None,
-            "weak_score": weak_row.get("score") if weak_row is not None else None,
+            "weak_score": weak_row.get(score_col) if weak_row is not None else None,
             "weak_hit_rate_exact": weak_row.get("hit_rate_exact") if weak_row is not None else None,
         }
 
@@ -590,6 +670,11 @@ def _print_metrics(metrics_df: pd.DataFrame, summary: Dict[str, Any], mode: str)
         "near_miss_rate",
         "blind_miss_rate",
         "score",
+        "score_30d",
+        "score_60d",
+        "score_90d",
+        "score_full",
+        "blended_score",
     ]
     existing = [c for c in display_cols if c in metrics_df.columns]
     print(metrics_df[existing].to_string(index=False))
