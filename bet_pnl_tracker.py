@@ -1166,8 +1166,10 @@ class BetPnLTracker:
             'ROI_%': 'roi_pct',
         }
         for alias, source in alias_map.items():
-            if source in slot_pnl_df.columns and alias not in slot_pnl_df.columns:
+            if source in slot_pnl_df.columns:
                 slot_pnl_df[alias] = slot_pnl_df[source]
+            elif alias not in slot_pnl_df.columns:
+                slot_pnl_df[alias] = 0
         
         # Save to Excel
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:

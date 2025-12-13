@@ -949,9 +949,17 @@ class UltimatePredictionEngine:
             
             # Save to performance log
             if not results_df.empty:
+                if "rank" in results_df.columns:
+                    results_df["rank"] = results_df["rank"].fillna(999).astype(int)
+                if "rank_missing_reason" in results_df.columns:
+                    results_df["rank_missing_reason"] = results_df["rank_missing_reason"].fillna("")
                 perf_file = 'logs/performance/ultimate_performance.csv'
                 if os.path.exists(perf_file):
                     existing_df = pd.read_csv(perf_file)
+                    if "rank" in existing_df.columns:
+                        existing_df["rank"] = existing_df["rank"].fillna(999).astype(int)
+                    if "rank_missing_reason" in existing_df.columns:
+                        existing_df["rank_missing_reason"] = existing_df["rank_missing_reason"].fillna("")
                     combined_df = pd.concat([existing_df, results_df], ignore_index=True)
                     combined_df = combined_df.drop_duplicates(subset=['date', 'slot'], keep='last')
                     combined_df.to_csv(perf_file, index=False)

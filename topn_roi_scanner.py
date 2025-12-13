@@ -1,15 +1,9 @@
 import argparse
 import csv
 import json
-from datetime import date, datetime
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional
-
-import argparse
-import csv
-import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -368,9 +362,15 @@ def _prepare_topn_policy_data(summary: Dict, max_n: int) -> Tuple[Dict[str, Dict
     payload["meta"] = {
         "as_of": window_end.isoformat() if hasattr(window_end, "isoformat") else window_end,
         "window_days": window_days,
+        "days_used": summary.get("available_days", window_days),
         "generated": datetime.now().isoformat(),
         "overall_roi_by_N": {str(k): v for k, v in roi_map_all.items()},
     }
+
+    payload["as_of"] = payload["meta"]["as_of"]
+    payload["window_days"] = window_days
+    payload["days_used"] = summary.get("available_days", window_days)
+    payload["roi_by_n_overall"] = {str(k): v for k, v in roi_map_all.items()}
 
     return payload, debug_rows
 
@@ -482,7 +482,7 @@ def _compute_roi(window_days: int, max_n: int) -> Dict:
     bet_plans = _load_bet_plans(max_n=max_n)
     matched_dates = sorted(set(results_map.keys()) & set(bet_plans.keys()))
     if not matched_dates:
-        return {}
+        return {"available_days": 0, "reason": "No matched bet plans vs results"}
 
     latest = max(matched_dates)
     cutoff = latest - timedelta(days=window_days - 1)
@@ -494,6 +494,8 @@ def _compute_roi(window_days: int, max_n: int) -> Dict:
     overall_return: Dict[int, float] = {n: 0.0 for n in range(1, max_n + 1)}
     overall_days: Dict[int, int] = {n: 0 for n in range(1, max_n + 1)}
     overall_hits: Dict[int, int] = {n: 0 for n in range(1, max_n + 1)}
+    total_stake_all = 0.0
+    total_return_all = 0.0
 
     for slot in SLOTS:
         per_slot[slot] = {
@@ -522,6 +524,7 @@ def _compute_roi(window_days: int, max_n: int) -> Dict:
                 per_slot[slot]["days_by_N"][n] += 1
                 overall_days[n] += 1
                 overall_stake[n] += stake_sum
+                total_stake_all += stake_sum
 
                 hit_return = 0.0
                 if actual:
@@ -533,6 +536,7 @@ def _compute_roi(window_days: int, max_n: int) -> Dict:
                 per_slot[slot].setdefault("stake_by_N", {n: 0 for n in range(1, max_n + 1)})[n] += stake_sum
                 per_slot[slot].setdefault("return_by_N", {n: 0 for n in range(1, max_n + 1)})[n] += hit_return
                 overall_return[n] += hit_return
+                total_return_all += hit_return
 
                 freq_map = per_slot_numbers[slot].setdefault(n, {})
                 for num, _ in chosen:
@@ -576,6 +580,7 @@ def _compute_roi(window_days: int, max_n: int) -> Dict:
         "window_end": latest,
         "available_days": len(window_dates),
         "window_days_used": len(window_dates),
+        "totals": {"stake": total_stake_all, "return": total_return_all, "hits": sum(overall_hits.values())},
         "overall": {
             "roi_by_N": roi_overall,
             "best_N": best_overall_n,
@@ -599,6 +604,17 @@ def main() -> int:
     summary = _compute_roi(window_days=target_window, max_n=max_n)
     if not summary:
         print("No data available for ROI scan.")
+        return 0
+
+    reason = summary.get("reason")
+    days_used = summary.get("available_days", 0)
+    totals = summary.get("totals", {}) if isinstance(summary, dict) else {}
+    total_stake = safe(totals.get("stake", 0.0))
+    total_return = safe(totals.get("return", 0.0))
+    total_hits = int(totals.get("hits", 0) or 0)
+    if days_used == 0:
+        detail = f" ({reason})" if reason else ""
+        print(f"No data available for ROI scan{detail}.")
         return 0
 
     _write_csv(summary)
@@ -631,6 +647,13 @@ def main() -> int:
             if roi_val is None:
                 continue
             print(f"N={n}  → ROI = {safe(roi_val):+.1f}%")
+
+    print(
+        f"Matched days: {days_used} | Total stake: ₹{total_stake:,.2f} | "
+        f"Total return: ₹{total_return:,.2f} | Hits captured: {total_hits}"
+    )
+    if total_stake == 0:
+        print("No MAIN stakes detected in bet plans within the window; ROI is undefined.")
 
     per_slot = summary.get("per_slot", {}) or {}
     if not all_zero_roi and per_slot:
