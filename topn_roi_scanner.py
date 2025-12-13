@@ -396,14 +396,20 @@ def main() -> int:
     overall = summary.get("overall", {}) or {}
     roi_map = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
     display_ns: List[int] = list(range(1, max_n + 1))
-    for n in display_ns:
-        roi_val = roi_map.get(n)
-        if roi_val is None:
-            continue
-        print(f"N={n}  → ROI = {safe(roi_val):+.1f}%")
+    roi_values = [v for v in roi_map.values() if v is not None]
+    all_zero_roi = not roi_values or all(abs(float(v)) < 1e-9 for v in roi_values)
+
+    if all_zero_roi:
+        print("Top-N ROI module warming up – all bands ROI≈0.0; no detailed breakdown.")
+    else:
+        for n in display_ns:
+            roi_val = roi_map.get(n)
+            if roi_val is None:
+                continue
+            print(f"N={n}  → ROI = {safe(roi_val):+.1f}%")
 
     per_slot = summary.get("per_slot", {}) or {}
-    if per_slot:
+    if not all_zero_roi and per_slot:
         print(f"\nPer-slot ROI ({effective_label}):")
         for slot, n_map in sorted(per_slot.items()):
             roi_by_n = n_map.get("roi_by_N", {}) if isinstance(n_map, dict) else {}
@@ -432,7 +438,7 @@ def main() -> int:
 
     best_n = overall.get("best_N") if isinstance(overall, dict) else None
     best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
-    if best_n is not None:
+    if not all_zero_roi and best_n is not None:
         print(f"Best N = {best_n} with ROI = {best_roi:+.1f}%")
     _write_best_roi_json(summary, target_window=target_window)
     _write_numbers_summary(summary)

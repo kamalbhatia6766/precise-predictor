@@ -253,6 +253,7 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
     roi_by_n = overall_maps.get("roi", {})
     best_N = _pick_best_n(roi_by_n)
     best_roi = roi_by_n.get(best_N) if best_N is not None else None
+    overall_roi = float(best_roi) if best_roi is not None else 0.0
 
     numbers_by_slot = _collect_top_numbers(window_df, max_n=max_n)
 
@@ -280,6 +281,8 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
         "window_start": window_start,
         "window_end": window_end,
         "available_days": available_days,
+        "n_days_effective": int(available_days),
+        "overall_roi": overall_roi,
         "overall": {
             "best_N": best_N,
             "best_roi": best_roi,

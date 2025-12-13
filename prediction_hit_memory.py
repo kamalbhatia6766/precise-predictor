@@ -500,7 +500,15 @@ def _update_latest_script_hit_memory() -> None:
         if "date" in combined.columns:
             combined["date"] = pd.to_datetime(combined["date"], errors="coerce")
         memory_path = overwrite_script_hit_memory(combined, base_dir=base_dir)
-        print(f"Appended {len(rows)} rows for dates {dates_to_update} to {memory_path}")
+        if dates_to_update:
+            first_date = min(dates_to_update)
+            last_date = max(dates_to_update)
+            print(
+                f"Appended {len(rows)} rows for dates "
+                f"{first_date} → {last_date} to {memory_path}"
+            )
+        else:
+            print(f"Appended {len(rows)} rows to {memory_path}")
     else:
         print("No new script hit rows to append (no predictions matched new dates).")
 
