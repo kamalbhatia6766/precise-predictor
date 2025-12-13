@@ -41,6 +41,37 @@ def _normalise_slot(value: object) -> Optional[str]:
     return normalised if normalised in SLOTS else None
 
 
+def _parse_number_list(value: object) -> List[str]:
+    numbers: List[str] = []
+    if value is None:
+        return numbers
+    if isinstance(value, (list, tuple, set)):
+        candidates = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return numbers
+        for sep in [",", " ", "|", "/", "\n"]:
+            text = text.replace(sep, ",")
+        candidates = text.split(",")
+    for raw in candidates:
+        num = _to_number(raw)
+        if num:
+            numbers.append(num)
+    return numbers
+
+
+def _coerce_stake(value: object, fallback_counter: Dict[str, int]) -> float:
+    try:
+        stake_val = float(value)
+        if stake_val > 0:
+            return stake_val
+    except Exception:
+        pass
+    fallback_counter["fallback_stakes"] = fallback_counter.get("fallback_stakes", 0) + 1
+    return float(UNIT_STAKE)
+
+
 def _write_csv(summary: Dict) -> None:
     output_path = Path("logs/performance/topn_roi_summary.csv")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,12 +206,92 @@ def _load_results_map() -> Dict[date, Dict[str, str]]:
     return results
 
 
-def _load_bet_plans(max_n: int) -> Dict[date, Dict[str, List[Tuple[str, float]]]]:
+def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, float]]]], Dict[str, int]]:
     base_dir = quant_paths.get_base_dir()
     bet_dir = Path(base_dir) / "predictions" / "bet_engine"
     plans: Dict[date, Dict[str, List[Tuple[str, float]]]] = {}
+    meta: Dict[str, int] = {"files": 0, "main_rows": 0, "fallback_stakes": 0}
     if not bet_dir.exists():
-        return plans
+        return plans, meta
+
+    def _ingest_frame(plan_date, df: pd.DataFrame, slot_map: Dict[str, List[Tuple[str, float, Optional[float], int]]]):
+        if df is None or df.empty:
+            return
+        cols = {str(c).upper(): c for c in df.columns}
+        slot_col = next((cols[k] for k in ["SLOT", "MARKET", "GAME", "SLOT_KEY"] if k in cols), None)
+        layer_col = next((cols[k] for k in ["LAYER_TYPE", "LAYER", "PICK_TYPE", "TYPE"] if k in cols), None)
+        stake_cols = [cols[k] for k in ["STAKE", "STAKE_MAIN", "MAIN_STAKE", "BASE_STAKE", "STAKE_PER_NUMBER", "PER_NUMBER_STAKE"] if k in cols]
+        number_cols = [cols[k] for k in ["NUMBER", "NUMBER_OR_DIGIT", "NUM", "PREDICTED_NUMBER", "PREDICTED", "PICK", "MAIN_NUMBER"] if k in cols]
+        list_cols = [cols[k] for k in ["MAIN_NUMBERS", "PREDICTIONS", "PREDICTED_NUMBERS", "NUMBERS", "EXACTS"] if k in cols]
+        rank_cols = [cols[k] for k in ["SOURCE_RANK", "RANK", "RANK_MAIN"] if k in cols]
+
+        if slot_col is not None:
+            for idx, row in df.iterrows():
+                layer_val = str(row.get(layer_col, "MAIN") if layer_col else "MAIN").strip().upper()
+                if layer_col and "MAIN" not in layer_val and "EXACT" not in layer_val:
+                    continue
+                slot = _normalise_slot(row.get(slot_col))
+                if not slot:
+                    continue
+
+                stake_val = None
+                for col in stake_cols:
+                    stake_val = row.get(col)
+                    if pd.notna(stake_val):
+                        break
+                stake_final = _coerce_stake(stake_val, meta)
+
+                numbers: List[str] = []
+                for col in number_cols:
+                    num = _to_number(row.get(col))
+                    if num:
+                        numbers.append(num)
+                for col in list_cols:
+                    numbers.extend(_parse_number_list(row.get(col)))
+                if not numbers:
+                    continue
+
+                rank_val = None
+                for col in rank_cols:
+                    rank_val = row.get(col)
+                    if pd.notna(rank_val):
+                        break
+                try:
+                    rank_val = float(rank_val)
+                except Exception:
+                    rank_val = None
+
+                seen = set()
+                ordered_numbers = []
+                for n in numbers:
+                    if n not in seen:
+                        seen.add(n)
+                        ordered_numbers.append(n)
+
+                for order_idx, num in enumerate(ordered_numbers):
+                    slot_map.setdefault(slot, []).append((num, stake_final, rank_val, idx * 100 + order_idx))
+                    meta["main_rows"] += 1
+
+        # Wide-format fallback: columns named after slots with comma-separated values
+        slot_columns = [cols[s] for s in SLOTS if s in cols]
+        if not slot_columns:
+            return
+        for idx, row in df.iterrows():
+            stake_val = None
+            for col in stake_cols:
+                stake_val = row.get(col)
+                if pd.notna(stake_val):
+                    break
+            stake_final = _coerce_stake(stake_val, meta)
+            for slot in SLOTS:
+                if slot not in cols:
+                    continue
+                numbers = _parse_number_list(row.get(cols[slot]))
+                if not numbers:
+                    continue
+                for order_idx, num in enumerate(numbers):
+                    slot_map.setdefault(slot, []).append((num, stake_final, None, idx * 100 + order_idx))
+                    meta["main_rows"] += 1
 
     for path in bet_dir.glob("bet_plan_master_*.xlsx"):
         try:
@@ -189,39 +300,29 @@ def _load_bet_plans(max_n: int) -> Dict[date, Dict[str, List[Tuple[str, float]]]
         except Exception:
             continue
 
+        meta["files"] += 1
+        slot_map: Dict[str, List[Tuple[str, float]]] = plans.setdefault(plan_date, {})
         try:
-            bets = pd.read_excel(path, sheet_name="bets")
+            xls = pd.ExcelFile(path)
+            sheet_names = [name for name in ["bets", "BETS"] if name in xls.sheet_names]
+            if not sheet_names:
+                sheet_names = xls.sheet_names
+            temp_map: Dict[str, List[Tuple[str, float, Optional[float], int]]] = {}
+            for sheet in sheet_names:
+                try:
+                    frame = xls.parse(sheet)
+                except Exception:
+                    continue
+                _ingest_frame(plan_date, frame, temp_map)
+
+            # Stabilise ordering by explicit rank -> stake -> original index
+            for slot, items in temp_map.items():
+                items.sort(key=lambda t: (t[2] if t[2] is not None else float("inf"), -safe(t[1]), t[3]))
+                slot_map[slot] = [(num, stake) for num, stake, _, _ in items][:max_n]
         except Exception:
             continue
 
-        slot_map: Dict[str, List[Tuple[str, float]]] = plans.setdefault(plan_date, {})
-        for idx, row in bets.iterrows():
-            layer = str(row.get("layer_type", "")).strip().upper()
-            if layer != "MAIN":
-                continue
-            slot = _normalise_slot(row.get("slot"))
-            if not slot:
-                continue
-            number = _to_number(row.get("number") if "number" in row else row.get("number_or_digit"))
-            if not number:
-                continue
-            try:
-                stake_val = float(row.get("stake", 0) or 0)
-            except Exception:
-                stake_val = 0.0
-            rank_val = row.get("source_rank")
-            rank_num = None
-            try:
-                rank_num = float(rank_val)
-            except Exception:
-                rank_num = None
-            slot_map.setdefault(slot, []).append((number, stake_val, rank_num, idx))
-
-        # Stabilise ordering by explicit rank -> stake -> original index
-        for slot, items in slot_map.items():
-            items.sort(key=lambda t: (t[2] if t[2] is not None else float("inf"), -safe(t[1]), t[3]))
-            slot_map[slot] = [(num, stake) for num, stake, _, _ in items][:max_n]
-    return plans
+    return plans, meta
 
 
 def _write_numbers_summary(summary: Dict) -> None:
@@ -479,10 +580,16 @@ def _write_debug_csv(rows: List[Dict[str, object]]) -> None:
 
 def _compute_roi(window_days: int, max_n: int) -> Dict:
     results_map = _load_results_map()
-    bet_plans = _load_bet_plans(max_n=max_n)
+    bet_plans, bet_meta = _load_bet_plans(max_n=max_n)
     matched_dates = sorted(set(results_map.keys()) & set(bet_plans.keys()))
     if not matched_dates:
-        return {"available_days": 0, "reason": "No matched bet plans vs results"}
+        return {
+            "available_days": 0,
+            "reason": "No matched bet plans vs results",
+            "main_rows_detected": bet_meta.get("main_rows", 0),
+            "fallback_stakes": bet_meta.get("fallback_stakes", 0),
+            "plan_files": bet_meta.get("files", 0),
+        }
 
     latest = max(matched_dates)
     cutoff = latest - timedelta(days=window_days - 1)
@@ -581,6 +688,9 @@ def _compute_roi(window_days: int, max_n: int) -> Dict:
         "available_days": len(window_dates),
         "window_days_used": len(window_dates),
         "totals": {"stake": total_stake_all, "return": total_return_all, "hits": sum(overall_hits.values())},
+        "main_rows_detected": bet_meta.get("main_rows", 0),
+        "fallback_stakes": bet_meta.get("fallback_stakes", 0),
+        "plan_files": bet_meta.get("files", 0),
         "overall": {
             "roi_by_N": roi_overall,
             "best_N": best_overall_n,
@@ -648,9 +758,17 @@ def main() -> int:
                 continue
             print(f"N={n}  → ROI = {safe(roi_val):+.1f}%")
 
+    main_rows = int(summary.get("main_rows_detected", 0) or 0)
+    fallback_stakes = int(summary.get("fallback_stakes", 0) or 0)
+    plan_files = int(summary.get("plan_files", 0) or 0)
+
     print(
         f"Matched days: {days_used} | Total stake: ₹{total_stake:,.2f} | "
-        f"Total return: ₹{total_return:,.2f} | Hits captured: {total_hits}"
+        f"Total return: ₹{total_return:,.2f} | Hits captured: {total_hits} | "
+        f"MAIN rows: {main_rows}"
+    )
+    print(
+        f"Bet plan files scanned: {plan_files} | Fallback unit stakes applied: {fallback_stakes}"
     )
     if total_stake == 0:
         print("No MAIN stakes detected in bet plans within the window; ROI is undefined.")
