@@ -121,9 +121,13 @@ def _write_profile_json(summary: Dict, target_window: int) -> None:
 
     payload = {
         "window_days": target_window,
+        "available_days": summary.get("available_days"),
         "best_N_overall": overall.get("best_N"),
         "overall_best_N": overall.get("best_N"),
         "best_roi_overall": overall.get("best_roi"),
+        "main_rows_detected": summary.get("main_rows_detected"),
+        "plan_files": summary.get("plan_files"),
+        "fallback_stakes": summary.get("fallback_stakes"),
         "per_N_roi": {str(k): v for k, v in roi_by_n.items()},
         "per_slot_best_N": per_slot_best,
         "best_n_per_slot": per_slot_best,

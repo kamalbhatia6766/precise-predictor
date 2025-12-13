@@ -24,6 +24,8 @@ import quant_learning_core
 from quant_core import pattern_core
 from quant_core.config_core import PACK_164950_FAMILY, S40 as S40_SET
 from quant_stats_core import get_quant_stats
+from progress_tracker import capture_progress_status, get_run_anchor
+from snapshot_manager import create_snapshot
 from script_hit_metrics import (
     compute_pack_hit_stats,
     get_metrics_table,
@@ -1570,6 +1572,18 @@ def main() -> int:
             pass
 
     build_brief(mode, bet_date, target_date, dry_run=args.dry_run)
+
+    try:
+        run_anchor = get_run_anchor(default=bet_date.isoformat())
+        capture_progress_status(target_date=target_date, run_anchor=run_anchor)
+    except Exception as exc:  # pragma: no cover - logging only
+        print(f"⚠️ Unable to record progress gates: {exc}")
+
+    try:
+        snapshot_dir = create_snapshot()
+        print(f"📦 Snapshot saved to {snapshot_dir}")
+    except Exception as exc:  # pragma: no cover - logging only
+        print(f"⚠️ Unable to create snapshot: {exc}")
     return 0
 
 
