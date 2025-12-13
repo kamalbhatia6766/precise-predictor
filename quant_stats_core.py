@@ -162,8 +162,6 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
         )
     else:
         window_df["per_number_stake"] = UNIT_STAKE
-    window_df["andar_stake"] = pd.to_numeric(window_df.get("andar_stake", 0), errors="coerce").fillna(0)
-    window_df["bahar_stake"] = pd.to_numeric(window_df.get("bahar_stake", 0), errors="coerce").fillna(0)
     if window_df.empty:
         return {}
 
