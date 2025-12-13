@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import subprocess
 import sys
 from datetime import timedelta
@@ -14,6 +15,9 @@ import pandas as pd
 import quant_paths
 from script_hit_memory_utils import classify_relation, filter_hits_by_window, load_script_hit_memory
 import pattern_packs
+
+
+logger = logging.getLogger(__name__)
 
 
 NEAR_HIT_TYPES = {
@@ -149,8 +153,10 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
     window_df = df[df["date"] >= cutoff].copy()
     window_df = window_df.copy()
     window_df["per_number_stake"] = pd.to_numeric(
-        window_df.get("per_number_stake", UNIT_STAKE), errors="ignore"
-    )
+        window_df.get("per_number_stake", UNIT_STAKE), errors="coerce"
+    ).fillna(UNIT_STAKE)
+    window_df["andar_stake"] = pd.to_numeric(window_df.get("andar_stake", 0), errors="coerce").fillna(0)
+    window_df["bahar_stake"] = pd.to_numeric(window_df.get("bahar_stake", 0), errors="coerce").fillna(0)
     if window_df.empty:
         return {}
 
@@ -158,9 +164,18 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
     window_end = window_df["date"].max().date()
     available_days = window_df["date"].dt.date.nunique()
 
+    if logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "Top-N ROI window: requested=%s start=%s end=%s rows=%s",
+            window_days,
+            window_start,
+            window_end,
+            len(window_df),
+        )
+
     topn_flags = {n: f"hit_top{n}" for n in range(1, max_n + 1)}
 
-    def _roi_for_subset(subset: pd.DataFrame) -> Dict[str, Dict[int, float]]:
+    def _roi_for_subset(subset: pd.DataFrame, label: str) -> Dict[str, Dict[int, float]]:
         roi_map: Dict[int, float] = {}
         days_map: Dict[int, float] = {}
         hits_map: Dict[int, float] = {}
@@ -185,11 +200,10 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
                 continue
 
             valid_mask = raw_flags.notna() if hasattr(raw_flags, "notna") else None
-            stake_components = per_number_stake * n + andar_stake + bahar_stake
+            stake_components = (per_number_stake * n) + andar_stake + bahar_stake
             if valid_mask is not None:
-                total_stake = float(stake_components.where(valid_mask, 0).sum())
-            else:
-                total_stake = float(stake_components.sum())
+                stake_components = stake_components.where(valid_mask, 0)
+            total_stake = float(stake_components.sum())
 
             hits = 0
             near_hits = 0
@@ -205,20 +219,32 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
                         candidate_mask = near_mask
                         if hasattr(raw_flags, "notna"):
                             candidate_mask = candidate_mask & raw_flags.notna()
+                        candidate_mask = candidate_mask.fillna(False)
                         near_hits = int(candidate_mask.sum())
                         near_return = float((candidate_mask.astype(int) * payout_per_row * NEAR_HIT_WEIGHT).sum())
                     except Exception:
                         near_hits = 0
                         near_return = 0.0
 
-            roi = ((total_return_exact - total_stake) / total_stake * 100.0) if total_stake else 0.0
+            total_return = total_return_exact + near_return
+            roi = ((total_return - total_stake) / total_stake * 100.0) if total_stake else 0.0
             roi_map[n] = safe(roi)
             days_map[n] = safe(valid_mask.sum() if valid_mask is not None else len(raw_flags))
             hits_map[n] = safe(hits)
             near_hits_map[n] = safe(near_hits)
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    "Top-N ROI band %s N=%s stake=%.2f return=%.2f hits=%s near_hits=%s",
+                    label,
+                    n,
+                    total_stake,
+                    total_return,
+                    hits,
+                    near_hits,
+                )
         return {"roi": roi_map, "days": days_map, "hits": hits_map, "near_hits": near_hits_map}
 
-    overall_maps = _roi_for_subset(window_df)
+    overall_maps = _roi_for_subset(window_df, label="overall")
     roi_by_n = overall_maps.get("roi", {})
     best_N = _pick_best_n(roi_by_n)
     best_roi = roi_by_n.get(best_N) if best_N is not None else None
@@ -227,7 +253,7 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
 
     per_slot: Dict[str, Dict[str, Dict[int, float]]] = {}
     for slot, slot_df in window_df.groupby("slot"):
-        slot_maps = _roi_for_subset(slot_df)
+        slot_maps = _roi_for_subset(slot_df, label=f"slot {slot}")
         slot_roi = slot_maps.get("roi", {})
         slot_best_n = _pick_best_n(slot_roi)
         slot_best_roi = slot_roi.get(slot_best_n) if slot_best_n is not None else None

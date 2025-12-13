@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+import logging
 
 import pandas as pd
 
@@ -20,7 +21,10 @@ def _load_windowed_memory(window_days: int, base_dir: Optional[Path] = None) -> 
         return pd.DataFrame()
 
     df = df.copy()
+    df["predict_date"] = pd.to_datetime(df.get("predict_date"), errors="coerce").dt.normalize()
     df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce").dt.normalize()
+    if "result_date" in df.columns:
+        df["result_date"] = df["result_date"].fillna(df.get("predict_date"))
     df = df.dropna(subset=["result_date"])
     if df.empty:
         return df
@@ -33,6 +37,21 @@ def _load_windowed_memory(window_days: int, base_dir: Optional[Path] = None) -> 
         return df
 
     df["result_date"] = pd.to_datetime(df["result_date"], errors="coerce").dt.normalize()
+
+    logger = logging.getLogger(__name__)
+    if logger.isEnabledFor(logging.INFO):
+        try:
+            window_start = df["result_date"].min().date() if "result_date" in df.columns else None
+            window_end = df["result_date"].max().date() if "result_date" in df.columns else None
+            logger.info(
+                "pattern_metrics_core window: days=%s, start=%s, end=%s, rows=%s",
+                window_days,
+                window_start,
+                window_end,
+                len(df),
+            )
+        except Exception:
+            pass
 
     def _coerce_bool(series: pd.Series, default: bool = False) -> pd.Series:
         filled = series.copy()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import List, Optional
 from pathlib import Path
@@ -25,6 +26,7 @@ class PatternIntelligenceEnhanced:
     def __init__(self, window_days: int = WINDOW_DAYS) -> None:
         self.base_dir = Path(__file__).resolve().parent
         self.window_days = window_days
+        self.logger = logging.getLogger(__name__)
 
     def summarise_scripts(self, df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
         summaries: Dict[str, Dict[str, float]] = {}
@@ -89,6 +91,30 @@ class PatternIntelligenceEnhanced:
         df, base_summary = compute_pattern_metrics(window_days=self.window_days, base_dir=self.base_dir)
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+        date_col = None
+        for candidate in ("result_date", "predict_date", "date"):
+            if candidate in df.columns:
+                date_col = candidate
+                break
+        if date_col:
+            try:
+                date_series = pd.to_datetime(df[date_col], errors="coerce")
+                window_start = date_series.min().date() if not date_series.dropna().empty else None
+                window_end = date_series.max().date() if not date_series.dropna().empty else None
+                if self.logger.isEnabledFor(logging.INFO):
+                    self.logger.info(
+                        "[PatternIntel+] window=%sd start=%s end=%s rows=%s",
+                        self.window_days,
+                        window_start,
+                        window_end,
+                        len(df),
+                    )
+                print(
+                    f"[PatternIntel+] Window slice: days={self.window_days}, start={window_start}, end={window_end}, rows={len(df)}"
+                )
+            except Exception:
+                pass
         if df.empty:
             print(
                 f"[PatternIntel+] Not enough hit data in the last {self.window_days} days (found 0 rows). Skipping enhanced analysis."
