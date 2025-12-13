@@ -19,7 +19,6 @@ warnings.filterwarnings(
 
 
 SCRIPT_HIT_MEMORY_HEADERS: List[str] = [
-    "DATE",
     "date",
     "result_date",
     "real_slot",
@@ -105,56 +104,6 @@ def _parse_excel_date_series(series: Optional[pd.Series]) -> pd.Series:
         return pd.to_datetime(series, errors="coerce", unit="D", origin="1899-12-30")
     except Exception:
         return pd.to_datetime(series, errors="coerce")
-
-
-def _normalise_date_column(df: pd.DataFrame, candidates: Optional[Iterable[str]] = None) -> Tuple[pd.DataFrame, Optional[str], Optional[pd.Timestamp]]:
-    """Return a copy of ``df`` with a canonical date column parsed.
-
-    The normaliser is intentionally strict because downstream modules rely on
-    non-empty windows. It searches candidate columns in priority order,
-    attempts robust parsing (including ``datetime.date`` objects), drops NaT
-    rows, and returns the chosen column name alongside the latest timestamp.
-    A short diagnostic is printed if parsing fails completely so callers don't
-    silently proceed with an empty frame.
-    """
-
-    if df is None or df.empty:
-        return pd.DataFrame(columns=df.columns if df is not None else []), None, None
-
-    priority = list(candidates) if candidates else ["DATE", "result_date", "date", "predict_date"]
-    work_df = df.copy()
-    chosen_col: Optional[str] = None
-
-    for col in priority:
-        if col in work_df.columns:
-            chosen_col = col
-            break
-
-    if chosen_col is None:
-        return pd.DataFrame(columns=df.columns), None, None
-
-    series = work_df[chosen_col]
-    parsed = pd.to_datetime(series, errors="coerce")
-    if parsed.isna().all() and series.dtype == "O":
-        parsed = pd.to_datetime(series.astype(str), errors="coerce")
-    if parsed.isna().all():
-        parsed = _parse_excel_date_series(series)
-
-    work_df[chosen_col] = parsed
-    work_df["DATE"] = work_df[chosen_col]
-    work_df = work_df.dropna(subset=[chosen_col])
-
-    latest = work_df[chosen_col].max() if not work_df.empty else pd.NaT
-    if pd.isna(latest):
-        diag_counts = {}
-        for cand in priority:
-            if cand in df.columns:
-                cand_parsed = pd.to_datetime(df[cand], errors="coerce")
-                diag_counts[cand] = int(cand_parsed.isna().sum())
-        print(f"⚠️  DATE normalisation failed; NaT counts: {diag_counts}")
-        return pd.DataFrame(columns=df.columns), chosen_col, latest
-
-    return work_df, chosen_col, latest
 
 
 def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -328,17 +277,10 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in date_cols:
         if col in out.columns:
             out[col] = pd.to_datetime(out[col], errors="coerce")
-
-    # Preserve an uppercase DATE column for downstream consumers that expect a
-    # datetime64[ns] series while still keeping the original lower-case date
-    # fields for backwards compatibility.
-    canonical_date = out.get("result_date") if "result_date" in out.columns else out.get("date")
-    out["DATE"] = canonical_date
-
-    out = out.dropna(subset=["DATE", "result_date", "date"], how="all")
+    out = out.dropna(subset=["predict_date", "result_date"], how="any")
     for col in ("predict_date", "result_date"):
         if col in out.columns:
-            out[col] = pd.to_datetime(out[col], errors="coerce").dt.date
+            out[col] = out[col].dt.date
 
     return out[SCRIPT_HIT_MEMORY_HEADERS]
 
@@ -366,19 +308,8 @@ def ensure_script_hit_memory_exists(base_dir: Optional[Path] = None) -> Path:
     return csv_path
 
 
-def load_script_hit_memory(
-    base_dir: Optional[Path] = None, return_diag: bool = False
-) -> pd.DataFrame:
-    """Load script hit memory, preferring the Excel source of truth.
-
-    The loader is defensive and consistent across the stack:
-    - Always reads logs/performance/script_hit_memory.xlsx (or CSV fallback).
-    - Picks the first sheet that contains a DATE column, slot, script, and a
-      hit indicator column.
-    - Normalises columns into a canonical schema and parses DATE.
-    - Drops rows with invalid/NaT DATE values.
-    - Optionally returns a diagnostic string when the resulting frame is empty.
-    """
+def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
+    """Load script hit memory, preferring the Excel source of truth."""
 
     base = _resolve_base_dir(base_dir)
     xlsx_path = get_script_hit_memory_xlsx_path(base_dir=base)
@@ -387,28 +318,9 @@ def load_script_hit_memory(
     df: Optional[pd.DataFrame] = None
     excel_error: Optional[Exception] = None
 
-    def _sheet_has_required_columns(columns: Iterable[str]) -> bool:
-        normalised = {str(c).strip().lower().replace(" ", "") for c in columns}
-        has_date = any(key in normalised for key in ("date", "result_date", "predict_date", "DATE".lower()))
-        has_slot = any(key in normalised for key in ("slot", "slotname", "slot_id", "realslot"))
-        has_script = any(key in normalised for key in ("script", "scriptid", "script_name"))
-        hit_keys = ("hit_type", "hittype", "hitflag", "hit", "is_exact_hit", "isnearhit", "result")
-        has_hit = any(key in normalised for key in hit_keys)
-        return bool(has_date and has_slot and has_script and has_hit)
-
     if xlsx_path.exists():
         try:
-            xls = pd.ExcelFile(xlsx_path, engine="openpyxl")
-            chosen_sheet = None
-            for sheet in xls.sheet_names:
-                preview = xls.parse(sheet_name=sheet, nrows=1)
-                if _sheet_has_required_columns(preview.columns):
-                    chosen_sheet = sheet
-                    break
-            if chosen_sheet is None and xls.sheet_names:
-                chosen_sheet = xls.sheet_names[0]
-            if chosen_sheet:
-                df = xls.parse(sheet_name=chosen_sheet, dtype=str)
+            df = pd.read_excel(xlsx_path, dtype=str, engine="openpyxl")
         except (BadZipFile, InvalidFileException, ValueError) as exc:
             excel_error = exc
 
@@ -416,7 +328,7 @@ def load_script_hit_memory(
         df = pd.read_csv(csv_path, dtype=str)
 
     if df is None:
-        return (pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS), "script_hit_memory not found") if return_diag else pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+        return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
 
     df = _align_columns(df)
 
@@ -435,10 +347,6 @@ def load_script_hit_memory(
         return lowered.isin({"true", "1", "yes", "y"})
 
     df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
-    df["DATE"] = pd.to_datetime(df.get("DATE"), errors="coerce")
-    if "DATE" in df.columns:
-        df["DATE"] = df["DATE"].where(df["DATE"].notna(), df["result_date"])
-    df = df.dropna(subset=["DATE"])
     df["slot"] = df.get("slot").astype(str)
     df["script_id"] = df.get("script_id").astype(str)
     df["HIT_TYPE"] = df.get("hit_type").astype(str).str.upper()
@@ -449,31 +357,7 @@ def load_script_hit_memory(
     df["is_near_miss"] = _to_bool(df.get("is_near_miss", False)) | df["HIT_TYPE"].isin(
         ["MIRROR", "NEIGHBOR", "CROSS_SLOT", "CROSS_DAY"]
     )
-
-    diag = None
-    if df.empty:
-        diag = f"script_hit_memory empty after load (columns={list(df.columns)})"
-    return (df, diag) if return_diag else df
-
-
-def filter_by_window(
-    df: pd.DataFrame, date_col: str = "DATE", window_days: int = 30
-) -> Tuple[pd.DataFrame, Optional[pd.Timestamp], Optional[pd.Timestamp]]:
-    """Filter a DataFrame to an inclusive rolling window.
-
-    Returns the filtered DataFrame plus (cutoff, latest) dates. Dates are
-    parsed with ``errors="coerce"`` and rows with NaT are dropped prior to
-    slicing.
-    """
-
-    normalised_df, chosen_col, latest = _normalise_date_column(df, candidates=[date_col, "DATE", "result_date", "date", "predict_date"])
-    if normalised_df is None or normalised_df.empty or chosen_col is None:
-        return pd.DataFrame(columns=df.columns if df is not None else []), None, None
-
-    cutoff = latest - timedelta(days=window_days - 1)
-    filtered = normalised_df[(normalised_df[chosen_col] >= cutoff) & (normalised_df[chosen_col] <= latest)]
-
-    return filtered, cutoff, latest
+    return df
 
 
 def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = None) -> Path:
@@ -488,12 +372,6 @@ def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = Non
         aligned_df = pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
     else:
         aligned_df = _align_columns(df)
-
-    if "DATE" in aligned_df.columns and "result_date" in aligned_df.columns:
-        aligned_df["DATE"] = pd.to_datetime(aligned_df["DATE"], errors="coerce")
-        aligned_df["DATE"] = aligned_df["DATE"].where(
-            aligned_df["DATE"].notna(), pd.to_datetime(aligned_df["result_date"], errors="coerce")
-        )
 
     aligned_df.to_csv(csv_path, index=False)
     aligned_df.to_excel(xlsx_path, index=False)
@@ -519,32 +397,10 @@ def append_script_hit_row(row: Dict[str, object], base_dir: Optional[Path] = Non
 
 
 def _choose_date_column(df: pd.DataFrame) -> Optional[str]:
-    for col in ("DATE", "result_date", "date", "predict_date"):
+    for col in ("predict_date", "result_date", "date"):
         if col in df.columns and not df[col].isna().all():
             return col
     return None
-
-
-def filter_by_date_window(
-    df: pd.DataFrame, date_col: str, window_days: int
-) -> Tuple[pd.DataFrame, Optional[pd.Timestamp], Optional[pd.Timestamp]]:
-    """
-    Standardised window filter used across metrics modules.
-
-    Returns the filtered frame plus (window_start, latest_date). All date math
-    is inclusive of both endpoints and normalised to midnight for stability.
-    """
-
-    normalised_df, chosen_col, latest = _normalise_date_column(df, candidates=[date_col])
-    if normalised_df is None or normalised_df.empty or chosen_col is None:
-        return pd.DataFrame(columns=df.columns if df is not None else []), None, None
-
-    normalised_df[chosen_col] = pd.to_datetime(normalised_df[chosen_col], errors="coerce").dt.normalize()
-    latest = normalised_df[chosen_col].max()
-    cutoff = latest - timedelta(days=window_days - 1)
-    filtered = normalised_df[(normalised_df[chosen_col] >= cutoff) & (normalised_df[chosen_col] <= latest)]
-
-    return filtered, cutoff, latest
 
 
 def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFrame, int]:
@@ -564,16 +420,24 @@ def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFr
     if not date_col:
         return pd.DataFrame(columns=df.columns), 0
 
-    filtered, window_start, window_end = filter_by_date_window(df, date_col, window_days)
+    work_df = df.copy()
+    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce").dt.normalize()
+    work_df = work_df.dropna(subset=[date_col])
+    if work_df.empty:
+        return work_df, 0
+
+    window_end = work_df[date_col].max().normalize()
+    window_start = window_end - timedelta(days=window_days)
+    filtered = work_df[(work_df[date_col] >= window_start) & (work_df[date_col] <= window_end)]
 
     used_days = filtered[date_col].dt.date.nunique()
     logger = logging.getLogger(__name__)
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(
+    if logger.isEnabledFor(logging.INFO):
+        logger.info(
             "filter_hits_by_window: days=%s, start=%s, end=%s, rows=%s, column=%s",
             window_days,
-            getattr(window_start, "date", lambda: None)(),
-            getattr(window_end, "date", lambda: None)(),
+            window_start.date(),
+            window_end.date(),
             len(filtered),
             date_col,
         )

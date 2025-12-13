@@ -1,17 +1,13 @@
 import argparse
 import csv
 import json
-import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
-import pandas as pd
+from quant_stats_core import compute_topn_roi
 import quant_paths
-import quant_data_core
-
-SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 
 MAX_N = 40
 UNIT_STAKE = 10
@@ -21,121 +17,6 @@ NEAR_HIT_WEIGHT = 0.3
 
 def safe(value):
     return float(np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0))
-
-
-def _to_number(value: object) -> Optional[str]:
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return None
-    try:
-        num = int(str(value).strip()) % 100
-        return f"{num:02d}"
-    except Exception:
-        return None
-
-
-def _normalise_slot(value: object) -> Optional[str]:
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return None
-    text = str(value).strip().upper()
-    mapping = {"1": "FRBD", "2": "GZBD", "3": "GALI", "4": "DSWR"}
-    normalised = mapping.get(text, text)
-    return normalised if normalised in SLOTS else None
-
-
-def _parse_number_list(value: object) -> List[str]:
-    numbers: List[str] = []
-    if value is None:
-        return numbers
-    if isinstance(value, (list, tuple, set)):
-        candidates = value
-    else:
-        text = str(value).strip()
-        if not text:
-            return numbers
-        for sep in [",", " ", "|", "/", "\n"]:
-            text = text.replace(sep, ",")
-        candidates = text.split(",")
-    for raw in candidates:
-        num = _to_number(raw)
-        if num:
-            numbers.append(num)
-    return numbers
-
-
-def _coerce_stake(value: object) -> Tuple[float, bool]:
-    try:
-        stake_val = float(value)
-        if stake_val > 0:
-            return stake_val, False
-    except Exception:
-        pass
-    return float(UNIT_STAKE), True
-
-
-def _looks_like_numeric_bet(label: str, numbers: List[str]) -> bool:
-    upper = label.upper()
-    if any(tag in upper for tag in ["NUMBER", "NUM", "2D", "DOUBLE"]):
-        return True
-    if re.search(r"\b\d{2}\b", upper):
-        return True
-    return bool(numbers)
-
-
-def _fallback_roi_from_reality() -> Optional[Dict[str, object]]:
-    path = quant_paths.get_base_dir() / "logs" / "performance" / "quant_reality_pnl.json"
-    if not path.exists():
-        return None
-    try:
-        raw = json.loads(path.read_text())
-    except Exception:
-        return None
-
-    def _iter_records(payload):
-        if isinstance(payload, list):
-            for item in payload:
-                if isinstance(item, dict):
-                    yield item
-        elif isinstance(payload, dict):
-            for val in payload.values():
-                if isinstance(val, list):
-                    for item in val:
-                        if isinstance(item, dict):
-                            yield item
-                elif isinstance(val, dict):
-                    yield val
-
-    stake = 0.0
-    ret = 0.0
-    hits = 0
-    dates: List[str] = []
-    for entry in _iter_records(raw):
-        s = entry.get("stake") or entry.get("STAKE") or entry.get("Stake")
-        r = entry.get("return") or entry.get("RETURN") or entry.get("Return")
-        d = entry.get("date") or entry.get("DATE")
-        h = entry.get("hits") or entry.get("hit") or entry.get("HITS")
-        try:
-            stake += float(s or 0)
-            ret += float(r or 0)
-            if h is not None:
-                hits += int(h)
-        except Exception:
-            continue
-        if d:
-            dates.append(str(d)[:10])
-
-    if stake <= 0 and ret <= 0:
-        return None
-    roi = ((ret - stake) / stake * 100.0) if stake else 0.0
-    return {
-        "stake": stake,
-        "return": ret,
-        "hits": hits,
-        "roi": roi,
-        "days": len(set(dates)),
-        "start": min(dates) if dates else None,
-        "end": max(dates) if dates else None,
-        "warning": "Fallback ROI from quant_reality_pnl.json",
-    }
 
 
 def _write_csv(summary: Dict) -> None:
@@ -188,13 +69,9 @@ def _write_profile_json(summary: Dict, target_window: int) -> None:
 
     payload = {
         "window_days": target_window,
-        "available_days": summary.get("available_days"),
         "best_N_overall": overall.get("best_N"),
         "overall_best_N": overall.get("best_N"),
         "best_roi_overall": overall.get("best_roi"),
-        "main_rows_detected": summary.get("main_rows_detected"),
-        "plan_files": summary.get("plan_files"),
-        "fallback_stakes": summary.get("fallback_stakes"),
         "per_N_roi": {str(k): v for k, v in roi_by_n.items()},
         "per_slot_best_N": per_slot_best,
         "best_n_per_slot": per_slot_best,
@@ -255,249 +132,6 @@ def _write_best_roi_json(summary: Dict, target_window: int) -> None:
         output_path.write_text(json.dumps(payload, indent=2, default=_json_default))
     except Exception as exc:
         print(f"[topn_roi_scanner] Warning: unable to write topn_roi_summary.json: {exc}")
-
-
-def _load_results_map() -> Dict[date, Dict[str, str]]:
-    df = quant_data_core.load_results_dataframe()
-    if df is None or df.empty:
-        return {}
-
-    df = df.copy()
-    df["DATE"] = pd.to_datetime(df.get("DATE"), errors="coerce")
-    df = df.dropna(subset=["DATE"])
-    results: Dict[date, Dict[str, str]] = {}
-    for _, row in df.iterrows():
-        day = row["DATE"].date()
-        slot_map: Dict[str, str] = results.setdefault(day, {})
-        for slot in SLOTS:
-            num = _to_number(row.get(slot))
-            if num:
-                slot_map[slot] = num
-    return results
-
-
-def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, float]]]], Dict[str, int]]:
-    base_dir = quant_paths.get_base_dir()
-    bet_dir = Path(base_dir) / "predictions" / "bet_engine"
-    plans: Dict[date, Dict[str, List[Tuple[str, float]]]] = {}
-    meta: Dict[str, int] = {"files": 0, "main_rows": 0, "fallback_stakes": 0}
-    if not bet_dir.exists():
-        return plans, meta
-
-    def _ingest_frame(plan_date, df: pd.DataFrame, slot_map: Dict[str, List[Tuple[str, float, Optional[float], int]]]):
-        if df is None or df.empty:
-            return
-        cols: Dict[str, str] = {}
-        for col in df.columns:
-            key = str(col).strip()
-            upper = key.upper()
-            cols[upper] = col
-            cols[upper.replace(" ", "_")] = col
-
-        slot_col = next(
-            (
-                cols[k]
-                for k in [
-                    "SLOT",
-                    "MARKET",
-                    "GAME",
-                    "SLOT_KEY",
-                    "SLOT_NAME",
-                    "MARKET_NAME",
-                    "GAME_NAME",
-                ]
-                if k in cols
-            ),
-            None,
-        )
-        layer_col = next(
-            (
-                cols[k]
-                for k in [
-                    "LAYER_TYPE",
-                    "LAYER",
-                    "PICK_TYPE",
-                    "PICK TYPE",
-                    "TYPE",
-                    "BET_TYPE",
-                    "CATEGORY",
-                    "SIDE",
-                ]
-                if k in cols
-            ),
-            None,
-        )
-        stake_cols = [
-            cols[k]
-            for k in [
-                "STAKE",
-                "STAKE_MAIN",
-                "MAIN_STAKE",
-                "BASE_STAKE",
-                "STAKE_PER_NUMBER",
-                "PER_NUMBER_STAKE",
-                "STAKE_PER_NUM",
-                "AMOUNT",
-                "BET",
-                "BET_AMOUNT",
-                "STAKE_AMOUNT",
-                "WAGER",
-                "STAKE_VALUE",
-            ]
-            if k in cols
-        ]
-        number_cols = [
-            cols[k]
-            for k in [
-                "NUMBER",
-                "NUMBER_OR_DIGIT",
-                "NUM",
-                "PREDICTED_NUMBER",
-                "PREDICTED",
-                "PICK",
-                "MAIN_NUMBER",
-                "VALUE",
-                "BET_NUMBER",
-                "DIGIT",
-                "SELECTION",
-                "PICKED_NUMBER",
-                "BET_DIGIT",
-            ]
-            if k in cols
-        ]
-        list_cols = [
-            cols[k]
-            for k in [
-                "MAIN_NUMBERS",
-                "PREDICTIONS",
-                "PREDICTED_NUMBERS",
-                "NUMBERS",
-                "EXACTS",
-                "NUMBER_LIST",
-                "PICKS",
-                "VALUES",
-                "PICKS_LIST",
-                "NUMBERS_LIST",
-            ]
-            if k in cols
-        ]
-        rank_cols = [cols[k] for k in ["SOURCE_RANK", "RANK", "RANK_MAIN"] if k in cols]
-
-        if slot_col is not None:
-            for idx, row in df.iterrows():
-                layer_val = str(row.get(layer_col, "") if layer_col else "").strip().upper()
-                is_andar_bahar = any(token in layer_val for token in ["ANDAR", "BAHAR"])
-                numbers: List[str] = []
-                slot = _normalise_slot(row.get(slot_col))
-                if not slot:
-                    continue
-
-                stake_val = None
-                for col in stake_cols:
-                    stake_val = row.get(col)
-                    if pd.notna(stake_val):
-                        break
-                stake_final, used_fallback = _coerce_stake(stake_val)
-                for col in number_cols:
-                    num = _to_number(row.get(col))
-                    if num:
-                        numbers.append(num)
-                for col in list_cols:
-                    numbers.extend(_parse_number_list(row.get(col)))
-                if not numbers:
-                    if not _looks_like_numeric_bet(layer_val, numbers):
-                        continue
-
-                if is_andar_bahar:
-                    continue
-
-                is_main_layer = (
-                    ("MAIN" in layer_val)
-                    or ("EXACT" in layer_val)
-                    or layer_val == ""
-                    or _looks_like_numeric_bet(layer_val, numbers)
-                )
-                is_main_candidate = is_main_layer or bool(numbers)
-                if layer_col and not is_main_candidate:
-                    continue
-
-                rank_val = None
-                for col in rank_cols:
-                    rank_val = row.get(col)
-                    if pd.notna(rank_val):
-                        break
-                try:
-                    rank_val = float(rank_val)
-                except Exception:
-                    rank_val = None
-
-                seen = set()
-                ordered_numbers = []
-                for n in numbers:
-                    if n not in seen:
-                        seen.add(n)
-                        ordered_numbers.append(n)
-
-                if used_fallback and ordered_numbers:
-                    meta["fallback_stakes"] = meta.get("fallback_stakes", 0) + len(ordered_numbers)
-
-                for order_idx, num in enumerate(ordered_numbers):
-                    slot_map.setdefault(slot, []).append((num, stake_final, rank_val, idx * 100 + order_idx))
-                    meta["main_rows"] += 1
-
-        # Wide-format fallback: columns named after slots with comma-separated values
-        slot_columns = [cols[s] for s in SLOTS if s in cols]
-        if not slot_columns:
-            return
-        for idx, row in df.iterrows():
-            stake_val = None
-            for col in stake_cols:
-                stake_val = row.get(col)
-                if pd.notna(stake_val):
-                    break
-            stake_final, used_fallback = _coerce_stake(stake_val)
-            for slot in SLOTS:
-                if slot not in cols:
-                    continue
-                numbers = _parse_number_list(row.get(cols[slot]))
-                if not numbers:
-                    continue
-                if used_fallback:
-                    meta["fallback_stakes"] = meta.get("fallback_stakes", 0) + len(numbers)
-                for order_idx, num in enumerate(numbers):
-                    slot_map.setdefault(slot, []).append((num, stake_final, None, idx * 100 + order_idx))
-                    meta["main_rows"] += 1
-
-    for path in bet_dir.glob("bet_plan_master_*.xlsx"):
-        try:
-            date_str = path.stem.replace("bet_plan_master_", "")
-            plan_date = datetime.strptime(date_str, "%Y%m%d").date()
-        except Exception:
-            continue
-
-        meta["files"] += 1
-        slot_map: Dict[str, List[Tuple[str, float]]] = plans.setdefault(plan_date, {})
-        try:
-            xls = pd.ExcelFile(path)
-            sheet_names = [name for name in ["bets", "BETS"] if name in xls.sheet_names]
-            if not sheet_names:
-                sheet_names = xls.sheet_names
-            temp_map: Dict[str, List[Tuple[str, float, Optional[float], int]]] = {}
-            for sheet in sheet_names:
-                try:
-                    frame = xls.parse(sheet)
-                except Exception:
-                    continue
-                _ingest_frame(plan_date, frame, temp_map)
-
-            # Stabilise ordering by explicit rank -> stake -> original index
-            for slot, items in temp_map.items():
-                items.sort(key=lambda t: (t[2] if t[2] is not None else float("inf"), -safe(t[1]), t[3]))
-                slot_map[slot] = [(num, stake) for num, stake, _, _ in items][:max_n]
-        except Exception:
-            continue
-
-    return plans, meta
 
 
 def _write_numbers_summary(summary: Dict) -> None:
@@ -599,7 +233,6 @@ def _prepare_topn_policy_data(summary: Dict, max_n: int) -> Tuple[Dict[str, Dict
     payload: Dict[str, Dict[str, object]] = {}
     debug_rows: List[Dict[str, object]] = []
     window_end = summary.get("window_end")
-    window_days = summary.get("window_days_used") or summary.get("available_days") or summary.get("window_days_requested")
 
     def _parse_roi_map(raw_map: Dict) -> Dict[int, float]:
         return {int(k): v for k, v in raw_map.items()} if isinstance(raw_map, dict) else {}
@@ -618,8 +251,6 @@ def _prepare_topn_policy_data(summary: Dict, max_n: int) -> Tuple[Dict[str, Dict
             max_n,
             window_end,
         )
-        if roi_map:
-            entry["roi_by_N"] = {str(k): v for k, v in roi_map.items()}
         payload[slot] = entry
         debug_rows.extend(slot_debug)
 
@@ -630,23 +261,8 @@ def _prepare_topn_policy_data(summary: Dict, max_n: int) -> Tuple[Dict[str, Dict
     overall_entry, overall_debug = _compute_slot_policy(
         "ALL", roi_map_all, days_map_all, hits_map_all, near_hits_map_all, max_n, window_end
     )
-    if roi_map_all:
-        overall_entry["roi_by_N"] = {str(k): v for k, v in roi_map_all.items()}
     payload["ALL"] = overall_entry
     debug_rows.extend(overall_debug)
-
-    payload["meta"] = {
-        "as_of": window_end.isoformat() if hasattr(window_end, "isoformat") else window_end,
-        "window_days": window_days,
-        "days_used": summary.get("available_days", window_days),
-        "generated": datetime.now().isoformat(),
-        "overall_roi_by_N": {str(k): v for k, v in roi_map_all.items()},
-    }
-
-    payload["as_of"] = payload["meta"]["as_of"]
-    payload["window_days"] = window_days
-    payload["days_used"] = summary.get("available_days", window_days)
-    payload["roi_by_n_overall"] = {str(k): v for k, v in roi_map_all.items()}
 
     return payload, debug_rows
 
@@ -753,173 +369,6 @@ def _write_debug_csv(rows: List[Dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
-def _compute_roi(window_days: int, max_n: int) -> Dict:
-    results_map = _load_results_map()
-    bet_plans, bet_meta = _load_bet_plans(max_n=max_n)
-    matched_dates = sorted(set(results_map.keys()) & set(bet_plans.keys()))
-    if not matched_dates:
-        fallback = _fallback_roi_from_reality()
-        if fallback:
-            return {
-                "available_days": fallback.get("days"),
-                "reason": fallback.get("warning"),
-                "main_rows_detected": bet_meta.get("main_rows", 0),
-                "fallback_stakes": bet_meta.get("fallback_stakes", 0),
-                "plan_files": bet_meta.get("files", 0),
-                "overall": {"best_roi": safe(fallback.get("roi", 0.0))},
-                "totals": {
-                    "stake": fallback.get("stake", 0.0),
-                    "return": fallback.get("return", 0.0),
-                    "hits": fallback.get("hits", 0),
-                },
-                "window_start": fallback.get("start"),
-                "window_end": fallback.get("end"),
-                "fallback_source": "quant_reality_pnl.json",
-            }
-        return {
-            "available_days": 0,
-            "reason": "No matched bet plans vs results",
-            "main_rows_detected": bet_meta.get("main_rows", 0),
-            "fallback_stakes": bet_meta.get("fallback_stakes", 0),
-            "plan_files": bet_meta.get("files", 0),
-        }
-
-    latest = max(matched_dates)
-    cutoff = latest - timedelta(days=window_days - 1)
-    window_dates = [d for d in matched_dates if d >= cutoff]
-
-    per_slot: Dict[str, Dict[str, Dict[int, float]]] = {}
-    per_slot_numbers: Dict[str, Dict[int, Dict[str, int]]] = {}
-    overall_stake: Dict[int, float] = {n: 0.0 for n in range(1, max_n + 1)}
-    overall_return: Dict[int, float] = {n: 0.0 for n in range(1, max_n + 1)}
-    overall_days: Dict[int, int] = {n: 0 for n in range(1, max_n + 1)}
-    overall_hits: Dict[int, int] = {n: 0 for n in range(1, max_n + 1)}
-    total_stake_all = 0.0
-    total_return_all = 0.0
-
-    for slot in SLOTS:
-        per_slot[slot] = {
-            "roi_by_N": {},
-            "days_by_N": {n: 0 for n in range(1, max_n + 1)},
-            "hits_by_N": {n: 0 for n in range(1, max_n + 1)},
-            "near_hits_by_N": {n: 0 for n in range(1, max_n + 1)},
-        }
-        per_slot_numbers[slot] = {n: {} for n in range(1, max_n + 1)}
-
-    for day in window_dates:
-        results = results_map.get(day, {})
-        bets_for_day = bet_plans.get(day, {})
-        for slot in SLOTS:
-            picks = bets_for_day.get(slot, [])
-            if not picks:
-                continue
-            actual = results.get(slot)
-            for n in range(1, max_n + 1):
-                chosen = picks[:n]
-                if not chosen:
-                    continue
-                stake_sum = sum(stake for _, stake in chosen)
-                if stake_sum <= 0:
-                    continue
-                per_slot[slot]["days_by_N"][n] += 1
-                overall_days[n] += 1
-                overall_stake[n] += stake_sum
-                total_stake_all += stake_sum
-
-                hit_return = 0.0
-                if actual:
-                    hit_return = sum(stake for num, stake in chosen if num == actual) * FULL_PAYOUT_PER_UNIT
-                    if hit_return > 0:
-                        per_slot[slot]["hits_by_N"][n] += 1
-                        overall_hits[n] += 1
-
-                per_slot[slot].setdefault("stake_by_N", {n: 0 for n in range(1, max_n + 1)})[n] += stake_sum
-                per_slot[slot].setdefault("return_by_N", {n: 0 for n in range(1, max_n + 1)})[n] += hit_return
-                overall_return[n] += hit_return
-                total_return_all += hit_return
-
-                freq_map = per_slot_numbers[slot].setdefault(n, {})
-                for num, _ in chosen:
-                    freq_map[num] = freq_map.get(num, 0) + 1
-
-    for slot, slot_maps in per_slot.items():
-        roi_by_n: Dict[int, float] = {}
-        best_n = None
-        best_roi = None
-        for n in range(1, max_n + 1):
-            stake_val = slot_maps.get("stake_by_N", {}).get(n, 0.0)
-            ret_val = slot_maps.get("return_by_N", {}).get(n, 0.0)
-            roi_val = ((ret_val - stake_val) / stake_val * 100.0) if stake_val else 0.0
-            roi_by_n[n] = safe(roi_val)
-            if best_roi is None or roi_val > best_roi or (roi_val == best_roi and (best_n is None or n < best_n)):
-                best_roi = roi_val
-                best_n = n
-            slot_maps["roi_by_N"][n] = roi_by_n[n]
-        slot_maps["best_N"] = best_n
-        slot_maps["best_roi"] = safe(best_roi) if best_roi is not None else None
-        numbers_by_n: Dict[int, List[str]] = {}
-        for n, freq in per_slot_numbers[slot].items():
-            ranked = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
-            numbers_by_n[n] = [num for num, _ in ranked][:n]
-        slot_maps["numbers_by_N"] = numbers_by_n
-
-    roi_overall: Dict[int, float] = {}
-    best_overall_n = None
-    best_overall_roi = None
-    for n in range(1, max_n + 1):
-        stake_val = overall_stake[n]
-        ret_val = overall_return[n]
-        roi_val = ((ret_val - stake_val) / stake_val * 100.0) if stake_val else 0.0
-        roi_overall[n] = safe(roi_val)
-        if best_overall_roi is None or roi_val > best_overall_roi or (roi_val == best_overall_roi and (best_overall_n is None or n < best_overall_n)):
-            best_overall_roi = roi_val
-            best_overall_n = n
-
-    if total_stake_all <= 0 or bet_meta.get("main_rows", 0) == 0:
-        fallback = _fallback_roi_from_reality()
-        if fallback:
-            return {
-                "window_start": fallback.get("start") or min(window_dates),
-                "window_end": fallback.get("end") or latest,
-                "available_days": fallback.get("days") or len(window_dates),
-                "window_days_used": len(window_dates),
-                "totals": {"stake": fallback.get("stake", 0.0), "return": fallback.get("return", 0.0), "hits": fallback.get("hits", 0)},
-                "main_rows_detected": bet_meta.get("main_rows", 0),
-                "fallback_stakes": bet_meta.get("fallback_stakes", 0),
-                "plan_files": bet_meta.get("files", 0),
-                "overall": {
-                    "roi_by_N": roi_overall,
-                    "best_N": best_overall_n,
-                    "best_roi": safe(fallback.get("roi", 0.0)),
-                    "days_by_N": overall_days,
-                    "hits_by_N": overall_hits,
-                },
-                "per_slot": per_slot,
-                "numbers_by_slot": {slot: maps.get("numbers_by_N", {}) for slot, maps in per_slot.items()},
-                "fallback_source": "quant_reality_pnl.json",
-            }
-
-    return {
-        "window_start": min(window_dates),
-        "window_end": latest,
-        "available_days": len(window_dates),
-        "window_days_used": len(window_dates),
-        "totals": {"stake": total_stake_all, "return": total_return_all, "hits": sum(overall_hits.values())},
-        "main_rows_detected": bet_meta.get("main_rows", 0),
-        "fallback_stakes": bet_meta.get("fallback_stakes", 0),
-        "plan_files": bet_meta.get("files", 0),
-        "overall": {
-            "roi_by_N": roi_overall,
-            "best_N": best_overall_n,
-            "best_roi": safe(best_overall_roi) if best_overall_roi is not None else None,
-            "days_by_N": overall_days,
-            "hits_by_N": overall_hits,
-        },
-        "per_slot": per_slot,
-        "numbers_by_slot": {slot: maps.get("numbers_by_N", {}) for slot, maps in per_slot.items()},
-    }
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scan ROI performance across Top-N buckets.")
     parser.add_argument("--window_days", type=int, default=30, help="Window (in days) to evaluate ROI.")
@@ -928,32 +377,9 @@ def main() -> int:
 
     target_window = args.window_days
     max_n = min(max(args.max_n, 1), MAX_N)
-    summary = _compute_roi(window_days=target_window, max_n=max_n)
+    summary = compute_topn_roi(window_days=target_window, max_n=max_n)
     if not summary:
         print("No data available for ROI scan.")
-        return 0
-
-    reason = summary.get("reason")
-    days_used = summary.get("available_days", 0)
-    totals = summary.get("totals", {}) if isinstance(summary, dict) else {}
-    total_stake = safe(totals.get("stake", 0.0))
-    total_return = safe(totals.get("return", 0.0))
-    total_hits = int(totals.get("hits", 0) or 0)
-    if days_used == 0:
-        detail = f" ({reason})" if reason else ""
-        plan_files = int(summary.get("plan_files", 0) or 0)
-        main_rows = int(summary.get("main_rows_detected", 0) or 0)
-        fallback_stakes = int(summary.get("fallback_stakes", 0) or 0)
-        print(
-            f"Bet plan files scanned: {plan_files} | MAIN rows: {main_rows} | "
-            f"Fallback unit stakes applied: {fallback_stakes}"
-        )
-        print(
-            f"[SCAN DEBUG] files={plan_files} | matched_days={days_used} | "
-            f"main_rows={main_rows} | total_stake=₹{total_stake:,.2f} | "
-            f"total_return=₹{total_return:,.2f} | hits={total_hits}"
-        )
-        print(f"No data available for ROI scan{detail}.")
         return 0
 
     _write_csv(summary)
@@ -971,41 +397,16 @@ def main() -> int:
     roi_map = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
     display_ns: List[int] = list(range(1, max_n + 1))
     roi_values = [v for v in roi_map.values() if v is not None]
-    min_days_required = 15
-    all_zero_roi = days_used < min_days_required or not roi_values
+    all_zero_roi = not roi_values or all(abs(float(v)) < 1e-9 for v in roi_values)
 
     if all_zero_roi:
-        warm_note = (
-            "Top-N ROI module warming up – insufficient matched bet/results days. "
-            f"Matched days: {days_used} (need >= {min_days_required})."
-        )
-        print(warm_note)
+        print("Top-N ROI module warming up – all bands ROI≈0.0; no detailed breakdown.")
     else:
         for n in display_ns:
             roi_val = roi_map.get(n)
             if roi_val is None:
                 continue
             print(f"N={n}  → ROI = {safe(roi_val):+.1f}%")
-
-    main_rows = int(summary.get("main_rows_detected", 0) or 0)
-    fallback_stakes = int(summary.get("fallback_stakes", 0) or 0)
-    plan_files = int(summary.get("plan_files", 0) or 0)
-
-    print(
-        f"Matched days: {days_used} | Total stake: ₹{total_stake:,.2f} | "
-        f"Total return: ₹{total_return:,.2f} | Hits captured: {total_hits} | "
-        f"MAIN rows: {main_rows}"
-    )
-    print(
-        f"Bet plan files scanned: {plan_files} | Fallback unit stakes applied: {fallback_stakes}"
-    )
-    if total_stake == 0:
-        print("No MAIN stakes detected in bet plans within the window; ROI is undefined.")
-    print(
-        f"[SCAN DEBUG] files={plan_files} | matched_days={days_used} | "
-        f"main_rows={main_rows} | total_stake=₹{total_stake:,.2f} | "
-        f"total_return=₹{total_return:,.2f} | hits={total_hits}"
-    )
 
     per_slot = summary.get("per_slot", {}) or {}
     if not all_zero_roi and per_slot:

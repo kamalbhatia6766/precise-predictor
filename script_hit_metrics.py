@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,10 +15,8 @@ from quant_core import hit_core
 from quant_stats_core import compute_pack_hit_stats as compute_pack_hit_stats_core, compute_script_slot_stats
 from script_hit_memory_utils import (
     classify_relation,
-    filter_by_window,
     filter_hits_by_window,
     load_script_hit_memory,
-    _normalise_date_column,
 )
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -26,44 +24,6 @@ SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 
 def safe(value: object) -> float:
     return float(np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0))
-
-
-def _json_sanitize(value: Any) -> Any:
-    """Recursively convert values to JSON-safe types."""
-
-    try:
-        import numpy as _np  # local import to avoid global dependency at import time
-    except Exception:  # pragma: no cover - defensive
-        _np = None
-
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
-
-    if isinstance(value, dict):
-        return {k: _json_sanitize(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_json_sanitize(v) for v in value]
-    if isinstance(value, (pd.Timestamp, datetime, date)):
-        try:
-            return value.isoformat()
-        except Exception:
-            return str(value)
-    if _np is not None and isinstance(value, (_np.integer,)):
-        return int(value)
-    if _np is not None and isinstance(value, (_np.floating,)):
-        if _np.isnan(value) or _np.isinf(value):
-            return None
-        return float(value)
-    if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
-        return None
-    if isinstance(value, (pd.Series, pd.DataFrame)):
-        return _json_sanitize(value.to_dict())
-    return value
 
 
 def _normalise_slot(slot_value: object) -> Optional[str]:
@@ -76,17 +36,13 @@ def _normalise_slot(slot_value: object) -> Optional[str]:
 
 def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, Optional[str]]:
     df = load_script_hit_memory(base_dir=base_dir)
-    if isinstance(df, tuple):
-        df = df[0]
     if df.empty:
         return pd.DataFrame(), None
 
-    df, date_col, latest = _normalise_date_column(df)
-    if df is None or df.empty or date_col is None or pd.isna(latest):
-        return pd.DataFrame(), None
-
     df = df.copy()
-    df[date_col] = pd.to_datetime(df.get(date_col), errors="coerce").dt.date
+    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
+    df = df.dropna(subset=["result_date"])
+    df["result_date"] = df["result_date"].dt.date
     df["slot"] = df.get("slot").apply(_normalise_slot)
     df["script_id"] = df.get("script_id").astype(str).str.strip().str.upper()
     df["HIT_TYPE"] = df.get("HIT_TYPE", "MISS").astype(str).str.upper()
@@ -95,7 +51,7 @@ def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, O
     df["is_near_hit"] = df.get("is_near_hit", False).astype(bool)
     df["_relation"] = df.apply(lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1)
     df = df.dropna(subset=["slot", "script_id"])
-    return df, date_col
+    return df, "result_date"
 
 
 def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) -> Tuple[pd.DataFrame, Dict[str, Any]]:
@@ -115,33 +71,34 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
         return pd.DataFrame(), empty_summary
 
     df = df.copy()
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
     df = df.dropna(subset=[date_col])
     if df.empty:
         return pd.DataFrame(), empty_summary
 
-    filtered, window_start, latest_date = filter_by_window(df, date_col=date_col, window_days=window_days)
+    latest_date = df[date_col].max()
+    earliest_date = df[date_col].min()
+    total_available_days = int(df[date_col].nunique())
+    window_start = latest_date - timedelta(days=window_days - 1)
+
+    filtered = df[(df[date_col] >= window_start) & (df[date_col] <= latest_date)].copy()
     if filtered.empty:
         return pd.DataFrame(), empty_summary
 
     filtered_dates = pd.to_datetime(filtered[date_col], errors="coerce").dt.date
     filtered[date_col] = filtered_dates
     available_days = int(filtered_dates.dropna().nunique())
-    earliest_date = df[date_col].min().date() if not df.empty else None
-    latest_date_date = latest_date.date() if hasattr(latest_date, "date") else latest_date
-    window_start_date = window_start.date() if hasattr(window_start, "date") else window_start
-    total_available_days = int(df[date_col].dt.date.nunique())
 
     summary = {
         "requested_window_days": int(window_days),
         "effective_window_days": int(available_days),
         "available_days": available_days,
         "available_days_total": total_available_days,
-        "window_end": latest_date_date,
-        "window_start": window_start_date,
-        "latest_date": latest_date_date,
+        "window_end": latest_date,
+        "window_start": window_start,
+        "latest_date": latest_date,
         "earliest_date": earliest_date,
-        "window_earliest_date": filtered_dates.min() if not filtered_dates.empty else None,
+        "window_earliest_date": filtered[date_col].min(),
         "total_rows": len(filtered),
     }
     return filtered, summary
@@ -282,9 +239,6 @@ def get_metrics_table(
     metrics = metrics.sort_values(order_cols + ["blended_score"], ascending=[True] * len(order_cols) + [False]).reset_index(drop=True)
     export_nearhit_topn_analysis(metrics, summary, base_dir=base_dir)
     _export_metrics_bundle(metrics, summary, window_days=window_days, base_dir=base_dir)
-
-    heroes_df = hero_weak_table(metrics, min_predictions=10)
-    _export_script_hit_metrics_json(metrics, heroes_df, summary, window_days=window_days, base_dir=base_dir)
     return metrics, summary
 
 
@@ -432,70 +386,6 @@ def _export_hero_weak_json(
         output_path.write_text(json.dumps(safe_payload, indent=2))
     except Exception as exc:
         print(f"[script_hit_metrics] Warning: unable to write script_hero_weak.json: {exc}")
-
-
-def _export_script_hit_metrics_json(
-    metrics_df: pd.DataFrame,
-    heroes_df: pd.DataFrame,
-    summary: Dict[str, Any],
-    window_days: int,
-    base_dir: Optional[Path] = None,
-) -> None:
-    try:
-        project_root = Path(base_dir) if base_dir else quant_paths.get_project_root()
-        output_path = project_root / "logs" / "performance" / "script_hit_metrics.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        def _safe_float(val: Any) -> float:
-            try:
-                return float(val)
-            except Exception:
-                return 0.0
-
-        hero_map = {}
-        weak_map = {}
-        if heroes_df is not None and not heroes_df.empty:
-            for _, row in heroes_df.iterrows():
-                slot_key = str(row.get("slot")).upper()
-                hero = row.get("hero_script")
-                weak = row.get("weak_script")
-                if slot_key:
-                    hero_map.setdefault(slot_key, []).extend([hero] if hero else [])
-                    weak_map.setdefault(slot_key, []).extend([weak] if weak else [])
-
-        payload_slots: Dict[str, Dict[str, Any]] = {}
-        for slot in SLOTS:
-            slot_df = metrics_df[metrics_df.get("slot") == slot] if metrics_df is not None else pd.DataFrame()
-            slot_metrics: Dict[str, Any] = {}
-            if not slot_df.empty:
-                for _, row in slot_df.iterrows():
-                    script_id = str(row.get("script_id")) if row.get("script_id") is not None else None
-                    if not script_id or script_id == "ALL":
-                        continue
-                    slot_metrics[script_id] = {
-                        "hit_rate": _safe_float(row.get("hit_rate_exact")),
-                        "near_miss_rate": _safe_float(row.get("near_miss_rate")),
-                        "score": _safe_float(row.get("blended_score" if "blended_score" in row else row.get("score", 0.0))),
-                        "total_predictions": int(row.get("total_predictions", 0) or 0),
-                    }
-
-            payload_slots[slot] = {
-                "hero_scripts": hero_map.get(slot, []),
-                "weak_scripts": weak_map.get(slot, []),
-                "metrics": slot_metrics,
-            }
-
-        payload = {
-            "window_days": int(summary.get("requested_window_days", window_days) or window_days),
-            "effective_days": int(summary.get("effective_window_days") or summary.get("available_days") or 0),
-            "as_of": (summary.get("window_end") or summary.get("latest_date")),
-            "slots": payload_slots,
-        }
-
-        safe_payload = _json_sanitize(payload)
-        output_path.write_text(json.dumps(safe_payload, indent=2))
-    except Exception as exc:
-        print(f"[script_hit_metrics] Warning: unable to write script_hit_metrics.json: {exc}")
 
 
 def build_script_weights_by_slot(
@@ -775,10 +665,7 @@ def _print_metrics(metrics_df: pd.DataFrame, summary: Dict[str, Any], mode: str)
             f"available days: {summary.get('available_days')} / total distinct: {summary.get('available_days_total')}"
         )
     if metrics_df.empty:
-        print(
-            f"Script hit metrics – requested {summary.get('requested_window_days')}d, "
-            "found 0 rows after DATE filter; skipping table."
-        )
+        print("No script hit metrics rows to display.")
         return
     display_cols = [
         "script_id",

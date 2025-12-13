@@ -1,18 +1,15 @@
 # precise_bet_engine.py - ULTRA v5 ROCKET MODE - CLEAR DATES + BREAKDOWN
-import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 import re
 from collections import Counter, defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 import warnings
 import argparse
 import json
 import quant_data_core
-from script_hit_memory_utils import filter_by_window, load_script_hit_memory
 from quant_slot_health import get_slot_health, SlotHealth
 from quant_stats_core import compute_topn_roi, get_quant_stats
 from pattern_intelligence_engine import load_near_miss_boosts
@@ -32,9 +29,6 @@ PATTERN_FAMILY_CACHE: Dict[str, List[str]] = {}
 # Tunable horizons (kept as constants for easy future adjustments)
 ROI_WINDOW_DAYS_DEFAULT = 30
 NEAR_MISS_WINDOW_DAYS_DEFAULT = 30
-
-# Timezone context (used for SCR9 freshness checks)
-LOCAL_TZ = ZoneInfo("Asia/Kolkata")
 
 # Policy files
 TOPN_POLICY_PATH = Path("data") / "topn_policy.json"
@@ -77,38 +71,6 @@ PATTERN_REGIME_CLAMP = (0.8, 1.5)
 DEFAULT_BEST_N = 3
 MIN_SHORTLIST_K = 3
 MAX_SHORTLIST_K = 12
-
-DEFAULT_SLOT_LEVEL_POLICY = {
-    "very_strong": {"roi_min": 400.0, "hit_rate_min": 0.20, "multiplier": 1.4, "label": "HIGH"},
-    "strong": {"roi_min": 150.0, "hit_rate_min": 0.18, "multiplier": 1.1, "label": "MID"},
-    "normal": {"roi_min": 0.0, "hit_rate_min": 0.0, "multiplier": 1.0, "label": "MID"},
-    "slump": {"roi_max": -10.0, "multiplier": 0.25, "label": "SLUMP"},
-    "off": {"roi_max": -30.0, "multiplier": 0.0, "label": "OFF"},
-}
-
-DEFAULT_LAYER_POLICY = {
-    "MAIN": {
-        "steps": [
-            {"roi_min": 0.0, "multiplier": 1.0},
-            {"roi_min": 50.0, "multiplier": 1.05},
-        ]
-    },
-    "ANDAR": {
-        "steps": [
-            {"roi_min": 0.0, "multiplier": 1.0},
-            {"roi_min": 25.0, "multiplier": 1.05},
-            {"roi_min": 50.0, "multiplier": 1.1},
-        ]
-    },
-    "BAHAR": {
-        "steps": [
-            {"roi_max": -10.0, "multiplier": 0.3},
-            {"roi_min": 10.0, "multiplier": 0.5},
-            {"roi_min": 50.0, "multiplier": 1.0},
-        ],
-        "fallback": 0.5,
-    },
-}
 
 OVERLAY_POLICY = {
     # Filtered S36 overlay per slot
@@ -300,9 +262,6 @@ class PreciseBetEngine:
         self.topn_policy = self._load_topn_policy()
         self.slot_health_snapshot = self._load_slot_health_snapshot()
         self.near_miss_boosts = load_near_miss_boosts()
-        self.script_metrics = self._load_script_metrics()
-        self.slot_level_policy = self._load_slot_level_policy()
-        self.layer_risk_policy = self._load_layer_risk_policy()
 
     def _load_topn_roi_profile(self, window_days: int = ROI_WINDOW_DAYS_DEFAULT) -> Dict:
         try:
@@ -320,43 +279,6 @@ class PreciseBetEngine:
                     return data
         except Exception as exc:
             print(f"⚠️  Unable to load Top-N policy: {exc}")
-        return {}
-
-    def _load_slot_level_policy(self) -> Dict[str, Dict[str, object]]:
-        config_path = Path("config") / "slot_level_policy.json"
-        if config_path.exists():
-            try:
-                with open(config_path, "r") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-            except Exception as exc:
-                print(f"⚠️  Unable to read slot_level_policy.json: {exc}")
-        return DEFAULT_SLOT_LEVEL_POLICY
-
-    def _load_layer_risk_policy(self) -> Dict[str, Dict[str, object]]:
-        config_path = Path("config") / "layer_risk_policy.json"
-        if config_path.exists():
-            try:
-                with open(config_path, "r") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-            except Exception as exc:
-                print(f"⚠️  Unable to read layer_risk_policy.json: {exc}")
-        return DEFAULT_LAYER_POLICY
-
-    def _load_script_metrics(self) -> Dict[str, Dict[str, object]]:
-        metrics_path = Path("logs") / "performance" / "script_hit_metrics.json"
-        if metrics_path.exists():
-            try:
-                with open(metrics_path, "r") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-            except Exception as exc:
-                print(f"⚠️  Unable to read script_hit_metrics.json: {exc}")
-        print("[WARN] Script hit metrics unavailable; using equal weights.")
         return {}
 
     def _load_slot_health_snapshot(self) -> Dict[str, Dict[str, object]]:
@@ -583,75 +505,23 @@ class PreciseBetEngine:
             return 0.5
         return 1.0
 
-    def _slot_pnl_snapshot(self, slot: str) -> Dict[str, object]:
-        pnl_block = self.quant_stats.get("pnl") if isinstance(self.quant_stats, dict) else {}
-        if not pnl_block:
-            return {}
-        slots_block = pnl_block.get("slots") if isinstance(pnl_block, dict) else {}
-        slot_block = slots_block.get(slot) if isinstance(slots_block, dict) else {}
-        return slot_block if isinstance(slot_block, dict) else {}
+    def _compute_slot_multiplier(self, health: SlotHealth) -> float:
+        """Decide per-slot stake multiplier based on slot health."""
+        mult = 1.0
 
-    def _compute_slot_multiplier(self, slot: str, health: SlotHealth) -> Tuple[float, str]:
-        """Decide per-slot stake multiplier based on slot P&L and health."""
-        policy = self.slot_level_policy or DEFAULT_SLOT_LEVEL_POLICY
-        slot_key = str(slot).upper()
-        pnl_snapshot = self._slot_pnl_snapshot(slot_key)
-        roi_pct = float(
-            pnl_snapshot.get("roi_30d")
-            or pnl_snapshot.get("roi_percent")
-            or getattr(health, "roi_percent", 0.0)
-            or 0.0
-        )
-        hit_rate = float(pnl_snapshot.get("hit_rate_30d") or pnl_snapshot.get("hit_rate") or 0.0)
-
-        # Off/slump guards first
         if getattr(health, "slump", False):
-            slump_cfg = policy.get("slump", {}) if isinstance(policy, dict) else {}
-            return float(slump_cfg.get("multiplier", 0.25)), str(slump_cfg.get("label", "SLUMP")).upper()
-        off_cfg = policy.get("off", {}) if isinstance(policy, dict) else {}
-        if off_cfg and roi_pct <= float(off_cfg.get("roi_max", -30)):
-            return float(off_cfg.get("multiplier", 0.0)), str(off_cfg.get("label", "OFF")).upper()
+            mult = 0.5
+        else:
+            roi_bucket = getattr(health, "roi_bucket", "UNKNOWN")
+            if roi_bucket == "HIGH":
+                mult = 1.10
+            elif roi_bucket == "MID":
+                mult = 1.00
+            elif roi_bucket == "LOW":
+                mult = 0.80
 
-        vs_cfg = policy.get("very_strong", {}) if isinstance(policy, dict) else {}
-        if roi_pct >= float(vs_cfg.get("roi_min", 400)) and hit_rate >= float(vs_cfg.get("hit_rate_min", 0.2)):
-            return float(vs_cfg.get("multiplier", 1.4)), str(vs_cfg.get("label", "HIGH")).upper()
-
-        strong_cfg = policy.get("strong", {}) if isinstance(policy, dict) else {}
-        if roi_pct >= float(strong_cfg.get("roi_min", 150)) and hit_rate >= float(strong_cfg.get("hit_rate_min", 0.18)):
-            return float(strong_cfg.get("multiplier", 1.1)), str(strong_cfg.get("label", "MID")).upper()
-
-        normal_cfg = policy.get("normal", {}) if isinstance(policy, dict) else {}
-        if normal_cfg:
-            return float(normal_cfg.get("multiplier", 1.0)), str(normal_cfg.get("label", "MID")).upper()
-
-        return 1.0, "MID"
-
-    def _compute_layer_multipliers(self) -> Dict[str, float]:
-        pnl_block = self.quant_stats.get("pnl") if isinstance(self.quant_stats, dict) else {}
-        layers_block = pnl_block.get("layers") if isinstance(pnl_block, dict) else pnl_block if isinstance(pnl_block, dict) else {}
-        policy = self.layer_risk_policy or DEFAULT_LAYER_POLICY
-        multipliers: Dict[str, float] = {}
-
-        for layer in ["MAIN", "ANDAR", "BAHAR"]:
-            stats = layers_block.get(layer) if isinstance(layers_block, dict) else {}
-            roi_val = float(stats.get("roi_30d") or stats.get("roi") or 0.0) if isinstance(stats, dict) else 0.0
-            steps = policy.get(layer, {}).get("steps") if isinstance(policy.get(layer, {}), dict) else policy.get(layer, {}).get("steps")
-            if steps is None and isinstance(policy.get(layer, {}), dict):
-                steps = policy.get(layer, {}).get("steps")
-            if steps is None:
-                steps = []
-            best_mult = None
-            for step in steps:
-                roi_min = step.get("roi_min")
-                roi_max = step.get("roi_max")
-                meets_min = roi_min is None or roi_val >= float(roi_min)
-                meets_max = roi_max is None or roi_val <= float(roi_max)
-                if meets_min and meets_max:
-                    best_mult = float(step.get("multiplier", best_mult or 1.0))
-            if best_mult is None:
-                best_mult = float(policy.get(layer, {}).get("fallback", 1.0)) if isinstance(policy.get(layer, {}), dict) else 1.0
-            multipliers[layer] = best_mult
-        return multipliers
+        mult = max(0.25, min(mult, 1.50))
+        return mult
 
     def load_dynamic_stake_plan(self, target_date):
         plan_path = Path(__file__).resolve().parent / "logs" / "performance" / "dynamic_stake_plan.json"
@@ -993,26 +863,39 @@ class PreciseBetEngine:
         return target_date
 
     def load_script_hit_memory(self, target_date):
-        df, diag = load_script_hit_memory(return_diag=True)
-        if isinstance(df, tuple):
-            df = df[0]
-        if df is None or df.empty:
-            note = diag or "script hit memory unavailable"
-            print(f"⚠️  {note} - using pure SCR9 ranks")
+        memory_file = Path(__file__).resolve().parent / "logs" / "performance" / "script_hit_memory.xlsx"
+        if not memory_file.exists():
+            print("⚠️  No script_hit_memory.xlsx found - using pure SCR9 ranks")
             return None
+        try:
+            df = pd.read_excel(memory_file)
+            df.columns = [str(c).strip() for c in df.columns]
 
-        cutoff_date = target_date - timedelta(days=self.N_DAYS)
-        filtered_df, cutoff, latest = filter_by_window(df, date_col="DATE", window_days=self.N_DAYS)
-        if filtered_df is None or filtered_df.empty:
-            print(
-                f"⚠️  Script hit memory has no rows in last {self.N_DAYS} days (cutoff={getattr(cutoff, 'date', lambda: None)()}, latest={getattr(latest, 'date', lambda: None)()})"
-            )
+            possible_hit_type_cols = ['hit_type', 'HIT_TYPE', 'HitType', 'hitType', 'HIT TYPE']
+            normalized_map = {re.sub(r"[\s_]+", "", str(col)).lower(): col for col in df.columns}
+            resolved_col = None
+            for col in possible_hit_type_cols:
+                normalized = re.sub(r"[\s_]+", "", col).lower()
+                if normalized in normalized_map:
+                    resolved_col = normalized_map[normalized]
+                    break
+
+            if resolved_col is None:
+                print("⚠️  Warning: No hit_type/HIT_TYPE column found in script_hit_memory; skipping hit-type-based weighting.")
+                df['hit_type'] = 'UNKNOWN'
+                resolved_col = 'hit_type'
+            elif resolved_col != 'hit_type':
+                df['hit_type'] = df[resolved_col]
+
+            print(f"✅ Using hit type column: {resolved_col} → exposed as 'hit_type'")
+            df['date'] = pd.to_datetime(df['date']).dt.date
+            cutoff_date = target_date - timedelta(days=self.N_DAYS)
+            filtered_df = df[df['date'] >= cutoff_date]
+            print(f"📊 Loaded script hit memory: {len(filtered_df)} records")
+            return filtered_df
+        except Exception as e:
+            print(f"⚠️  Error loading script_hit_memory: {e}")
             return None
-
-        print(
-            f"📊 Loaded script hit memory: {len(filtered_df)} records (start={getattr(cutoff, 'date', lambda: None)()}, end={getattr(latest, 'date', lambda: None)()})"
-        )
-        return filtered_df
 
     def build_history_table(self, memory_df):
         history = defaultdict(lambda: {'direct_hits': 0, 'cross_hits': 0, 's40_hits': 0, 'digit_tags': set()})
@@ -1778,10 +1661,11 @@ class PreciseBetEngine:
             shortlist, all_scored = self.build_dynamic_shortlist(scored_numbers, desired_k=shortlist_k)
             tiers = self.assign_tiers(shortlist)
             policy_roi = policy_block.get("roi_final_best") if isinstance(policy_block, dict) else None
-            if policy_roi is None:
-                print(f"   Top-N policy: final_best_n={n_star_int}, ROI unavailable")
-            else:
-                print(f"   Top-N policy: final_best_n={n_star_int}, roi_final_best={policy_roi:+.1f}%")
+            print(
+                f"   Top-N policy: final_best_n={n_star_int}, roi_final_best={policy_roi:+.1f}%"
+                if policy_roi is not None
+                else f"   Top-N policy: final_best_n={n_star_int}"
+            )
 
             slot_debug_numbers = []
             
@@ -2038,21 +1922,26 @@ class PreciseBetEngine:
             if isinstance(slot_snapshot, dict) and "slump" in slot_snapshot:
                 health.slump = bool(slot_snapshot.get("slump", health.slump))
 
+            slot_level = str(slot_snapshot.get("slot_level", "MID")).upper() if isinstance(slot_snapshot, dict) else "MID"
+            roi_val = roi_map.get(key, getattr(health, "roi_percent", 0.0))
+            max_other_roi = max([v for sk, v in roi_map.items() if sk != key], default=0.0)
+            if roi_val < -30.0 and max_other_roi > 50.0:
+                slot_level = "OFF"
+            elif roi_val > 300.0:
+                slot_level = "HIGH"
+            if getattr(health, "slump", False) and slot_level == "HIGH":
+                slot_level = "MID"
+            slot_level_map[key] = slot_level
+
             slot_health_map[key] = health
-            mult, level = self._compute_slot_multiplier(key, health)
+            mult = self._compute_slot_multiplier(health)
             mult *= self._slot_roi_dampener(key, health, topn_per_slot)
             slot_multipliers[key] = mult
-            slot_level_map[key] = level
 
             print(
                 f"[QUANT-SIGNALS] Slot {key}: "
-                f"slump={health.slump}, roi_bucket={health.roi_bucket}, slot_multiplier={mult:.2f}, level={level}"
+                f"slump={health.slump}, roi_bucket={health.roi_bucket}, slot_multiplier={mult:.2f}"
             )
-
-        layer_multipliers = self._compute_layer_multipliers()
-        print("Layer multipliers (30d):")
-        for layer_key in ["MAIN", "ANDAR", "BAHAR"]:
-            print(f"   {layer_key}: {layer_multipliers.get(layer_key, 1.0):.2f}x")
 
         active_overlays = [lt for lt, pol in OVERLAY_POLICY.items() if pol.get("stake_units", 0) > 0]
         print(f"[OVERLAYS] Active (config-driven): {', '.join(active_overlays) if active_overlays else 'None'}")
@@ -2135,23 +2024,6 @@ class PreciseBetEngine:
             # Fail-safe: if anything goes wrong, we keep original bets_df/summary_df
             # and continue without crashing.
 
-        # Apply layer multipliers (MAIN / ANDAR / BAHAR)
-        if not bets_df.empty and "layer_type" in bets_df.columns:
-            bets_df["layer_key"] = bets_df["layer_type"].astype(str).str.upper()
-            for layer_key, mult in layer_multipliers.items():
-                layer_mask = bets_df["layer_key"] == layer_key
-                if not layer_mask.any():
-                    continue
-                stake_numeric = pd.to_numeric(bets_df.loc[layer_mask, "stake"], errors="coerce")
-                valid_mask = layer_mask & stake_numeric.notna()
-                bets_df.loc[valid_mask, "stake"] = (stake_numeric[valid_mask] * float(mult)).round(2)
-
-                pot_numeric = pd.to_numeric(bets_df.loc[layer_mask, "potential_return"], errors="coerce")
-                pot_mask = layer_mask & pot_numeric.notna()
-                bets_df.loc[pot_mask, "potential_return"] = (
-                    pd.to_numeric(bets_df.loc[pot_mask, "stake"], errors="coerce") * 90
-                ).round(2)
-
         # Apply slot-level gating after quant slot multipliers
         if not bets_df.empty:
             if "slot_key" not in bets_df.columns:
@@ -2180,6 +2052,19 @@ class PreciseBetEngine:
                     bets_df.loc[potential_mask, "potential_return"] = (
                         pd.to_numeric(bets_df.loc[potential_mask, "stake"], errors="coerce") * 90
                     ).round(2)
+
+        # Defensive BAHAR down-weighting applied after other multipliers
+        if not bets_df.empty:
+            bahar_mask = bets_df["layer_type"] == "BAHAR"
+            bahar_numeric = pd.to_numeric(bets_df.loc[bahar_mask, "stake"], errors="coerce")
+            bahar_valid = bahar_mask & bahar_numeric.notna()
+            bets_df.loc[bahar_valid, "stake"] = (bahar_numeric[bahar_valid] * BAHAR_EXTRA_MULTIPLIER).round(2)
+
+            bahar_potential = pd.to_numeric(bets_df.loc[bahar_mask, "potential_return"], errors="coerce")
+            potential_valid = bahar_mask & bahar_potential.notna()
+            bets_df.loc[potential_valid, "potential_return"] = (
+                pd.to_numeric(bets_df.loc[potential_valid, "stake"], errors="coerce") * 90
+            ).round(2)
 
         # Recompute summary totals to reflect slot-level and BAHAR adjustments
         if not summary_df.empty and "slot" in summary_df.columns and not bets_df.empty:
@@ -2240,32 +2125,7 @@ class PreciseBetEngine:
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = f"bet_plan_master_{target_date.strftime('%Y%m%d')}.xlsx"
         file_path = output_dir / filename
-
-        if "number" not in bets_df.columns:
-            bets_df["number"] = ""
-        else:
-            bets_df["number"] = bets_df["number"].fillna("")
-
-        if not bets_df.empty:
-            main_mask = (
-                bets_df["layer_type"].astype(str).str.upper() == "MAIN"
-                if "layer_type" in bets_df.columns
-                else pd.Series([False] * len(bets_df))
-            )
-
-            source_priority = [col for col in ["number", "number_or_digit", "predicted_number", "predicted", "num"] if col in bets_df.columns]
-
-            def _derive_number(row):
-                for col in source_priority:
-                    val = row.get(col)
-                    if is_valid_2d_number(val):
-                        return to_2d_str(val)
-                # Fallback to canonical 2-digit placeholder to avoid NaN/blank rows
-                return "00"
-
-            bets_df.loc[main_mask, "number"] = bets_df.loc[main_mask].apply(_derive_number, axis=1)
-            bets_df.loc[~main_mask, "number"] = ""
-
+        
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
             bets_df.to_excel(writer, sheet_name='bets', index=False)
             summary_df.to_excel(writer, sheet_name='summary', index=False)
@@ -2375,24 +2235,6 @@ def analyze_near_miss_history(days: int = 30):
     return summary
 
 
-def get_scr9_run_anchor() -> Optional[datetime]:
-    """Parse SCR9 run anchor timestamp (ISO 8601) from environment."""
-
-    anchor_raw = os.environ.get("SCR9_RUN_STARTED_AT")
-    if not anchor_raw:
-        return None
-    try:
-        anchor = datetime.fromisoformat(anchor_raw.strip())
-        if anchor.tzinfo is None:
-            anchor = anchor.replace(tzinfo=LOCAL_TZ)
-        else:
-            anchor = anchor.astimezone(LOCAL_TZ)
-        return anchor
-    except Exception:
-        print(f"⚠️ Unable to parse SCR9_RUN_STARTED_AT='{anchor_raw}' (expected ISO 8601).")
-        return None
-
-
 def main():
     parser = argparse.ArgumentParser(description='Precise Bet Engine v5 Rocket - Ultra clear output')
     parser.add_argument('--target', choices=['today', 'tomorrow', 'auto'], default='tomorrow')
@@ -2402,26 +2244,9 @@ def main():
     
     try:
         engine = PreciseBetEngine()
-
-        scr9_anchor = get_scr9_run_anchor() if args.source == "scr9" else None
-        if scr9_anchor:
-            print(f"🕒 SCR9 run anchor: {scr9_anchor.isoformat()}")
-
+        
         print(f"🔍 Locating latest {args.source.upper()} predictions...")
         latest_file = engine.find_latest_predictions_file(args.source)
-        latest_mtime = datetime.fromtimestamp(
-            latest_file.stat().st_mtime, tz=timezone.utc
-        ).astimezone(LOCAL_TZ)
-        print(
-            f"🧭 TZ DEBUG: run_anchor tz={getattr(scr9_anchor, 'tzinfo', None)} | "
-            f"file_mtime tz={latest_mtime.tzinfo}"
-        )
-        if args.source == "scr9" and scr9_anchor and latest_mtime < scr9_anchor:
-            print("🚫 STALE BLOCK: Latest SCR9 predictions predate this run. Aborting to avoid stale bet plan.")
-            print(f"    Latest file: {latest_file.name} (modified {latest_mtime})")
-            print(f"    SCR9 anchor: {scr9_anchor}")
-            return 1
-
         df = engine.load_ultimate_predictions(latest_file)
         
         target_rows = engine.select_target_data(df, args.target)
