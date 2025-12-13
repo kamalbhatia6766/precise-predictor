@@ -913,9 +913,13 @@ class UltimatePredictionEngine:
                         pred_numbers = predictions.get(slot, [])
                         
                         # Find rank of actual number
+                        rank_missing_reason = ""
                         rank = None
                         if actual_number in pred_numbers:
                             rank = pred_numbers.index(actual_number) + 1
+                        else:
+                            rank = 999
+                            rank_missing_reason = "not_in_predictions"
                         
                         # Check hits
                         hit_top1 = rank == 1 if rank else False
@@ -929,6 +933,7 @@ class UltimatePredictionEngine:
                             'actual': actual_number,
                             'predictions': ','.join(map(str, pred_numbers)),
                             'rank': rank,
+                            'rank_missing_reason': rank_missing_reason,
                             'hit_top1': hit_top1,
                             'hit_top5': hit_top5,
                             'hit_top10': hit_top10,

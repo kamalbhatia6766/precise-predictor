@@ -12,7 +12,7 @@ import pandas as pd
 from quant_core import hit_core, pattern_core
 from quant_core.pattern_metrics_core import compute_pattern_metrics
 from quant_stats_core import compute_pack_hit_stats
-from script_hit_memory_utils import filter_by_window, filter_hits_by_window
+from script_hit_memory_utils import _normalise_date_column, filter_by_window, filter_hits_by_window
 import quant_paths
 import pattern_packs
 
@@ -89,14 +89,7 @@ class PatternIntelligenceEnhanced:
     def run(self) -> bool:
         hit_core.rebuild_hit_memory(window_days=self.window_days)
         df, base_summary = compute_pattern_metrics(window_days=self.window_days, base_dir=self.base_dir)
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
-        date_col = None
-        for candidate in ("result_date", "predict_date", "date"):
-            if candidate in df.columns:
-                date_col = candidate
-                break
+        df, date_col, latest = _normalise_date_column(df)
         filtered_df = df
         if date_col:
             try:

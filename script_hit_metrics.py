@@ -18,6 +18,7 @@ from script_hit_memory_utils import (
     filter_by_window,
     filter_hits_by_window,
     load_script_hit_memory,
+    _normalise_date_column,
 )
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -42,10 +43,12 @@ def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, O
     if df.empty:
         return pd.DataFrame(), None
 
+    df, date_col, latest = _normalise_date_column(df)
+    if df is None or df.empty or date_col is None or pd.isna(latest):
+        return pd.DataFrame(), None
+
     df = df.copy()
-    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
-    df = df.dropna(subset=["result_date"])
-    df["result_date"] = df["result_date"].dt.date
+    df[date_col] = pd.to_datetime(df.get(date_col), errors="coerce").dt.date
     df["slot"] = df.get("slot").apply(_normalise_slot)
     df["script_id"] = df.get("script_id").astype(str).str.strip().str.upper()
     df["HIT_TYPE"] = df.get("HIT_TYPE", "MISS").astype(str).str.upper()
@@ -54,7 +57,7 @@ def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, O
     df["is_near_hit"] = df.get("is_near_hit", False).astype(bool)
     df["_relation"] = df.apply(lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1)
     df = df.dropna(subset=["slot", "script_id"])
-    return df, "result_date"
+    return df, date_col
 
 
 def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) -> Tuple[pd.DataFrame, Dict[str, Any]]:

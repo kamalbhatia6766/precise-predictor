@@ -107,6 +107,56 @@ def _parse_excel_date_series(series: Optional[pd.Series]) -> pd.Series:
         return pd.to_datetime(series, errors="coerce")
 
 
+def _normalise_date_column(df: pd.DataFrame, candidates: Optional[Iterable[str]] = None) -> Tuple[pd.DataFrame, Optional[str], Optional[pd.Timestamp]]:
+    """Return a copy of ``df`` with a canonical date column parsed.
+
+    The normaliser is intentionally strict because downstream modules rely on
+    non-empty windows. It searches candidate columns in priority order,
+    attempts robust parsing (including ``datetime.date`` objects), drops NaT
+    rows, and returns the chosen column name alongside the latest timestamp.
+    A short diagnostic is printed if parsing fails completely so callers don't
+    silently proceed with an empty frame.
+    """
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=df.columns if df is not None else []), None, None
+
+    priority = list(candidates) if candidates else ["DATE", "result_date", "date", "predict_date"]
+    work_df = df.copy()
+    chosen_col: Optional[str] = None
+
+    for col in priority:
+        if col in work_df.columns:
+            chosen_col = col
+            break
+
+    if chosen_col is None:
+        return pd.DataFrame(columns=df.columns), None, None
+
+    series = work_df[chosen_col]
+    parsed = pd.to_datetime(series, errors="coerce")
+    if parsed.isna().all() and series.dtype == "O":
+        parsed = pd.to_datetime(series.astype(str), errors="coerce")
+    if parsed.isna().all():
+        parsed = _parse_excel_date_series(series)
+
+    work_df[chosen_col] = parsed
+    work_df["DATE"] = work_df[chosen_col]
+    work_df = work_df.dropna(subset=[chosen_col])
+
+    latest = work_df[chosen_col].max() if not work_df.empty else pd.NaT
+    if pd.isna(latest):
+        diag_counts = {}
+        for cand in priority:
+            if cand in df.columns:
+                cand_parsed = pd.to_datetime(df[cand], errors="coerce")
+                diag_counts[cand] = int(cand_parsed.isna().sum())
+        print(f"⚠️  DATE normalisation failed; NaT counts: {diag_counts}")
+        return pd.DataFrame(columns=df.columns), chosen_col, latest
+
+    return work_df, chosen_col, latest
+
+
 def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalise a raw hit-memory frame into SCRIPT_HIT_MEMORY_HEADERS.
@@ -285,10 +335,10 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
     canonical_date = out.get("result_date") if "result_date" in out.columns else out.get("date")
     out["DATE"] = canonical_date
 
-    out = out.dropna(subset=["predict_date", "result_date"], how="any")
+    out = out.dropna(subset=["DATE", "result_date", "date"], how="all")
     for col in ("predict_date", "result_date"):
         if col in out.columns:
-            out[col] = out[col].dt.date
+            out[col] = pd.to_datetime(out[col], errors="coerce").dt.date
 
     return out[SCRIPT_HIT_MEMORY_HEADERS]
 
@@ -416,18 +466,12 @@ def filter_by_window(
     slicing.
     """
 
-    if df is None or df.empty:
+    normalised_df, chosen_col, latest = _normalise_date_column(df, candidates=[date_col, "DATE", "result_date", "date", "predict_date"])
+    if normalised_df is None or normalised_df.empty or chosen_col is None:
         return pd.DataFrame(columns=df.columns if df is not None else []), None, None
 
-    work_df = df.copy()
-    work_df[date_col] = pd.to_datetime(work_df.get(date_col), errors="coerce")
-    work_df = work_df.dropna(subset=[date_col])
-    if work_df.empty:
-        return work_df, None, None
-
-    latest = work_df[date_col].max()
     cutoff = latest - timedelta(days=window_days - 1)
-    filtered = work_df[(work_df[date_col] >= cutoff) & (work_df[date_col] <= latest)]
+    filtered = normalised_df[(normalised_df[chosen_col] >= cutoff) & (normalised_df[chosen_col] <= latest)]
 
     return filtered, cutoff, latest
 
@@ -475,7 +519,7 @@ def append_script_hit_row(row: Dict[str, object], base_dir: Optional[Path] = Non
 
 
 def _choose_date_column(df: pd.DataFrame) -> Optional[str]:
-    for col in ("predict_date", "result_date", "date"):
+    for col in ("DATE", "result_date", "date", "predict_date"):
         if col in df.columns and not df[col].isna().all():
             return col
     return None
@@ -491,18 +535,14 @@ def filter_by_date_window(
     is inclusive of both endpoints and normalised to midnight for stability.
     """
 
-    if df is None or df.empty:
+    normalised_df, chosen_col, latest = _normalise_date_column(df, candidates=[date_col])
+    if normalised_df is None or normalised_df.empty or chosen_col is None:
         return pd.DataFrame(columns=df.columns if df is not None else []), None, None
 
-    work_df = df.copy()
-    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce").dt.normalize()
-    work_df = work_df.dropna(subset=[date_col])
-    if work_df.empty:
-        return work_df, None, None
-
-    latest = work_df[date_col].max()
+    normalised_df[chosen_col] = pd.to_datetime(normalised_df[chosen_col], errors="coerce").dt.normalize()
+    latest = normalised_df[chosen_col].max()
     cutoff = latest - timedelta(days=window_days - 1)
-    filtered = work_df[(work_df[date_col] >= cutoff) & (work_df[date_col] <= latest)]
+    filtered = normalised_df[(normalised_df[chosen_col] >= cutoff) & (normalised_df[chosen_col] <= latest)]
 
     return filtered, cutoff, latest
 
