@@ -47,6 +47,22 @@ def _load_windowed_memory(window_days: int, base_dir: Optional[Path] = None) -> 
 
 
 def _family_summary(df: pd.DataFrame, flag_col: str) -> Dict:
+    default_summary = {
+        "hits_total": 0,
+        "hit_rate": 0.0,
+        "daily_cover_days": 0,
+        "daily_cover_total_days": 0,
+        "daily_cover_pct": 0.0,
+        "per_slot": {},
+    }
+
+    if df is None or df.empty or flag_col not in df.columns:
+        return default_summary
+
+    if "slot" not in df.columns:
+        df = df.copy()
+        df["slot"] = "ALL"
+
     total_rows = len(df)
     total_days = df["result_date"].dt.date.nunique() if not df.empty else 0
     hits_total = int(df[flag_col].sum()) if flag_col in df.columns else 0
