@@ -50,15 +50,12 @@ class BetPnLTracker:
         bet_plan_files = list(bet_plans_dir.glob("bet_plan_master_*.xlsx"))
         bet_plans = {}
         
-        print(f"🔍 Found {len(bet_plan_files)} bet plan files")
-        
         for file in bet_plan_files:
             try:
                 # 🆕 Use central path helper to parse date
                 date_from_file = quant_paths.parse_date_from_filename(file.stem)
                 if date_from_file:
                     bet_plans[date_from_file] = file
-                    print(f"   ✅ {date_from_file}: {file.name}")
                 else:
                     print(
                         f"   ℹ️  Skipping non-standard file (intra run): {file.name} – date not parsed (expected for experimental files)."
@@ -66,7 +63,12 @@ class BetPnLTracker:
             except Exception as e:
                 print(f"   ❌ Error processing {file.name}: {e}")
                 continue
-                
+
+        print(f"Loaded {len(bet_plan_files)} bet plan files (showing first 5):")
+        for f in bet_plan_files[:5]:
+            print("   •", f.name)
+        print("   …")
+
         return bet_plans
 
     def safe_column_access(self, df, column_name, default_value=None):

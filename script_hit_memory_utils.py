@@ -84,41 +84,18 @@ def get_script_hit_memory_xlsx_path(base_dir: Optional[Path] = None) -> Path:
 
 
 def _parse_excel_date_series(series: Optional[pd.Series]) -> pd.Series:
-    """Best-effort parse for date-like columns (handles Excel serials).
-
-    The incoming ``series`` may contain strings ("2025-11-07"), pandas-na,
-    or Excel-style serial numbers (e.g., 45533). We first try the default
-    ``to_datetime`` parsing; if that yields gaps for numeric values we run a
-    second pass treating the entries as Excel serial days from 1899-12-30.
-    The function always returns a ``datetime.date`` series (or NaT when
-    parsing fails).
-    """
-
     if series is None:
-        return pd.Series([], dtype="datetime64[ns]")
+        return pd.NaT
 
-    def clean_dates(raw: Iterable) -> pd.Series:
-        cleaned = []
-        for v in raw:
-            if isinstance(v, (datetime, date)):
-                cleaned.append(v)
-                continue
-            try:
-                fv = float(v)
-                if fv < 40000 or fv > 50000:
-                    cleaned.append(np.nan)
-                    continue
-            except Exception:
-                cleaned.append(np.nan)
-                continue
-            cleaned.append(v)
-        return pd.Series(cleaned)
+    s = pd.to_datetime(series, errors="coerce")
+    if s.notna().sum() > 0:
+        return s
 
-    series = clean_dates(series)
-    with np.errstate(over="ignore", invalid="ignore"):
-        parsed = pd.to_datetime(series, errors="coerce", unit="D", origin="1899-12-30")
-    parsed = parsed.fillna(pd.NaT)
-    return parsed
+    # Fallback for true Excel-numeric date
+    try:
+        return pd.to_datetime(series, errors="coerce", unit="D", origin="1899-12-30")
+    except Exception:
+        return pd.to_datetime(series, errors="coerce")
 
 
 def _align_columns(df: pd.DataFrame) -> pd.DataFrame:

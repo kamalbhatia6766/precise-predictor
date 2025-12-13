@@ -605,12 +605,13 @@ class UltimatePredictionEngine:
 
     def collect_all_script_predictions(self, target_date=None, mode=None):
         """Collect predictions from all available scripts - OPTIMIZED FOR SPEED MODE"""
-        print("🎯 Collecting predictions from scripts...")
-        
-        if self.speed_mode == 'fast':
-            print("   ⚡ FAST MODE: Running SCR1–SCR8 once for tomorrow only")
-        else:
-            print("   🐢 FULL MODE: Running all scripts")
+        if VERBOSE_BACKTEST:
+            print("🎯 Collecting predictions from scripts...")
+
+            if self.speed_mode == 'fast':
+                print("   ⚡ FAST MODE: Running SCR1–SCR8 once for tomorrow only")
+            else:
+                print("   🐢 FULL MODE: Running all scripts")
 
         scripts = [
             'deepseek_scr1.py',
@@ -634,10 +635,14 @@ class UltimatePredictionEngine:
                 script_times[script] = end_time - start_time
                 all_predictions[script] = preds
             else:
-                print(f"   ⚠️  {script} not found")
-        
+                if VERBOSE_BACKTEST:
+                    print(f"   ⚠️  {script} not found")
+
+        if not VERBOSE_BACKTEST:
+            print("   [SCR1–SCR8] All component scripts executed.")
+
         # Print timing summary
-        if script_times:
+        if VERBOSE_BACKTEST and script_times:
             print("   ⏰ Script execution times:")
             for script, exec_time in script_times.items():
                 print(f"     {script}: {exec_time:.1f}s")
@@ -770,7 +775,7 @@ class UltimatePredictionEngine:
     
     def predict_for_target_date(self, df_history, target_date):
         """Generate predictions for a specific target date - OPTIMIZED"""
-        print(f"   🎯 Predicting for {target_date}...")
+        print(f"[SCR11-BACKTEST] Testing {target_date.date()}...")
 
         # Collect predictions from all scripts
         all_script_preds = self.collect_all_script_predictions(target_date=target_date, mode='predict_for_date')
@@ -891,7 +896,7 @@ class UltimatePredictionEngine:
             
             for test_date in test_dates:
                 test_date_str = test_date.strftime('%Y-%m-%d')
-                print(f"   🔍 Testing {test_date_str}...")
+                print(f"   → {test_date.date()}")
                 
                 # Split data
                 history_df = df[df['date'] < test_date]
