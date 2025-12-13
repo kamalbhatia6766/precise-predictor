@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
+from typing import Optional
 import warnings
 import os
 import glob
@@ -21,6 +22,8 @@ from script_hit_metrics import (
     compute_script_metrics,
     hero_weak_table,
 )
+from script_hit_memory_utils import load_script_hit_memory
+import pattern_packs
 warnings.filterwarnings('ignore')
 
 USE_SCRIPT_WEIGHTS = True
@@ -30,76 +33,139 @@ LEARN_WINDOW_DAYS = 90
 LEARN_WEIGHT_EXACT = 1.0
 LEARN_WEIGHT_NEAR = 0.3
 LEARN_SCORE_ALPHA = 0.1
+SCRIPT_SCORE_A = 3.0
+SCRIPT_SCORE_B = 1.0
+SCRIPT_SCORE_C = 0.5
+SCRIPT_WEIGHT_MIN = 0.5
+SCRIPT_WEIGHT_MAX = 1.5
+BOOSTER_WINDOW_DAYS = 90
+BOOST_ALPHA = 3
+BOOST_BETA = 1
+BOOST_GAMMA = 2
+BOOST_DELTA = 1
+
+
+def _normalize_slot(slot_val):
+    mapping = {"1": "FRBD", "2": "GZBD", "3": "GALI", "4": "DSWR"}
+    if pd.isna(slot_val):
+        return None
+    s = str(slot_val).strip().upper()
+    return mapping.get(s, s if s else None)
+
+
+def _choose_date_column(df: pd.DataFrame) -> Optional[str]:
+    for col in ["result_date", "date", "predict_date"]:
+        if col in df.columns:
+            return col
+    return None
+
+
+def _normalize_number(value: object) -> Optional[int]:
+    if pd.isna(value):
+        return None
+    try:
+        return int(str(value).zfill(2)) % 100
+    except Exception:
+        return None
 
 
 def load_learning_scores(base_dir, window_days=LEARN_WINDOW_DAYS):
-    """Load recent hit/near-hit memory and build per-slot learning scores."""
+    """Load recent hit/near-hit memory and build per-slot learning scores and weights."""
 
-    perf_dir = os.path.join(base_dir, "logs", "performance")
-    file_candidates = [
-        os.path.join(perf_dir, "script_hit_memory.xlsx"),
-        os.path.join(perf_dir, "script_hit_memory.csv"),
-        os.path.join(perf_dir, "script_hit_memory.json"),
-    ]
-
-    df = None
-    for path in file_candidates:
-        if not os.path.exists(path):
-            continue
-        try:
-            if path.endswith(".xlsx"):
-                df = pd.read_excel(path)
-            elif path.endswith(".csv"):
-                df = pd.read_csv(path)
-            elif path.endswith(".json"):
-                df = pd.read_json(path)
-            if df is not None:
-                break
-        except Exception:
-            continue
-
+    df = load_script_hit_memory(base_dir=Path(base_dir))
     if df is None or df.empty:
         print("[LEARNING] Hit-memory file not found or empty; proceeding without learning boost.")
-        return {}
-
-    required_cols = {"date", "slot", "number", "hit_type"}
-    if not required_cols.issubset(set(df.columns)):
-        print("[LEARNING] Hit-memory file missing required columns; skipping learning boost.")
-        return {}
+        return {}, {}, {"window": window_days, "rows": 0}
 
     df = df.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date", "slot", "number", "hit_type"])
+    date_col = _choose_date_column(df)
+    if not date_col:
+        print("[LEARNING] No valid date column in hit-memory; proceeding without learning boost.")
+        return {}, {}, {"window": window_days, "rows": 0}
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df = df.dropna(subset=[date_col])
     cutoff = datetime.now() - timedelta(days=window_days)
-    df = df[df["date"] >= cutoff]
+    df = df[df[date_col] >= cutoff]
     if df.empty:
         print("[LEARNING] No recent hit-memory data within window; skipping learning boost.")
-        return {}
+        return {}, {}, {"window": window_days, "rows": 0}
 
-    df["slot"] = df["slot"].astype(str).str.upper()
-    df["hit_type"] = df["hit_type"].astype(str).str.upper()
-    df["number"] = df["number"].apply(lambda x: int(str(x).zfill(2)) if pd.notna(x) else None)
-    df = df.dropna(subset=["number"])
+    df["slot"] = df.get("slot").apply(_normalize_slot)
+    df["script_id"] = df.get("script_id", "").astype(str).str.upper()
+    df["hit_type"] = df.get("hit_type", "MISS").astype(str).str.upper()
+    df["predicted_number"] = df.get("predicted_number", df.get("number")).apply(_normalize_number)
+    df["is_exact_hit"] = df.get("is_exact_hit", False).fillna(False).astype(bool)
+    df["is_near_hit"] = df.get("is_near_hit", False).fillna(False).astype(bool)
+    df["is_near_miss"] = df.get("is_near_miss", False).fillna(False).astype(bool)
+
+    df = df.dropna(subset=["slot", "script_id", "predicted_number"])
 
     learning_scores = defaultdict(dict)
-    near_hits = {"NEAR", "NEIGHBOR", "MIRROR"}
+    slot_script_weights = defaultdict(dict)
+    near_hits = {"NEAR", "NEIGHBOR", "MIRROR", "CROSS_SLOT", "CROSS_DAY"}
 
     for slot in SLOTS:
         slot_df = df[df["slot"] == slot]
         if slot_df.empty:
             continue
-        for num, group in slot_df.groupby("number"):
-            counts = Counter(group["hit_type"])
-            count_exact = counts.get("EXACT", 0)
-            count_near = sum(counts.get(ht, 0) for ht in near_hits)
+
+        for num, group in slot_df.groupby("predicted_number"):
+            count_exact = group["is_exact_hit"].sum()
+            count_near = group["is_near_hit"].sum()
+            if "hit_type" in group:
+                counts = Counter(group["hit_type"])
+                count_exact = max(count_exact, counts.get("EXACT", 0) + counts.get("DIRECT", 0))
+                count_near = max(
+                    count_near,
+                    sum(counts.get(ht, 0) for ht in near_hits) + group["is_near_miss"].sum(),
+                )
             learning_scores[slot][int(num)] = LEARN_WEIGHT_EXACT * count_exact + LEARN_WEIGHT_NEAR * count_near
 
+        for script, group in slot_df.groupby("script_id"):
+            total_preds = len(group)
+            if total_preds == 0:
+                continue
+            hit_types = group["hit_type"].astype(str)
+            exact_hits = group["is_exact_hit"].sum() + hit_types.isin({"EXACT", "DIRECT"}).sum()
+            near_total = group["is_near_hit"].sum() + group["is_near_miss"].sum() + hit_types.isin(near_hits).sum()
+            hit_rate_exact = exact_hits / total_preds
+            near_miss_rate = near_total / total_preds
+            blind_miss_rate = max(0.0, 1.0 - (hit_rate_exact + near_miss_rate))
+            score = SCRIPT_SCORE_A * hit_rate_exact + SCRIPT_SCORE_B * near_miss_rate - SCRIPT_SCORE_C * blind_miss_rate
+            slot_script_weights[slot][str(script).upper()] = score
+
+    normalized_weights = defaultdict(dict)
+    for slot, weights in slot_script_weights.items():
+        if not weights:
+            continue
+        scores = list(weights.values())
+        min_score, max_score = min(scores), max(scores)
+        if np.isclose(min_score, max_score):
+            normalized_weights[slot] = {s: 1.0 for s in weights.keys()}
+        else:
+            for script, score in weights.items():
+                scaled = SCRIPT_WEIGHT_MIN + (score - min_score) * (SCRIPT_WEIGHT_MAX - SCRIPT_WEIGHT_MIN) / (max_score - min_score)
+                normalized_weights[slot][script] = max(SCRIPT_WEIGHT_MIN, min(SCRIPT_WEIGHT_MAX, scaled))
+
+    total_rows = len(df)
     if learning_scores:
-        print(f"[LEARNING] Applied near-hit learning scores from script_hit_memory (window={window_days}d)")
+        print(
+            f"[LEARNING] Window={window_days}d, rows={total_rows}, "
+            + ", ".join(
+                f"{slot}: "
+                + ", ".join(
+                    f"{k}={v:.2f}" for k, v in sorted((normalized_weights.get(slot) or {}).items())
+                )
+                if normalized_weights.get(slot)
+                else f"{slot}: none"
+                for slot in SLOTS
+            )
+        )
     else:
         print("[LEARNING] No learning scores computed; proceeding without boost.")
 
-    return learning_scores
+    return learning_scores, normalized_weights, {"window": window_days, "rows": total_rows}
 
 class UltimatePredictionEngine:
     """
@@ -117,8 +183,10 @@ class UltimatePredictionEngine:
         self.script_weight_metrics = None
         self.script_weight_metrics_df = None
         self.metrics_weight_map = {}
-        self.learning_scores = load_learning_scores(self.base_dir)
+        self.learning_scores, self.learning_slot_weights, self.learning_meta = load_learning_scores(self.base_dir)
         self.latest_score_details = {}
+        self.s40_numbers = set(getattr(pattern_packs, "S40", []))
+        self.family_164950 = {0, 1, 4, 5, 6, 9}
         # Cache to avoid rerunning heavy scripts (e.g., SCR6) for the same date/mode within a run
         self.script_prediction_cache = {}
         self.setup_directories()
@@ -198,6 +266,8 @@ class UltimatePredictionEngine:
         """Load script metrics and build preview weights when enabled."""
 
         try:
+            base_learning_weights = self.learning_slot_weights if hasattr(self, "learning_slot_weights") else {}
+
             metrics_df, summary = get_metrics_table(
                 window_days=SCRIPT_WEIGHTS_WINDOW_DAYS,
                 base_dir=Path(self.base_dir),
@@ -216,20 +286,19 @@ class UltimatePredictionEngine:
                     print(f"[WARN] No hero/weak metrics for slot {slot}, using equal weights")
                     self._set_equal_weights_for_slot(slot)
                 self.slot_script_weights = self.slot_script_weights or {}
-                return
-
-            weights = build_script_weights_by_slot(
-                metrics_df,
-                min_samples=30,
-                min_score=SCRIPT_WEIGHTS_MIN_SCORE,
-            )
-            if not weights:
-                print("[WARN] No eligible script weights derived; using equal weights per slot")
-                for slot in SLOTS:
-                    self._set_equal_weights_for_slot(slot)
-                self.slot_script_weights = self.slot_script_weights or {}
             else:
-                self.slot_script_weights = weights
+                weights = build_script_weights_by_slot(
+                    metrics_df,
+                    min_samples=30,
+                    min_score=SCRIPT_WEIGHTS_MIN_SCORE,
+                )
+                if not weights:
+                    print("[WARN] No eligible script weights derived; using equal weights per slot")
+                    for slot in SLOTS:
+                        self._set_equal_weights_for_slot(slot)
+                    self.slot_script_weights = self.slot_script_weights or {}
+                else:
+                    self.slot_script_weights = weights
 
             self._print_weight_preview()
         except Exception as e:
@@ -237,6 +306,23 @@ class UltimatePredictionEngine:
             self.slot_script_weights = {}
             self.script_weight_metrics = None
             self.script_weight_metrics_df = None
+
+        if base_learning_weights:
+            merged = {}
+            for slot in SLOTS:
+                learning_weights = base_learning_weights.get(slot, {})
+                current_weights = (self.slot_script_weights or {}).get(slot, {})
+                if learning_weights:
+                    if current_weights:
+                        combo = {}
+                        for script in set(learning_weights.keys()) | set(current_weights.keys()):
+                            combo[script] = learning_weights.get(script, 1.0) * current_weights.get(script, 1.0)
+                        total = sum(combo.values()) or 1.0
+                        merged[slot] = {k: v / total for k, v in combo.items()}
+                    else:
+                        merged[slot] = learning_weights
+            if merged:
+                self.slot_script_weights = merged
 
     def _compute_slot_weights(self, metrics_for_slot):
         weights = {}
@@ -622,6 +708,63 @@ class UltimatePredictionEngine:
             }
 
         return final_scores, score_details
+
+    def apply_number_booster(self, slot_name, candidate_scores, score_details, df_history, target_date):
+        if not candidate_scores:
+            return candidate_scores, score_details
+
+        slot_idx = next((k for k, v in self.slot_names.items() if v == slot_name), None)
+        if slot_idx is None:
+            return candidate_scores, score_details
+
+        window_start = target_date - timedelta(days=BOOSTER_WINDOW_DAYS)
+        hist_window = df_history[(df_history["date"] >= window_start) & (df_history["date"] < target_date)]
+        if hist_window.empty:
+            return candidate_scores, score_details
+
+        slot_hist = hist_window[hist_window["slot"] == slot_idx]
+        other_slots = hist_window[hist_window["slot"] != slot_idx]
+        slot_counts = Counter(slot_hist.get("number", []))
+        cross_slot_dates = other_slots[other_slots.get("number").isin(list(candidate_scores.keys()))]
+
+        adjusted_scores = {}
+        boosters = {}
+
+        for num, base_score in candidate_scores.items():
+            mirror = int(str(num).zfill(2)[::-1])
+            neighbors = {(num + 1) % 100, (num - 1) % 100}
+            exact_hits = slot_counts.get(num, 0)
+            near_hits = slot_counts.get(mirror, 0) + sum(slot_counts.get(n, 0) for n in neighbors)
+            cross_hits = 0
+            if not cross_slot_dates.empty:
+                cross_hits = len(cross_slot_dates[cross_slot_dates.get("number") == num])
+
+            is_s40 = 1 if num in self.s40_numbers else 0
+            digits = {num // 10, num % 10}
+            is_family = 1 if digits.issubset(self.family_164950) else 0
+
+            booster = (
+                BOOST_ALPHA * exact_hits
+                + BOOST_BETA * (near_hits + cross_hits)
+                + BOOST_GAMMA * is_s40
+                + BOOST_DELTA * is_family
+            )
+
+            final_score = base_score + booster
+            adjusted_scores[num] = final_score
+            boosters[num] = booster
+            detail = score_details.get(num, {}) if score_details else {}
+            detail.update({"booster": booster, "final_score": final_score, "base_score": base_score})
+            score_details[num] = detail
+
+        if boosters:
+            top_boosted = sorted(boosters.items(), key=lambda x: x[1], reverse=True)[:3]
+            boost_line = ", ".join(
+                f"{num:02d} (+{boosters[num]:.1f}→{adjusted_scores[num]:.1f})" for num, _ in top_boosted
+            )
+            print(f"[BOOST] {slot_name}: top boosters {boost_line}")
+
+        return adjusted_scores, score_details
     
     def predict_for_target_date(self, df_history, target_date):
         """Generate predictions for a specific target date - OPTIMIZED"""
@@ -679,7 +822,10 @@ class UltimatePredictionEngine:
                     num: score_details.get(num, {}).get("final_score", scores[num])
                     for num in candidates
                 }
-                final_pred = self.apply_diversity_filter(candidate_scores, top_k)
+                boosted_scores, score_details = self.apply_number_booster(
+                    slot_name, candidate_scores, score_details, df_history, target_date
+                )
+                final_pred = self.apply_diversity_filter(boosted_scores, top_k)
                 final_predictions[slot_name] = final_pred
 
         self.latest_score_details = slot_score_details
