@@ -12,7 +12,7 @@ import pandas as pd
 from quant_core import hit_core, pattern_core
 from quant_core.pattern_metrics_core import compute_pattern_metrics
 from quant_stats_core import compute_pack_hit_stats
-from script_hit_memory_utils import filter_by_date_window, filter_hits_by_window
+from script_hit_memory_utils import filter_by_window, filter_hits_by_window
 import quant_paths
 import pattern_packs
 
@@ -100,7 +100,7 @@ class PatternIntelligenceEnhanced:
         filtered_df = df
         if date_col:
             try:
-                filtered_df, window_start, window_end = filter_by_date_window(df, date_col, self.window_days)
+                filtered_df, window_start, window_end = filter_by_window(df, date_col=date_col, window_days=self.window_days)
                 if self.logger.isEnabledFor(logging.INFO):
                     self.logger.info(
                         "[PatternIntel+] window=%sd start=%s end=%s rows=%s",

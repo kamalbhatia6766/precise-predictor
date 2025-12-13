@@ -316,8 +316,19 @@ def ensure_script_hit_memory_exists(base_dir: Optional[Path] = None) -> Path:
     return csv_path
 
 
-def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
-    """Load script hit memory, preferring the Excel source of truth."""
+def load_script_hit_memory(
+    base_dir: Optional[Path] = None, return_diag: bool = False
+) -> pd.DataFrame:
+    """Load script hit memory, preferring the Excel source of truth.
+
+    The loader is defensive and consistent across the stack:
+    - Always reads logs/performance/script_hit_memory.xlsx (or CSV fallback).
+    - Picks the first sheet that contains a DATE column, slot, script, and a
+      hit indicator column.
+    - Normalises columns into a canonical schema and parses DATE.
+    - Drops rows with invalid/NaT DATE values.
+    - Optionally returns a diagnostic string when the resulting frame is empty.
+    """
 
     base = _resolve_base_dir(base_dir)
     xlsx_path = get_script_hit_memory_xlsx_path(base_dir=base)
@@ -326,9 +337,28 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
     df: Optional[pd.DataFrame] = None
     excel_error: Optional[Exception] = None
 
+    def _sheet_has_required_columns(columns: Iterable[str]) -> bool:
+        normalised = {str(c).strip().lower().replace(" ", "") for c in columns}
+        has_date = any(key in normalised for key in ("date", "result_date", "predict_date", "DATE".lower()))
+        has_slot = any(key in normalised for key in ("slot", "slotname", "slot_id", "realslot"))
+        has_script = any(key in normalised for key in ("script", "scriptid", "script_name"))
+        hit_keys = ("hit_type", "hittype", "hitflag", "hit", "is_exact_hit", "isnearhit", "result")
+        has_hit = any(key in normalised for key in hit_keys)
+        return bool(has_date and has_slot and has_script and has_hit)
+
     if xlsx_path.exists():
         try:
-            df = pd.read_excel(xlsx_path, dtype=str, engine="openpyxl")
+            xls = pd.ExcelFile(xlsx_path, engine="openpyxl")
+            chosen_sheet = None
+            for sheet in xls.sheet_names:
+                preview = xls.parse(sheet_name=sheet, nrows=1)
+                if _sheet_has_required_columns(preview.columns):
+                    chosen_sheet = sheet
+                    break
+            if chosen_sheet is None and xls.sheet_names:
+                chosen_sheet = xls.sheet_names[0]
+            if chosen_sheet:
+                df = xls.parse(sheet_name=chosen_sheet, dtype=str)
         except (BadZipFile, InvalidFileException, ValueError) as exc:
             excel_error = exc
 
@@ -336,7 +366,7 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
         df = pd.read_csv(csv_path, dtype=str)
 
     if df is None:
-        return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+        return (pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS), "script_hit_memory not found") if return_diag else pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
 
     df = _align_columns(df)
 
@@ -358,6 +388,7 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
     df["DATE"] = pd.to_datetime(df.get("DATE"), errors="coerce")
     if "DATE" in df.columns:
         df["DATE"] = df["DATE"].where(df["DATE"].notna(), df["result_date"])
+    df = df.dropna(subset=["DATE"])
     df["slot"] = df.get("slot").astype(str)
     df["script_id"] = df.get("script_id").astype(str)
     df["HIT_TYPE"] = df.get("hit_type").astype(str).str.upper()
@@ -368,7 +399,37 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
     df["is_near_miss"] = _to_bool(df.get("is_near_miss", False)) | df["HIT_TYPE"].isin(
         ["MIRROR", "NEIGHBOR", "CROSS_SLOT", "CROSS_DAY"]
     )
-    return df
+
+    diag = None
+    if df.empty:
+        diag = f"script_hit_memory empty after load (columns={list(df.columns)})"
+    return (df, diag) if return_diag else df
+
+
+def filter_by_window(
+    df: pd.DataFrame, date_col: str = "DATE", window_days: int = 30
+) -> Tuple[pd.DataFrame, Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+    """Filter a DataFrame to an inclusive rolling window.
+
+    Returns the filtered DataFrame plus (cutoff, latest) dates. Dates are
+    parsed with ``errors="coerce"`` and rows with NaT are dropped prior to
+    slicing.
+    """
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=df.columns if df is not None else []), None, None
+
+    work_df = df.copy()
+    work_df[date_col] = pd.to_datetime(work_df.get(date_col), errors="coerce")
+    work_df = work_df.dropna(subset=[date_col])
+    if work_df.empty:
+        return work_df, None, None
+
+    latest = work_df[date_col].max()
+    cutoff = latest - timedelta(days=window_days - 1)
+    filtered = work_df[(work_df[date_col] >= cutoff) & (work_df[date_col] <= latest)]
+
+    return filtered, cutoff, latest
 
 
 def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = None) -> Path:

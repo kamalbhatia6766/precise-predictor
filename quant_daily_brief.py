@@ -1236,7 +1236,18 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
     # Fallback to live computation when JSON is missing
     metrics, summary = get_metrics_table(window_days=window_days, mode="per_slot")
     if metrics is None or summary is None or metrics.empty:
-        print("   No script hit metrics available yet (script_hit_memory is empty).")
+        hit_memory, diag = load_script_hit_memory(return_diag=True)
+        rows = len(hit_memory) if hasattr(hit_memory, "__len__") else 0
+        latest_date = (
+            pd.to_datetime(hit_memory["DATE"], errors="coerce").max().date()
+            if isinstance(hit_memory, pd.DataFrame) and not hit_memory.empty
+            else None
+        )
+        note = diag or "script_hit_memory is empty"
+        if latest_date:
+            print(f"   Script hit memory: {rows} rows (as-of {latest_date}).")
+        else:
+            print(f"   Script hit memory unavailable ({note}).")
         return
     heroes_df = hero_weak_table(metrics, min_predictions=10)
     hero_map = {row.get("slot"): row for _, row in heroes_df.iterrows()} if heroes_df is not None else {}

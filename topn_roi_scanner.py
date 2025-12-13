@@ -240,6 +240,7 @@ def _prepare_topn_policy_data(summary: Dict, max_n: int) -> Tuple[Dict[str, Dict
     payload: Dict[str, Dict[str, object]] = {}
     debug_rows: List[Dict[str, object]] = []
     window_end = summary.get("window_end")
+    window_days = summary.get("window_days_used") or summary.get("available_days") or summary.get("window_days_requested")
 
     def _parse_roi_map(raw_map: Dict) -> Dict[int, float]:
         return {int(k): v for k, v in raw_map.items()} if isinstance(raw_map, dict) else {}
@@ -258,6 +259,8 @@ def _prepare_topn_policy_data(summary: Dict, max_n: int) -> Tuple[Dict[str, Dict
             max_n,
             window_end,
         )
+        if roi_map:
+            entry["roi_by_N"] = {str(k): v for k, v in roi_map.items()}
         payload[slot] = entry
         debug_rows.extend(slot_debug)
 
@@ -268,8 +271,17 @@ def _prepare_topn_policy_data(summary: Dict, max_n: int) -> Tuple[Dict[str, Dict
     overall_entry, overall_debug = _compute_slot_policy(
         "ALL", roi_map_all, days_map_all, hits_map_all, near_hits_map_all, max_n, window_end
     )
+    if roi_map_all:
+        overall_entry["roi_by_N"] = {str(k): v for k, v in roi_map_all.items()}
     payload["ALL"] = overall_entry
     debug_rows.extend(overall_debug)
+
+    payload["meta"] = {
+        "as_of": window_end.isoformat() if hasattr(window_end, "isoformat") else window_end,
+        "window_days": window_days,
+        "generated": datetime.now().isoformat(),
+        "overall_roi_by_N": {str(k): v for k, v in roi_map_all.items()},
+    }
 
     return payload, debug_rows
 

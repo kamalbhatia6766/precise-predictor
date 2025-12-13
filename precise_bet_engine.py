@@ -10,6 +10,7 @@ import warnings
 import argparse
 import json
 import quant_data_core
+from script_hit_memory_utils import filter_by_window, load_script_hit_memory
 from quant_slot_health import get_slot_health, SlotHealth
 from quant_stats_core import compute_topn_roi, get_quant_stats
 from pattern_intelligence_engine import load_near_miss_boosts
@@ -987,39 +988,26 @@ class PreciseBetEngine:
         return target_date
 
     def load_script_hit_memory(self, target_date):
-        memory_file = Path(__file__).resolve().parent / "logs" / "performance" / "script_hit_memory.xlsx"
-        if not memory_file.exists():
-            print("⚠️  No script_hit_memory.xlsx found - using pure SCR9 ranks")
+        df, diag = load_script_hit_memory(return_diag=True)
+        if isinstance(df, tuple):
+            df = df[0]
+        if df is None or df.empty:
+            note = diag or "script hit memory unavailable"
+            print(f"⚠️  {note} - using pure SCR9 ranks")
             return None
-        try:
-            df = pd.read_excel(memory_file)
-            df.columns = [str(c).strip() for c in df.columns]
 
-            possible_hit_type_cols = ['hit_type', 'HIT_TYPE', 'HitType', 'hitType', 'HIT TYPE']
-            normalized_map = {re.sub(r"[\s_]+", "", str(col)).lower(): col for col in df.columns}
-            resolved_col = None
-            for col in possible_hit_type_cols:
-                normalized = re.sub(r"[\s_]+", "", col).lower()
-                if normalized in normalized_map:
-                    resolved_col = normalized_map[normalized]
-                    break
-
-            if resolved_col is None:
-                print("⚠️  Warning: No hit_type/HIT_TYPE column found in script_hit_memory; skipping hit-type-based weighting.")
-                df['hit_type'] = 'UNKNOWN'
-                resolved_col = 'hit_type'
-            elif resolved_col != 'hit_type':
-                df['hit_type'] = df[resolved_col]
-
-            print(f"✅ Using hit type column: {resolved_col} → exposed as 'hit_type'")
-            df['date'] = pd.to_datetime(df['date']).dt.date
-            cutoff_date = target_date - timedelta(days=self.N_DAYS)
-            filtered_df = df[df['date'] >= cutoff_date]
-            print(f"📊 Loaded script hit memory: {len(filtered_df)} records")
-            return filtered_df
-        except Exception as e:
-            print(f"⚠️  Error loading script_hit_memory: {e}")
+        cutoff_date = target_date - timedelta(days=self.N_DAYS)
+        filtered_df, cutoff, latest = filter_by_window(df, date_col="DATE", window_days=self.N_DAYS)
+        if filtered_df is None or filtered_df.empty:
+            print(
+                f"⚠️  Script hit memory has no rows in last {self.N_DAYS} days (cutoff={getattr(cutoff, 'date', lambda: None)()}, latest={getattr(latest, 'date', lambda: None)()})"
+            )
             return None
+
+        print(
+            f"📊 Loaded script hit memory: {len(filtered_df)} records (start={getattr(cutoff, 'date', lambda: None)()}, end={getattr(latest, 'date', lambda: None)()})"
+        )
+        return filtered_df
 
     def build_history_table(self, memory_df):
         history = defaultdict(lambda: {'direct_hits': 0, 'cross_hits': 0, 's40_hits': 0, 'digit_tags': set()})
@@ -1785,11 +1773,10 @@ class PreciseBetEngine:
             shortlist, all_scored = self.build_dynamic_shortlist(scored_numbers, desired_k=shortlist_k)
             tiers = self.assign_tiers(shortlist)
             policy_roi = policy_block.get("roi_final_best") if isinstance(policy_block, dict) else None
-            print(
-                f"   Top-N policy: final_best_n={n_star_int}, roi_final_best={policy_roi:+.1f}%"
-                if policy_roi is not None
-                else f"   Top-N policy: final_best_n={n_star_int}"
-            )
+            if policy_roi is None:
+                print(f"   Top-N policy: final_best_n={n_star_int}, ROI unavailable")
+            else:
+                print(f"   Top-N policy: final_best_n={n_star_int}, roi_final_best={policy_roi:+.1f}%")
 
             slot_debug_numbers = []
             

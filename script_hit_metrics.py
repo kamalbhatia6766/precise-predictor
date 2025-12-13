@@ -15,7 +15,7 @@ from quant_core import hit_core
 from quant_stats_core import compute_pack_hit_stats as compute_pack_hit_stats_core, compute_script_slot_stats
 from script_hit_memory_utils import (
     classify_relation,
-    filter_by_date_window,
+    filter_by_window,
     filter_hits_by_window,
     load_script_hit_memory,
 )
@@ -37,6 +37,8 @@ def _normalise_slot(slot_value: object) -> Optional[str]:
 
 def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, Optional[str]]:
     df = load_script_hit_memory(base_dir=base_dir)
+    if isinstance(df, tuple):
+        df = df[0]
     if df.empty:
         return pd.DataFrame(), None
 
@@ -77,7 +79,7 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
     if df.empty:
         return pd.DataFrame(), empty_summary
 
-    filtered, window_start, latest_date = filter_by_date_window(df, date_col, window_days)
+    filtered, window_start, latest_date = filter_by_window(df, date_col=date_col, window_days=window_days)
     if filtered.empty:
         return pd.DataFrame(), empty_summary
 
