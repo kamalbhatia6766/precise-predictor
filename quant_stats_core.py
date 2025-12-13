@@ -60,6 +60,24 @@ def _pick_best_n(roi_map: Dict[int, float]) -> Optional[int]:
     return min(tied) if tied else None
 
 
+def _series_from_any(x: Any) -> pd.Series:
+    """Normalise scalars, arrays or frames to a pandas Series for safe math ops."""
+    if x is None:
+        return pd.Series(dtype="float64")
+    if isinstance(x, pd.Series):
+        return x
+    if isinstance(x, pd.DataFrame):
+        if x.shape[1] == 0:
+            return pd.Series(dtype="float64")
+        return x.iloc[:, 0]
+    if np.isscalar(x):
+        return pd.Series([x], dtype="float64")
+    try:
+        return pd.Series(x)
+    except Exception:
+        return pd.Series(dtype="float64")
+
+
 def _parse_numbers_list(value: Any) -> List[str]:
     """
     Best-effort parser that converts the stored numbers list (stringified list, CSV,
@@ -148,13 +166,11 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
         hits_map: Dict[int, float] = {}
         near_hits_map: Dict[int, float] = {}
 
-        stake_col = subset.get("per_number_stake")
-        if isinstance(stake_col, (int, float)):
-            per_number_stake = float(stake_col)
-        else:
-            per_number_stake = pd.to_numeric(stake_col, errors="coerce").fillna(UNIT_STAKE)
-        andar_stake = pd.to_numeric(subset.get("andar_stake"), errors="coerce").fillna(0)
-        bahar_stake = pd.to_numeric(subset.get("bahar_stake"), errors="coerce").fillna(0)
+        per_number_stake = pd.to_numeric(_series_from_any(subset.get("per_number_stake")), errors="coerce").fillna(
+            UNIT_STAKE
+        )
+        andar_stake = pd.to_numeric(_series_from_any(subset.get("andar_stake")), errors="coerce").fillna(0)
+        bahar_stake = pd.to_numeric(_series_from_any(subset.get("bahar_stake")), errors="coerce").fillna(0)
 
         hit_type_series = subset.get("hit_type") if isinstance(subset, pd.DataFrame) else None
         near_mask = None
