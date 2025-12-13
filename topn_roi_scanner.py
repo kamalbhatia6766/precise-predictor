@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -69,6 +70,72 @@ def _coerce_stake(value: object) -> Tuple[float, bool]:
     except Exception:
         pass
     return float(UNIT_STAKE), True
+
+
+def _looks_like_numeric_bet(label: str, numbers: List[str]) -> bool:
+    upper = label.upper()
+    if any(tag in upper for tag in ["NUMBER", "NUM", "2D", "DOUBLE"]):
+        return True
+    if re.search(r"\b\d{2}\b", upper):
+        return True
+    return bool(numbers)
+
+
+def _fallback_roi_from_reality() -> Optional[Dict[str, object]]:
+    path = quant_paths.get_base_dir() / "logs" / "performance" / "quant_reality_pnl.json"
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return None
+
+    def _iter_records(payload):
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    yield item
+        elif isinstance(payload, dict):
+            for val in payload.values():
+                if isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, dict):
+                            yield item
+                elif isinstance(val, dict):
+                    yield val
+
+    stake = 0.0
+    ret = 0.0
+    hits = 0
+    dates: List[str] = []
+    for entry in _iter_records(raw):
+        s = entry.get("stake") or entry.get("STAKE") or entry.get("Stake")
+        r = entry.get("return") or entry.get("RETURN") or entry.get("Return")
+        d = entry.get("date") or entry.get("DATE")
+        h = entry.get("hits") or entry.get("hit") or entry.get("HITS")
+        try:
+            stake += float(s or 0)
+            ret += float(r or 0)
+            if h is not None:
+                hits += int(h)
+        except Exception:
+            continue
+        if d:
+            dates.append(str(d)[:10])
+
+    if stake <= 0 and ret <= 0:
+        return None
+    roi = ((ret - stake) / stake * 100.0) if stake else 0.0
+    return {
+        "stake": stake,
+        "return": ret,
+        "hits": hits,
+        "roi": roi,
+        "days": len(set(dates)),
+        "start": min(dates) if dates else None,
+        "end": max(dates) if dates else None,
+        "warning": "Fallback ROI from quant_reality_pnl.json",
+    }
 
 
 def _write_csv(summary: Dict) -> None:
@@ -320,7 +387,7 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
             for idx, row in df.iterrows():
                 layer_val = str(row.get(layer_col, "") if layer_col else "").strip().upper()
                 is_andar_bahar = any(token in layer_val for token in ["ANDAR", "BAHAR"])
-                is_main_layer = ("MAIN" in layer_val) or ("EXACT" in layer_val) or layer_val == ""
+                numbers: List[str] = []
                 slot = _normalise_slot(row.get(slot_col))
                 if not slot:
                     continue
@@ -331,8 +398,6 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
                     if pd.notna(stake_val):
                         break
                 stake_final, used_fallback = _coerce_stake(stake_val)
-
-                numbers: List[str] = []
                 for col in number_cols:
                     num = _to_number(row.get(col))
                     if num:
@@ -340,11 +405,18 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
                 for col in list_cols:
                     numbers.extend(_parse_number_list(row.get(col)))
                 if not numbers:
-                    continue
+                    if not _looks_like_numeric_bet(layer_val, numbers):
+                        continue
 
                 if is_andar_bahar:
                     continue
 
+                is_main_layer = (
+                    ("MAIN" in layer_val)
+                    or ("EXACT" in layer_val)
+                    or layer_val == ""
+                    or _looks_like_numeric_bet(layer_val, numbers)
+                )
                 is_main_candidate = is_main_layer or bool(numbers)
                 if layer_col and not is_main_candidate:
                     continue
@@ -686,6 +758,24 @@ def _compute_roi(window_days: int, max_n: int) -> Dict:
     bet_plans, bet_meta = _load_bet_plans(max_n=max_n)
     matched_dates = sorted(set(results_map.keys()) & set(bet_plans.keys()))
     if not matched_dates:
+        fallback = _fallback_roi_from_reality()
+        if fallback:
+            return {
+                "available_days": fallback.get("days"),
+                "reason": fallback.get("warning"),
+                "main_rows_detected": bet_meta.get("main_rows", 0),
+                "fallback_stakes": bet_meta.get("fallback_stakes", 0),
+                "plan_files": bet_meta.get("files", 0),
+                "overall": {"best_roi": safe(fallback.get("roi", 0.0))},
+                "totals": {
+                    "stake": fallback.get("stake", 0.0),
+                    "return": fallback.get("return", 0.0),
+                    "hits": fallback.get("hits", 0),
+                },
+                "window_start": fallback.get("start"),
+                "window_end": fallback.get("end"),
+                "fallback_source": "quant_reality_pnl.json",
+            }
         return {
             "available_days": 0,
             "reason": "No matched bet plans vs results",
@@ -784,6 +874,30 @@ def _compute_roi(window_days: int, max_n: int) -> Dict:
         if best_overall_roi is None or roi_val > best_overall_roi or (roi_val == best_overall_roi and (best_overall_n is None or n < best_overall_n)):
             best_overall_roi = roi_val
             best_overall_n = n
+
+    if total_stake_all <= 0 or bet_meta.get("main_rows", 0) == 0:
+        fallback = _fallback_roi_from_reality()
+        if fallback:
+            return {
+                "window_start": fallback.get("start") or min(window_dates),
+                "window_end": fallback.get("end") or latest,
+                "available_days": fallback.get("days") or len(window_dates),
+                "window_days_used": len(window_dates),
+                "totals": {"stake": fallback.get("stake", 0.0), "return": fallback.get("return", 0.0), "hits": fallback.get("hits", 0)},
+                "main_rows_detected": bet_meta.get("main_rows", 0),
+                "fallback_stakes": bet_meta.get("fallback_stakes", 0),
+                "plan_files": bet_meta.get("files", 0),
+                "overall": {
+                    "roi_by_N": roi_overall,
+                    "best_N": best_overall_n,
+                    "best_roi": safe(fallback.get("roi", 0.0)),
+                    "days_by_N": overall_days,
+                    "hits_by_N": overall_hits,
+                },
+                "per_slot": per_slot,
+                "numbers_by_slot": {slot: maps.get("numbers_by_N", {}) for slot, maps in per_slot.items()},
+                "fallback_source": "quant_reality_pnl.json",
+            }
 
     return {
         "window_start": min(window_dates),

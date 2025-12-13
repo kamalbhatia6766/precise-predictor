@@ -4,24 +4,26 @@ from __future__ import annotations
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import quant_paths
 
 BASE_DIR = quant_paths.get_project_root()
 SNAPSHOT_ROOT = BASE_DIR / "snapshots"
-LATEST_POINTER = SNAPSHOT_ROOT / "latest"
+LATEST_POINTER = SNAPSHOT_ROOT / "latest.txt"
 
 FIXED_FILES: List[Path] = [
     Path("data") / "topn_policy.json",
     Path("data") / "slot_health.json",
-    Path("logs") / "performance" / "quant_reality_pnl.json",
+    Path("data") / "arjun_pick.json",
     Path("logs") / "performance" / "ultimate_performance.csv",
+    Path("logs") / "performance" / "script_hit_memory.xlsx",
 ]
 
 GLOB_FILES: List[Tuple[Path, str]] = [
-    (Path("latest predictions") / "deepseek_scr9", "ultimate_predictions_*.xlsx"),
-    (Path("latest predictions") / "bet_engine", "bet_plan_master_*.xlsx"),
+    (Path("logs") / "performance", "quant_reality_pnl.*"),
+    (Path("predictions") / "deepseek_scr9", "ultimate_predictions_*.xlsx"),
+    (Path("predictions") / "bet_engine", "bet_plan_master_*.xlsx"),
 ]
 
 
@@ -45,10 +47,14 @@ def _snapshot_files(snapshot_dir: Path) -> List[str]:
         src_dir = BASE_DIR / rel_base
         if not src_dir.exists():
             continue
+        latest: Optional[Path] = None
         for src in src_dir.glob(pattern):
-            dest = snapshot_dir / rel_base / src.name
-            if _copy_file(src, dest):
-                copied.append(str(rel_base / src.name))
+            if latest is None or src.stat().st_mtime > latest.stat().st_mtime:
+                latest = src
+        if latest:
+            dest = snapshot_dir / rel_base / latest.name
+            if _copy_file(latest, dest):
+                copied.append(str(rel_base / latest.name))
     return copied
 
 
