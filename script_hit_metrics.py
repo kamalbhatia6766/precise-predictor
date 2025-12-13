@@ -6,6 +6,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 import pandas as pd
 
 import quant_paths
@@ -18,6 +20,10 @@ from script_hit_memory_utils import (
 )
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
+
+
+def safe(value: object) -> float:
+    return float(np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0))
 
 
 def _normalise_slot(slot_value: object) -> Optional[str]:
@@ -217,16 +223,17 @@ def get_metrics_table(
             metrics.rename(columns={source_col: score_col}, inplace=True)
 
     # blended score using available window scores (defaults to 0)
-    metrics["score_30d"] = metrics.get("score_30d", 0.0)
-    metrics["score_60d"] = metrics.get("score_60d", metrics.get("score_60", 0.0))
-    metrics["score_90d"] = metrics.get("score_90d", metrics.get("score_90", 0.0))
-    metrics["score_full"] = metrics.get("score_full", 0.0)
+    metrics["score_30d"] = np.nan_to_num(metrics.get("score_30d", 0.0), nan=0.0)
+    metrics["score_60d"] = np.nan_to_num(metrics.get("score_60d", metrics.get("score_60", 0.0)), nan=0.0)
+    metrics["score_90d"] = np.nan_to_num(metrics.get("score_90d", metrics.get("score_90", 0.0)), nan=0.0)
+    metrics["score_full"] = np.nan_to_num(metrics.get("score_full", 0.0), nan=0.0)
     metrics["blended_score"] = (
         metrics["score_30d"].fillna(0.0) * 0.4
         + metrics["score_60d"].fillna(0.0) * 0.3
         + metrics["score_90d"].fillna(0.0) * 0.2
         + metrics["score_full"].fillna(0.0) * 0.1
     )
+    metrics["blended_score"] = metrics["blended_score"].apply(safe)
 
     order_cols = ["script_id", "slot"] if "slot" in metrics.columns else ["script_id"]
     metrics = metrics.sort_values(order_cols + ["blended_score"], ascending=[True] * len(order_cols) + [False]).reset_index(drop=True)
