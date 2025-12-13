@@ -3,7 +3,8 @@ import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import re
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Tuple
@@ -31,6 +32,9 @@ PATTERN_FAMILY_CACHE: Dict[str, List[str]] = {}
 # Tunable horizons (kept as constants for easy future adjustments)
 ROI_WINDOW_DAYS_DEFAULT = 30
 NEAR_MISS_WINDOW_DAYS_DEFAULT = 30
+
+# Timezone context (used for SCR9 freshness checks)
+LOCAL_TZ = ZoneInfo("Asia/Kolkata")
 
 # Policy files
 TOPN_POLICY_PATH = Path("data") / "topn_policy.json"
@@ -2378,7 +2382,12 @@ def get_scr9_run_anchor() -> Optional[datetime]:
     if not anchor_raw:
         return None
     try:
-        return datetime.fromisoformat(anchor_raw.strip())
+        anchor = datetime.fromisoformat(anchor_raw.strip())
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=LOCAL_TZ)
+        else:
+            anchor = anchor.astimezone(LOCAL_TZ)
+        return anchor
     except Exception:
         print(f"⚠️ Unable to parse SCR9_RUN_STARTED_AT='{anchor_raw}' (expected ISO 8601).")
         return None
@@ -2400,7 +2409,13 @@ def main():
 
         print(f"🔍 Locating latest {args.source.upper()} predictions...")
         latest_file = engine.find_latest_predictions_file(args.source)
-        latest_mtime = datetime.fromtimestamp(latest_file.stat().st_mtime)
+        latest_mtime = datetime.fromtimestamp(
+            latest_file.stat().st_mtime, tz=timezone.utc
+        ).astimezone(LOCAL_TZ)
+        print(
+            f"🧭 TZ DEBUG: run_anchor tz={getattr(scr9_anchor, 'tzinfo', None)} | "
+            f"file_mtime tz={latest_mtime.tzinfo}"
+        )
         if args.source == "scr9" and scr9_anchor and latest_mtime < scr9_anchor:
             print("🚫 STALE BLOCK: Latest SCR9 predictions predate this run. Aborting to avoid stale bet plan.")
             print(f"    Latest file: {latest_file.name} (modified {latest_mtime})")
