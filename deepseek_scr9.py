@@ -26,6 +26,80 @@ warnings.filterwarnings('ignore')
 USE_SCRIPT_WEIGHTS = True
 SCRIPT_WEIGHTS_WINDOW_DAYS = 30
 SCRIPT_WEIGHTS_MIN_SCORE = 0.01
+LEARN_WINDOW_DAYS = 90
+LEARN_WEIGHT_EXACT = 1.0
+LEARN_WEIGHT_NEAR = 0.3
+LEARN_SCORE_ALPHA = 0.1
+
+
+def load_learning_scores(base_dir, window_days=LEARN_WINDOW_DAYS):
+    """Load recent hit/near-hit memory and build per-slot learning scores."""
+
+    perf_dir = os.path.join(base_dir, "logs", "performance")
+    file_candidates = [
+        os.path.join(perf_dir, "script_hit_memory.xlsx"),
+        os.path.join(perf_dir, "script_hit_memory.csv"),
+        os.path.join(perf_dir, "script_hit_memory.json"),
+    ]
+
+    df = None
+    for path in file_candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            if path.endswith(".xlsx"):
+                df = pd.read_excel(path)
+            elif path.endswith(".csv"):
+                df = pd.read_csv(path)
+            elif path.endswith(".json"):
+                df = pd.read_json(path)
+            if df is not None:
+                break
+        except Exception:
+            continue
+
+    if df is None or df.empty:
+        print("[LEARNING] Hit-memory file not found or empty; proceeding without learning boost.")
+        return {}
+
+    required_cols = {"date", "slot", "number", "hit_type"}
+    if not required_cols.issubset(set(df.columns)):
+        print("[LEARNING] Hit-memory file missing required columns; skipping learning boost.")
+        return {}
+
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date", "slot", "number", "hit_type"])
+    cutoff = datetime.now() - timedelta(days=window_days)
+    df = df[df["date"] >= cutoff]
+    if df.empty:
+        print("[LEARNING] No recent hit-memory data within window; skipping learning boost.")
+        return {}
+
+    df["slot"] = df["slot"].astype(str).str.upper()
+    df["hit_type"] = df["hit_type"].astype(str).str.upper()
+    df["number"] = df["number"].apply(lambda x: int(str(x).zfill(2)) if pd.notna(x) else None)
+    df = df.dropna(subset=["number"])
+
+    learning_scores = defaultdict(dict)
+    near_hits = {"NEAR", "NEIGHBOR", "MIRROR"}
+
+    for slot in SLOTS:
+        slot_df = df[df["slot"] == slot]
+        if slot_df.empty:
+            continue
+        for num, group in slot_df.groupby("number"):
+            counts = Counter(group["hit_type"])
+            count_exact = counts.get("EXACT", 0)
+            count_near = sum(counts.get(ht, 0) for ht in near_hits)
+            learning_scores[slot][int(num)] = LEARN_WEIGHT_EXACT * count_exact + LEARN_WEIGHT_NEAR * count_near
+
+    if learning_scores:
+        print(f"[LEARNING] Applied near-hit learning scores from script_hit_memory (window={window_days}d)")
+    else:
+        print("[LEARNING] No learning scores computed; proceeding without boost.")
+
+    return learning_scores
 
 class UltimatePredictionEngine:
     """
@@ -43,6 +117,8 @@ class UltimatePredictionEngine:
         self.script_weight_metrics = None
         self.script_weight_metrics_df = None
         self.metrics_weight_map = {}
+        self.learning_scores = load_learning_scores(self.base_dir)
+        self.latest_score_details = {}
         # Cache to avoid rerunning heavy scripts (e.g., SCR6) for the same date/mode within a run
         self.script_prediction_cache = {}
         self.setup_directories()
@@ -482,7 +558,7 @@ class UltimatePredictionEngine:
     
     def build_slot_scores(self, all_preds_for_slot, history_df_for_slot, slot_name=None):
         """Build ensemble scores for a slot - OPTIMIZED"""
-        scores = Counter()
+        base_scores = Counter()
         use_weights = bool(USE_SCRIPT_WEIGHTS and self.slot_script_weights)
 
         # Process each script's predictions
@@ -504,8 +580,8 @@ class UltimatePredictionEngine:
                     rank_weight = 2
                 else:
                     rank_weight = 1
-                
-                scores[number] += rank_weight * weight
+
+                base_scores[number] += rank_weight * weight
         
         # Frequency bonus (optimized for speed)
         frequency_bonus = Counter()
@@ -515,27 +591,42 @@ class UltimatePredictionEngine:
         
         for number, freq in frequency_bonus.items():
             if freq >= 2:  # Reduced threshold in fast mode
-                scores[number] += freq * 2
-        
+                base_scores[number] += freq * 2
+
         # Opposite number bonus
-        high_score_numbers = [num for num, score in scores.most_common(8)]  # Reduced from 10
+        high_score_numbers = [num for num, score in base_scores.most_common(8)]  # Reduced from 10
         for number in high_score_numbers:
             opposite = self.get_opposite(number)
-            scores[opposite] += 3
-        
+            base_scores[opposite] += 3
+
         # Recent actual results bonus
         if len(history_df_for_slot) > 0:
             recent_numbers = history_df_for_slot['number'].tail(3).tolist()
             for number in recent_numbers:
-                scores[number] += 2
-                scores[self.get_opposite(number)] += 1
-        
-        return scores
+                base_scores[number] += 2
+                base_scores[self.get_opposite(number)] += 1
+
+        slot_key = slot_name.upper() if slot_name else None
+        learning_map = self.learning_scores.get(slot_key, {}) if slot_key else {}
+        final_scores = Counter()
+        score_details = {}
+
+        for number, base_score in base_scores.items():
+            learning_score = learning_map.get(number, 0.0)
+            final_score = base_score + LEARN_SCORE_ALPHA * learning_score
+            final_scores[number] = final_score
+            score_details[number] = {
+                "base_score": base_score,
+                "learning_score": learning_score,
+                "final_score": final_score,
+            }
+
+        return final_scores, score_details
     
     def predict_for_target_date(self, df_history, target_date):
         """Generate predictions for a specific target date - OPTIMIZED"""
         print(f"   🎯 Predicting for {target_date}...")
-        
+
         # Collect predictions from all scripts
         all_script_preds = self.collect_all_script_predictions(target_date=target_date, mode='predict_for_date')
         
@@ -549,6 +640,7 @@ class UltimatePredictionEngine:
         
         # Build final predictions for each slot
         final_predictions = {}
+        slot_score_details = {}
         
         for slot_name in ["FRBD", "GZBD", "GALI", "DSWR"]:
             slot_data = df_history[df_history['slot'] == list(self.slot_names.keys())[list(self.slot_names.values()).index(slot_name)]]
@@ -560,7 +652,10 @@ class UltimatePredictionEngine:
                 final_predictions[slot_name] = [num for num, count in freq.most_common(15)]
             else:
                 # Use ensemble scoring
-                scores = self.build_slot_scores(slot_predictions[slot_name], slot_data, slot_name=slot_name)
+                scores, score_details = self.build_slot_scores(
+                    slot_predictions[slot_name], slot_data, slot_name=slot_name
+                )
+                slot_score_details[slot_name] = score_details
                 
                 # Dynamic top-k selection (optimized)
                 if scores:
@@ -580,9 +675,14 @@ class UltimatePredictionEngine:
                 
                 # Apply range diversity
                 candidates = [num for num, score in scores.most_common(top_k * 2)]
-                final_pred = self.apply_diversity_filter({num: 1.0 for num in candidates}, top_k)
+                candidate_scores = {
+                    num: score_details.get(num, {}).get("final_score", scores[num])
+                    for num in candidates
+                }
+                final_pred = self.apply_diversity_filter(candidate_scores, top_k)
                 final_predictions[slot_name] = final_pred
-        
+
+        self.latest_score_details = slot_score_details
         return final_predictions
     
     def apply_diversity_filter(self, scores, top_k):
@@ -740,7 +840,7 @@ class UltimatePredictionEngine:
                 for script_name, preds in all_script_preds.items():
                     slot_preds[script_name] = preds[slot_name]
 
-                scores = self.build_slot_scores(slot_preds, slot_data)
+                scores, score_details = self.build_slot_scores(slot_preds, slot_data, slot_name=slot_name)
                 pred_nums = [num for num, score in scores.most_common(15)]
                 opposites = [self.get_opposite(n) for n in pred_nums[:3]]
 
@@ -751,6 +851,9 @@ class UltimatePredictionEngine:
                         'number': f"{num:02d}",
                         'rank': rank,
                         'type': 'TODAY_EMPTY',
+                        'base_score': score_details.get(num, {}).get('base_score'),
+                        'learning_score': score_details.get(num, {}).get('learning_score'),
+                        'final_score': score_details.get(num, {}).get('final_score'),
                         'opposites': ', '.join([f"{n:02d}" for n in opposites]) if rank == 1 else ''
                     })
         elif self.speed_mode == 'fast' and empty_slots:
@@ -766,14 +869,19 @@ class UltimatePredictionEngine:
         
         for slot_name, pred_numbers in tomorrow_preds.items():
             opposites = [self.get_opposite(n) for n in pred_numbers[:3]]
-            
+            slot_details = self.latest_score_details.get(slot_name, {}) if hasattr(self, 'latest_score_details') else {}
+
             for rank, num in enumerate(pred_numbers, 1):
+                details = slot_details.get(num, {})
                 predictions.append({
                     'date': date_str,
                     'slot': slot_name,
                     'number': f"{num:02d}",
                     'rank': rank,
                     'type': 'TOMORROW',
+                    'base_score': details.get('base_score'),
+                    'learning_score': details.get('learning_score'),
+                    'final_score': details.get('final_score'),
                     'opposites': ', '.join([f"{n:02d}" for n in opposites]) if rank == 1 else ''
                 })
         
