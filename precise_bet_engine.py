@@ -1,11 +1,12 @@
 # precise_bet_engine.py - ULTRA v5 ROCKET MODE - CLEAR DATES + BREAKDOWN
+import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from datetime import datetime, timedelta
 import re
 from collections import Counter, defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import warnings
 import argparse
 import json
@@ -2370,6 +2371,19 @@ def analyze_near_miss_history(days: int = 30):
     return summary
 
 
+def get_scr9_run_anchor() -> Optional[datetime]:
+    """Parse SCR9 run anchor timestamp (ISO 8601) from environment."""
+
+    anchor_raw = os.environ.get("SCR9_RUN_STARTED_AT")
+    if not anchor_raw:
+        return None
+    try:
+        return datetime.fromisoformat(anchor_raw.strip())
+    except Exception:
+        print(f"⚠️ Unable to parse SCR9_RUN_STARTED_AT='{anchor_raw}' (expected ISO 8601).")
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description='Precise Bet Engine v5 Rocket - Ultra clear output')
     parser.add_argument('--target', choices=['today', 'tomorrow', 'auto'], default='tomorrow')
@@ -2379,9 +2393,20 @@ def main():
     
     try:
         engine = PreciseBetEngine()
-        
+
+        scr9_anchor = get_scr9_run_anchor() if args.source == "scr9" else None
+        if scr9_anchor:
+            print(f"🕒 SCR9 run anchor: {scr9_anchor.isoformat()}")
+
         print(f"🔍 Locating latest {args.source.upper()} predictions...")
         latest_file = engine.find_latest_predictions_file(args.source)
+        latest_mtime = datetime.fromtimestamp(latest_file.stat().st_mtime)
+        if args.source == "scr9" and scr9_anchor and latest_mtime < scr9_anchor:
+            print("🚫 STALE BLOCK: Latest SCR9 predictions predate this run. Aborting to avoid stale bet plan.")
+            print(f"    Latest file: {latest_file.name} (modified {latest_mtime})")
+            print(f"    SCR9 anchor: {scr9_anchor}")
+            return 1
+
         df = engine.load_ultimate_predictions(latest_file)
         
         target_rows = engine.select_target_data(df, args.target)

@@ -61,15 +61,14 @@ def _parse_number_list(value: object) -> List[str]:
     return numbers
 
 
-def _coerce_stake(value: object, fallback_counter: Dict[str, int]) -> float:
+def _coerce_stake(value: object) -> Tuple[float, bool]:
     try:
         stake_val = float(value)
         if stake_val > 0:
-            return stake_val
+            return stake_val, False
     except Exception:
         pass
-    fallback_counter["fallback_stakes"] = fallback_counter.get("fallback_stakes", 0) + 1
-    return float(UNIT_STAKE)
+    return float(UNIT_STAKE), True
 
 
 def _write_csv(summary: Dict) -> None:
@@ -220,16 +219,58 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
         cols = {str(c).upper(): c for c in df.columns}
         slot_col = next((cols[k] for k in ["SLOT", "MARKET", "GAME", "SLOT_KEY"] if k in cols), None)
         layer_col = next((cols[k] for k in ["LAYER_TYPE", "LAYER", "PICK_TYPE", "TYPE"] if k in cols), None)
-        stake_cols = [cols[k] for k in ["STAKE", "STAKE_MAIN", "MAIN_STAKE", "BASE_STAKE", "STAKE_PER_NUMBER", "PER_NUMBER_STAKE"] if k in cols]
-        number_cols = [cols[k] for k in ["NUMBER", "NUMBER_OR_DIGIT", "NUM", "PREDICTED_NUMBER", "PREDICTED", "PICK", "MAIN_NUMBER"] if k in cols]
-        list_cols = [cols[k] for k in ["MAIN_NUMBERS", "PREDICTIONS", "PREDICTED_NUMBERS", "NUMBERS", "EXACTS"] if k in cols]
+        stake_cols = [
+            cols[k]
+            for k in [
+                "STAKE",
+                "STAKE_MAIN",
+                "MAIN_STAKE",
+                "BASE_STAKE",
+                "STAKE_PER_NUMBER",
+                "PER_NUMBER_STAKE",
+                "AMOUNT",
+                "BET",
+                "BET_AMOUNT",
+                "STAKE_AMOUNT",
+            ]
+            if k in cols
+        ]
+        number_cols = [
+            cols[k]
+            for k in [
+                "NUMBER",
+                "NUMBER_OR_DIGIT",
+                "NUM",
+                "PREDICTED_NUMBER",
+                "PREDICTED",
+                "PICK",
+                "MAIN_NUMBER",
+                "VALUE",
+                "BET_NUMBER",
+            ]
+            if k in cols
+        ]
+        list_cols = [
+            cols[k]
+            for k in [
+                "MAIN_NUMBERS",
+                "PREDICTIONS",
+                "PREDICTED_NUMBERS",
+                "NUMBERS",
+                "EXACTS",
+                "NUMBER_LIST",
+                "PICKS",
+                "VALUES",
+            ]
+            if k in cols
+        ]
         rank_cols = [cols[k] for k in ["SOURCE_RANK", "RANK", "RANK_MAIN"] if k in cols]
 
         if slot_col is not None:
             for idx, row in df.iterrows():
-                layer_val = str(row.get(layer_col, "MAIN") if layer_col else "MAIN").strip().upper()
-                if layer_col and "MAIN" not in layer_val and "EXACT" not in layer_val:
-                    continue
+                layer_val = str(row.get(layer_col, "") if layer_col else "").strip().upper()
+                is_andar_bahar = any(token in layer_val for token in ["ANDAR", "BAHAR"])
+                is_main_layer = ("MAIN" in layer_val) or ("EXACT" in layer_val) or layer_val == ""
                 slot = _normalise_slot(row.get(slot_col))
                 if not slot:
                     continue
@@ -239,7 +280,7 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
                     stake_val = row.get(col)
                     if pd.notna(stake_val):
                         break
-                stake_final = _coerce_stake(stake_val, meta)
+                stake_final, used_fallback = _coerce_stake(stake_val)
 
                 numbers: List[str] = []
                 for col in number_cols:
@@ -249,6 +290,13 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
                 for col in list_cols:
                     numbers.extend(_parse_number_list(row.get(col)))
                 if not numbers:
+                    continue
+
+                if is_andar_bahar:
+                    continue
+
+                is_main_candidate = is_main_layer or bool(numbers)
+                if layer_col and not is_main_candidate:
                     continue
 
                 rank_val = None
@@ -268,6 +316,9 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
                         seen.add(n)
                         ordered_numbers.append(n)
 
+                if used_fallback and ordered_numbers:
+                    meta["fallback_stakes"] = meta.get("fallback_stakes", 0) + len(ordered_numbers)
+
                 for order_idx, num in enumerate(ordered_numbers):
                     slot_map.setdefault(slot, []).append((num, stake_final, rank_val, idx * 100 + order_idx))
                     meta["main_rows"] += 1
@@ -282,13 +333,15 @@ def _load_bet_plans(max_n: int) -> Tuple[Dict[date, Dict[str, List[Tuple[str, fl
                 stake_val = row.get(col)
                 if pd.notna(stake_val):
                     break
-            stake_final = _coerce_stake(stake_val, meta)
+            stake_final, used_fallback = _coerce_stake(stake_val)
             for slot in SLOTS:
                 if slot not in cols:
                     continue
                 numbers = _parse_number_list(row.get(cols[slot]))
                 if not numbers:
                     continue
+                if used_fallback:
+                    meta["fallback_stakes"] = meta.get("fallback_stakes", 0) + len(numbers)
                 for order_idx, num in enumerate(numbers):
                     slot_map.setdefault(slot, []).append((num, stake_final, None, idx * 100 + order_idx))
                     meta["main_rows"] += 1
@@ -724,6 +777,13 @@ def main() -> int:
     total_hits = int(totals.get("hits", 0) or 0)
     if days_used == 0:
         detail = f" ({reason})" if reason else ""
+        plan_files = int(summary.get("plan_files", 0) or 0)
+        main_rows = int(summary.get("main_rows_detected", 0) or 0)
+        fallback_stakes = int(summary.get("fallback_stakes", 0) or 0)
+        print(
+            f"Bet plan files scanned: {plan_files} | MAIN rows: {main_rows} | "
+            f"Fallback unit stakes applied: {fallback_stakes}"
+        )
         print(f"No data available for ROI scan{detail}.")
         return 0
 
