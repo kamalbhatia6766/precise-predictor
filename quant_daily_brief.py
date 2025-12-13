@@ -42,6 +42,7 @@ BET_ENGINE_DIR = quant_paths.get_bet_engine_dir()
 SCRIPT_METRICS_WINDOW_DAYS = 30
 SLOT_HEALTH_PATH = Path("data") / "slot_health.json"
 TOPN_POLICY_PATH = Path("data") / "topn_policy.json"
+SCRIPT_METRICS_JSON_PATH = Path("logs") / "performance" / "script_hit_metrics.json"
 TOPN_WINDOW_DAYS = 30
 
 
@@ -1214,51 +1215,38 @@ def print_risk_section(strategy: StrategySummary, money: MoneyManagerSummary, ex
 
 def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DAYS) -> None:
     print()
-    # Script hit metrics use a shorter pattern window than ROI to keep recency sharp.
     print(f"5️⃣ SCRIPT PERFORMANCE (last {window_days} days)")
-    metrics, summary = get_metrics_table(window_days=window_days, mode="per_slot")
+    try:
+        base_dir = quant_paths.get_base_dir()
+    except Exception:
+        base_dir = Path(".")
+    metrics_json = _load_json(Path(base_dir) / SCRIPT_METRICS_JSON_PATH) or {}
+    slots_block = metrics_json.get("slots") if isinstance(metrics_json, dict) else {}
 
+    if slots_block:
+        for slot in SLOTS:
+            slot_block = slots_block.get(slot, {}) if isinstance(slots_block, dict) else {}
+            heroes = slot_block.get("hero_scripts", []) or []
+            weaks = slot_block.get("weak_scripts", []) or []
+            hero_label = ", ".join(sorted({str(h) for h in heroes if h})) or "n/a"
+            weak_label = ", ".join(sorted({str(w) for w in weaks if w})) or "n/a"
+            print(f"   {slot}: hero = {hero_label} | weak = {weak_label}")
+        return
+
+    # Fallback to live computation when JSON is missing
+    metrics, summary = get_metrics_table(window_days=window_days, mode="per_slot")
     if metrics is None or summary is None or metrics.empty:
         print("   No script hit metrics available yet (script_hit_memory is empty).")
         return
-
-    total_hits = 0
-    for col in ("exact_hits", "mirror_hits", "neighbor_hits"):
-        if col in metrics.columns:
-            total_hits += int(metrics[col].sum())
-
-    if total_hits == 0:
-        print(f"   No script-level hits in the last {window_days} days – league not meaningful yet.")
-        return
-
-    league = build_script_league(metrics, min_predictions=10, min_hits_for_hero=1)
-    if not league:
-        print(f"   No script-level hits in the last {window_days} days – league not meaningful yet.")
-        return
-
-    def _fmt_scores(score: Optional[float], rate: Optional[float]) -> str:
-        if score is None:
-            return "score n/a"
-        rate_val = rate if rate is not None else 0.0
-        return f"score {score:+.2f} exact {rate_val:.1%}"
-
     heroes_df = hero_weak_table(metrics, min_predictions=10)
     hero_map = {row.get("slot"): row for _, row in heroes_df.iterrows()} if heroes_df is not None else {}
-
     for slot in SLOTS:
         hero_row = hero_map.get(slot) if hero_map else None
         hero_id = hero_row.get("hero_script") if hero_row is not None else None
         weak_id = hero_row.get("weak_script") if hero_row is not None else None
-        hero_score = hero_row.get("hero_score") if hero_row is not None else None
-        weak_score = hero_row.get("weak_score") if hero_row is not None else None
-        hero_rate = hero_row.get("hero_hit_rate_exact") if hero_row is not None else None
-        weak_rate = hero_row.get("weak_hit_rate_exact") if hero_row is not None else None
-        hero_id = hero_id or "n/a"
-        weak_id = weak_id or "n/a"
-        print(
-            f"   {slot}: hero {hero_id} ({_fmt_scores(hero_score, hero_rate)}) "
-            f"| weak {weak_id} ({_fmt_scores(weak_score, weak_rate)})"
-        )
+        hero_label = hero_id or "n/a"
+        weak_label = weak_id or "n/a"
+        print(f"   {slot}: hero = {hero_label} | weak = {weak_label}")
 
     overall = league.get("overall") if isinstance(league, dict) else None
     if overall:
@@ -1345,67 +1333,44 @@ def print_topn_roi_insight(insight: Optional[Dict] = None) -> Optional[Dict]:
     except Exception:
         base_dir = Path(".")
     topn_policy = _load_json(Path(base_dir) / TOPN_POLICY_PATH) or {}
+    overall_block = topn_policy.get("ALL") if isinstance(topn_policy, dict) else {}
+    per_slot_policy = {k: v for k, v in topn_policy.items() if k != "ALL"} if isinstance(topn_policy, dict) else {}
+
+    if topn_policy:
+        overall_best = overall_block.get("final_best_n") or overall_block.get("best_n") or overall_block.get("best_N")
+        print("6️⃣ TOP-N ROI INSIGHT (policy-driven)")
+        if overall_best:
+            print(f"   Overall best N : {overall_best}")
+        for slot in SLOTS:
+            slot_block = per_slot_policy.get(slot, {}) if isinstance(per_slot_policy, dict) else {}
+            best_n = (
+                slot_block.get("final_best_n")
+                or slot_block.get("best_n")
+                or slot_block.get("best_N")
+                or overall_best
+            )
+            roi_best = slot_block.get("roi_final_best") or slot_block.get("best_roi")
+            roi_note = f" (ROI ~{roi_best:+.1f}%)" if roi_best is not None else ""
+            best_label = best_n if best_n else "n/a"
+            print(f"   {slot}: best N={best_label}{roi_note}")
+        return topn_policy
+
+    # Fallback when policy is missing
     if insight is None:
         insight = quant_stats.get("topn") if isinstance(quant_stats, dict) else None
     if insight is None:
         insight = compute_topn_roi(window_days=window_days)
     if not insight:
-        print("6️⃣ TOP-N ROI INSIGHT (requested 30d)\n   (Top-N ROI snapshot unavailable – run topn_roi_scanner.py first.)")
+        print("6️⃣ TOP-N ROI INSIGHT\n   Module warming up – insufficient history for Top-N policy; using default N.")
         return None
     overall = (insight.get("overall") if isinstance(insight, dict) else {}) or {}
-    per_slot = (insight.get("slots") or insight.get("per_slot") or {}) if isinstance(insight, dict) else {}
-    roi_by_n = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
     best_n = overall.get("best_N") if isinstance(overall, dict) else None
-    best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
     n_days_effective = insight.get("n_days_effective") or insight.get("available_days") or 0
-    overall_roi = insight.get("overall_roi", 0.0)
     print(f"6️⃣ TOP-N ROI INSIGHT (requested {window_days}d, effective {n_days_effective}d)")
-
-    # Warming-up guard: avoid printing noisy zero ROI matrix when data is absent.
-    if n_days_effective == 0 or abs(float(overall_roi)) < 1e-9:
-        print("   Module warming up – no reliable Top-N data yet (skipping matrix).")
+    if not best_n:
+        print("   Module warming up – no reliable Top-N data yet (using default N=2).")
         return insight
-
-    if best_n is not None:
-        print(f"   Best N = {best_n} with overall ROI = {best_roi:+.1f}%")
-    else:
-        print("   No ROI data available.")
-
-    effective_days = f"effective {n_days_effective}d" if n_days_effective else "effective window"
-    print(f"   Per-slot ROI ({effective_days}):")
-    for slot in SLOTS:
-        roi_map = per_slot.get(slot, {}).get("roi_by_N", {}) if isinstance(per_slot.get(slot), dict) else {}
-        parts = [f"Top{n}:{roi_map.get(n, 0.0):+.1f}%" for n in range(1, 11)]
-        print(f"   {slot}: {' | '.join(parts)}")
-        slot_best = per_slot.get(slot, {}).get("best_N") if isinstance(per_slot.get(slot), dict) else None
-        slot_best_roi = per_slot.get(slot, {}).get("best_roi") if isinstance(per_slot.get(slot), dict) else None
-        if roi_map:
-            top_band = [roi_map.get(n) for n in range(1, 6) if roi_map.get(n) is not None]
-            deep_positive = [(n, v) for n, v in roi_map.items() if n > 5 and v is not None and v > 0]
-            if top_band and all((r is not None and r <= 0) for r in top_band) and deep_positive and slot_best:
-                print(f"      {slot}: best_N={slot_best}, ROI={slot_best_roi:+.1f}% (Top1–5 red; using deeper N-band).")
-            elif slot_best and slot_best <= 5 and slot_best_roi is not None and slot_best_roi > 0:
-                print(f"      {slot}: best_N={slot_best}, ROI={slot_best_roi:+.1f}% (tight profitable band).")
-
-    overall_best, per_slot_best = _load_topn_best_profile(insight)
-    if overall_best is not None or per_slot_best:
-        default_n = overall_best or 3
-        print("\n   Top-N mode recommendation:")
-        print(f"      Overall best N : {overall_best if overall_best is not None else default_n}")
-        for slot in SLOTS:
-            slot_best = per_slot_best.get(slot, default_n)
-            print(f"      {slot} best N    : {slot_best}")
-
-    if isinstance(topn_policy, dict) and topn_policy:
-        print("\n   Top-N policy (final-best guidance):")
-        for slot in SLOTS:
-            policy_block = topn_policy.get(slot, {}) if isinstance(topn_policy, dict) else {}
-            final_best_n = policy_block.get("final_best_n") if isinstance(policy_block, dict) else None
-            roi_final_best = policy_block.get("roi_final_best") if isinstance(policy_block, dict) else None
-            if final_best_n is None and roi_final_best is None:
-                continue
-            roi_text = f"{float(roi_final_best):+.1f}%" if roi_final_best is not None else "n/a"
-            print(f"      {slot}: final_best_n={final_best_n if final_best_n is not None else '-'} | roi≈{roi_text}")
+    print(f"   Overall best N : {best_n}")
     return insight
 
 

@@ -19,6 +19,7 @@ warnings.filterwarnings(
 
 
 SCRIPT_HIT_MEMORY_HEADERS: List[str] = [
+    "DATE",
     "date",
     "result_date",
     "real_slot",
@@ -277,6 +278,13 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in date_cols:
         if col in out.columns:
             out[col] = pd.to_datetime(out[col], errors="coerce")
+
+    # Preserve an uppercase DATE column for downstream consumers that expect a
+    # datetime64[ns] series while still keeping the original lower-case date
+    # fields for backwards compatibility.
+    canonical_date = out.get("result_date") if "result_date" in out.columns else out.get("date")
+    out["DATE"] = canonical_date
+
     out = out.dropna(subset=["predict_date", "result_date"], how="any")
     for col in ("predict_date", "result_date"):
         if col in out.columns:
@@ -347,6 +355,9 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
         return lowered.isin({"true", "1", "yes", "y"})
 
     df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
+    df["DATE"] = pd.to_datetime(df.get("DATE"), errors="coerce")
+    if "DATE" in df.columns:
+        df["DATE"] = df["DATE"].where(df["DATE"].notna(), df["result_date"])
     df["slot"] = df.get("slot").astype(str)
     df["script_id"] = df.get("script_id").astype(str)
     df["HIT_TYPE"] = df.get("hit_type").astype(str).str.upper()
@@ -372,6 +383,12 @@ def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = Non
         aligned_df = pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
     else:
         aligned_df = _align_columns(df)
+
+    if "DATE" in aligned_df.columns and "result_date" in aligned_df.columns:
+        aligned_df["DATE"] = pd.to_datetime(aligned_df["DATE"], errors="coerce")
+        aligned_df["DATE"] = aligned_df["DATE"].where(
+            aligned_df["DATE"].notna(), pd.to_datetime(aligned_df["result_date"], errors="coerce")
+        )
 
     aligned_df.to_csv(csv_path, index=False)
     aligned_df.to_excel(xlsx_path, index=False)
@@ -403,6 +420,32 @@ def _choose_date_column(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
+def filter_by_date_window(
+    df: pd.DataFrame, date_col: str, window_days: int
+) -> Tuple[pd.DataFrame, Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+    """
+    Standardised window filter used across metrics modules.
+
+    Returns the filtered frame plus (window_start, latest_date). All date math
+    is inclusive of both endpoints and normalised to midnight for stability.
+    """
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=df.columns if df is not None else []), None, None
+
+    work_df = df.copy()
+    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce").dt.normalize()
+    work_df = work_df.dropna(subset=[date_col])
+    if work_df.empty:
+        return work_df, None, None
+
+    latest = work_df[date_col].max()
+    cutoff = latest - timedelta(days=window_days - 1)
+    filtered = work_df[(work_df[date_col] >= cutoff) & (work_df[date_col] <= latest)]
+
+    return filtered, cutoff, latest
+
+
 def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFrame, int]:
     """Return a filtered frame limited to the last ``window_days``.
 
@@ -420,24 +463,16 @@ def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFr
     if not date_col:
         return pd.DataFrame(columns=df.columns), 0
 
-    work_df = df.copy()
-    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce").dt.normalize()
-    work_df = work_df.dropna(subset=[date_col])
-    if work_df.empty:
-        return work_df, 0
-
-    window_end = work_df[date_col].max().normalize()
-    window_start = window_end - timedelta(days=window_days)
-    filtered = work_df[(work_df[date_col] >= window_start) & (work_df[date_col] <= window_end)]
+    filtered, window_start, window_end = filter_by_date_window(df, date_col, window_days)
 
     used_days = filtered[date_col].dt.date.nunique()
     logger = logging.getLogger(__name__)
-    if logger.isEnabledFor(logging.INFO):
-        logger.info(
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
             "filter_hits_by_window: days=%s, start=%s, end=%s, rows=%s, column=%s",
             window_days,
-            window_start.date(),
-            window_end.date(),
+            getattr(window_start, "date", lambda: None)(),
+            getattr(window_end, "date", lambda: None)(),
             len(filtered),
             date_col,
         )
