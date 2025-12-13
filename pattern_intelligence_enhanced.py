@@ -87,6 +87,8 @@ class PatternIntelligenceEnhanced:
     def run(self) -> bool:
         hit_core.rebuild_hit_memory(window_days=self.window_days)
         df, base_summary = compute_pattern_metrics(window_days=self.window_days, base_dir=self.base_dir)
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
         if df.empty:
             print(
                 f"[PatternIntel+] Not enough hit data in the last {self.window_days} days (found 0 rows). Skipping enhanced analysis."

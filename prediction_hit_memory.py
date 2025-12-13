@@ -455,7 +455,12 @@ def _rebuild_script_hit_memory(window_days: int) -> None:
 
     predictions_map = load_predictions_map(base_dir)
     rows = build_script_hit_rows_for_dates(real_df, predictions_map, dates)
-    memory_path = overwrite_script_hit_memory(pd.DataFrame(rows), base_dir=base_dir)
+    df = pd.DataFrame(rows)
+    df = df.copy()
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    memory_path = overwrite_script_hit_memory(df, base_dir=base_dir)
     print(f"Built {len(rows)} script-hit rows for {len(dates)} dates and 9 scripts.")
     print(f"Script hit memory rebuilt at {memory_path}")
 
@@ -491,6 +496,9 @@ def _update_latest_script_hit_memory() -> None:
             subset=["result_date", "slot", "script_id", "predicted_number", "source_file"],
             keep="last",
         )
+        combined = combined.copy()
+        if "date" in combined.columns:
+            combined["date"] = pd.to_datetime(combined["date"], errors="coerce")
         memory_path = overwrite_script_hit_memory(combined, base_dir=base_dir)
         print(f"Appended {len(rows)} rows for dates {dates_to_update} to {memory_path}")
     else:

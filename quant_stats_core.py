@@ -129,6 +129,10 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
     latest_date = df["date"].max()
     cutoff = latest_date - timedelta(days=window_days - 1)
     window_df = df[df["date"] >= cutoff].copy()
+    window_df = window_df.copy()
+    window_df["per_number_stake"] = pd.to_numeric(
+        window_df.get("per_number_stake", UNIT_STAKE), errors="ignore"
+    )
     if window_df.empty:
         return {}
 
@@ -144,7 +148,11 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
         hits_map: Dict[int, float] = {}
         near_hits_map: Dict[int, float] = {}
 
-        per_number_stake = pd.to_numeric(subset.get("per_number_stake"), errors="coerce").fillna(UNIT_STAKE)
+        stake_col = subset.get("per_number_stake")
+        if isinstance(stake_col, (int, float)):
+            per_number_stake = float(stake_col)
+        else:
+            per_number_stake = pd.to_numeric(stake_col, errors="coerce").fillna(UNIT_STAKE)
         andar_stake = pd.to_numeric(subset.get("andar_stake"), errors="coerce").fillna(0)
         bahar_stake = pd.to_numeric(subset.get("bahar_stake"), errors="coerce").fillna(0)
 
