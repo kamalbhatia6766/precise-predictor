@@ -1357,14 +1357,21 @@ def print_topn_roi_insight(insight: Optional[Dict] = None) -> Optional[Dict]:
     roi_by_n = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
     best_n = overall.get("best_N") if isinstance(overall, dict) else None
     best_roi = overall.get("best_roi") if isinstance(overall, dict) else None
-    available_days = insight.get("available_days")
-    effective_days = f"effective {available_days}d" if available_days else "effective window"
-    print(f"6️⃣ TOP-N ROI INSIGHT (requested {window_days}d, {effective_days})")
+    n_days_effective = insight.get("n_days_effective") or insight.get("available_days") or 0
+    overall_roi = insight.get("overall_roi", 0.0)
+    print(f"6️⃣ TOP-N ROI INSIGHT (requested {window_days}d, effective {n_days_effective}d)")
+
+    # Warming-up guard: avoid printing noisy zero ROI matrix when data is absent.
+    if n_days_effective == 0 or abs(float(overall_roi)) < 1e-9:
+        print("   Module warming up – no reliable Top-N data yet (skipping matrix).")
+        return insight
+
     if best_n is not None:
         print(f"   Best N = {best_n} with overall ROI = {best_roi:+.1f}%")
     else:
         print("   No ROI data available.")
 
+    effective_days = f"effective {n_days_effective}d" if n_days_effective else "effective window"
     print(f"   Per-slot ROI ({effective_days}):")
     for slot in SLOTS:
         roi_map = per_slot.get(slot, {}).get("roi_by_N", {}) if isinstance(per_slot.get(slot), dict) else {}

@@ -545,8 +545,6 @@ class UltimatePredictionEngine:
                     return {slot: list(nums) for slot, nums in cached_preds.items()}
                 timeout_seconds = None  # Allow generous runtime for SCR6 without killing the process
 
-            print(f"   🔄 Running {script_name}...")
-
             result = subprocess.run(
                 ['py', '-3.12', script_name],
                 capture_output=True,
@@ -637,9 +635,6 @@ class UltimatePredictionEngine:
             else:
                 if VERBOSE_BACKTEST:
                     print(f"   ⚠️  {script} not found")
-
-        if not VERBOSE_BACKTEST:
-            print("   [SCR1–SCR8] All component scripts executed.")
 
         # Print timing summary
         if VERBOSE_BACKTEST and script_times:
@@ -775,10 +770,12 @@ class UltimatePredictionEngine:
     
     def predict_for_target_date(self, df_history, target_date):
         """Generate predictions for a specific target date - OPTIMIZED"""
-        print(f"[SCR11-BACKTEST] Testing {target_date.date()}...")
+        print(f"[SCR11-BACKTEST] Testing {target_date.date()}... (SCR1–SCR8 bundle)")
 
         # Collect predictions from all scripts
         all_script_preds = self.collect_all_script_predictions(target_date=target_date, mode='predict_for_date')
+
+        print(f"   [SCR11] {target_date.date()}: SCR1–SCR8 executed.")
         
         # Reorganize by slot
         slot_predictions = {}

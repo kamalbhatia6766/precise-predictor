@@ -9,6 +9,13 @@ import pandas as pd
 from openpyxl.utils.exceptions import InvalidFileException
 import quant_paths
 import pattern_packs
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    module=__name__,
+)
 
 
 SCRIPT_HIT_MEMORY_HEADERS: List[str] = [
