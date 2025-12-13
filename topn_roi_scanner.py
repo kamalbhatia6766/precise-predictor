@@ -5,6 +5,13 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import argparse
+import csv
+import json
+from datetime import date, datetime
+from pathlib import Path
+from typing import Dict, List, Tuple
+
 import numpy as np
 from quant_stats_core import compute_topn_roi
 import quant_paths
@@ -397,10 +404,18 @@ def main() -> int:
     roi_map = overall.get("roi_by_N", {}) if isinstance(overall, dict) else {}
     display_ns: List[int] = list(range(1, max_n + 1))
     roi_values = [v for v in roi_map.values() if v is not None]
-    all_zero_roi = not roi_values or all(abs(float(v)) < 1e-9 for v in roi_values)
+    min_days_required = 20
+    all_zero_roi = (
+        days_used < min_days_required
+        or not roi_values
+        or all(abs(float(v)) < 1e-9 for v in roi_values)
+    )
 
     if all_zero_roi:
-        print("Top-N ROI module warming up – all bands ROI≈0.0; no detailed breakdown.")
+        warm_note = "Top-N ROI module warming up – insufficient history for reliable ROI bands."
+        if days_used:
+            warm_note += f" (effective {days_used}d)"
+        print(warm_note)
     else:
         for n in display_ns:
             roi_val = roi_map.get(n)

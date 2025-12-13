@@ -12,7 +12,7 @@ import pandas as pd
 from quant_core import hit_core, pattern_core
 from quant_core.pattern_metrics_core import compute_pattern_metrics
 from quant_stats_core import compute_pack_hit_stats
-from script_hit_memory_utils import filter_hits_by_window
+from script_hit_memory_utils import filter_by_date_window, filter_hits_by_window
 import quant_paths
 import pattern_packs
 
@@ -97,30 +97,29 @@ class PatternIntelligenceEnhanced:
             if candidate in df.columns:
                 date_col = candidate
                 break
+        filtered_df = df
         if date_col:
             try:
-                date_series = pd.to_datetime(df[date_col], errors="coerce")
-                window_start = date_series.min().date() if not date_series.dropna().empty else None
-                window_end = date_series.max().date() if not date_series.dropna().empty else None
+                filtered_df, window_start, window_end = filter_by_date_window(df, date_col, self.window_days)
                 if self.logger.isEnabledFor(logging.INFO):
                     self.logger.info(
                         "[PatternIntel+] window=%sd start=%s end=%s rows=%s",
                         self.window_days,
-                        window_start,
-                        window_end,
-                        len(df),
+                        getattr(window_start, "date", lambda: None)(),
+                        getattr(window_end, "date", lambda: None)(),
+                        len(filtered_df),
                     )
                 print(
-                    f"[PatternIntel+] Window slice: days={self.window_days}, start={window_start}, end={window_end}, rows={len(df)}"
+                    f"[PatternIntel+] Window slice: days={self.window_days}, start={getattr(window_start, 'date', lambda: None)()}, end={getattr(window_end, 'date', lambda: None)()}, rows={len(filtered_df)}"
                 )
             except Exception:
-                pass
-        if df.empty:
+                filtered_df = df
+        if filtered_df.empty:
             print(
                 f"[PatternIntel+] Not enough hit data in the last {self.window_days} days (found 0 rows). Skipping enhanced analysis."
             )
             return True
-        enhanced = pattern_core.run_enhanced_pattern_intel(hit_df=df, window_days=self.window_days)
+        enhanced = pattern_core.run_enhanced_pattern_intel(hit_df=filtered_df, window_days=self.window_days)
         scripts = enhanced.get("scripts", {}) if isinstance(enhanced, dict) else {}
         slots = enhanced.get("slots", {}) if isinstance(enhanced, dict) else {}
         summary = {
@@ -131,10 +130,10 @@ class PatternIntelligenceEnhanced:
             "slots": slots,
         }
         self._latest_summary = summary
-        self.save(summary, df)
+        self.save(summary, filtered_df)
         self._export_regime_summary(base_summary)
-        self._export_family_regimes(df)
-        self.print_summary(df, scripts, slots)
+        self._export_family_regimes(filtered_df)
+        self.print_summary(filtered_df, scripts, slots)
         return True
 
     def _export_regime_summary(self, summary: Dict) -> None:
