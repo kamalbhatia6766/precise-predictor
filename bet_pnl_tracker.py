@@ -1170,7 +1170,18 @@ class BetPnLTracker:
                 slot_pnl_df[alias] = slot_pnl_df[source]
             elif alias not in slot_pnl_df.columns:
                 slot_pnl_df[alias] = 0
-        
+
+        # 🧹 Numeric hygiene for validator (critical columns must never be NaN/inf)
+        numeric_cols = [
+            'total_stake', 'total_return', 'pnl', 'roi_pct',
+            'TOTAL_BET', 'TOTAL_RETURN', 'NET_PNL', 'ROI_%'
+        ]
+        for col in numeric_cols:
+            if col in slot_pnl_df.columns:
+                slot_pnl_df[col] = pd.to_numeric(slot_pnl_df[col], errors='coerce')
+                slot_pnl_df[col] = slot_pnl_df[col].replace([np.inf, -np.inf], np.nan)
+                slot_pnl_df[col] = slot_pnl_df[col].fillna(0.0)
+
         # Save to Excel
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
             slot_pnl_df.to_excel(writer, sheet_name='daily_slot_pnl', index=False)

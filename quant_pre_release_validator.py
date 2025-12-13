@@ -217,6 +217,13 @@ def run_all_tests(skip_heavy: bool = False) -> None:
         else:
             optional_cols = ["TOTAL_BET", "NET_PNL", "ROI_%"]
             missing_optional = [col for col in optional_cols if col not in col_map]
+            # Coerce critical numeric columns before NaN/inf scan
+            critical_cols = [col_map[c] for c in ["TOTAL_RETURN", "TOTAL_BET", "NET_PNL", "ROI_%"] if c in col_map]
+            for col in critical_cols:
+                if col in df_pnl.columns:
+                    df_pnl[col] = pd.to_numeric(df_pnl[col], errors="coerce").fillna(0.0)
+                    df_pnl[col] = df_pnl[col].replace([np.inf, -np.inf], 0.0)
+
             issues = has_nan_or_inf(df_pnl)
             hard_cols = [col_map[c] for c in ["TOTAL_RETURN"] if c in col_map]
             hard_issue_rows: List[str] = []

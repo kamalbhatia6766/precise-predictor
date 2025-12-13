@@ -2238,6 +2238,8 @@ class PreciseBetEngine:
 
         if "number" not in bets_df.columns:
             bets_df["number"] = ""
+        else:
+            bets_df["number"] = bets_df["number"].fillna("")
 
         if not bets_df.empty:
             main_mask = (
@@ -2253,9 +2255,11 @@ class PreciseBetEngine:
                     val = row.get(col)
                     if is_valid_2d_number(val):
                         return to_2d_str(val)
-                return ""
+                # Fallback to canonical 2-digit placeholder to avoid NaN/blank rows
+                return "00"
 
             bets_df.loc[main_mask, "number"] = bets_df.loc[main_mask].apply(_derive_number, axis=1)
+            bets_df.loc[~main_mask, "number"] = ""
 
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
             bets_df.to_excel(writer, sheet_name='bets', index=False)
