@@ -2236,13 +2236,26 @@ class PreciseBetEngine:
         filename = f"bet_plan_master_{target_date.strftime('%Y%m%d')}.xlsx"
         file_path = output_dir / filename
 
+        if "number" not in bets_df.columns:
+            bets_df["number"] = ""
+
         if not bets_df.empty:
-            if "number" not in bets_df.columns:
-                bets_df["number"] = ""
-            main_mask = bets_df["layer_type"].astype(str).str.upper() == "MAIN"
-            bets_df.loc[main_mask, "number"] = (
-                bets_df.loc[main_mask, "number_or_digit"].apply(lambda x: to_2d_str(x) if is_valid_2d_number(x) else "")
+            main_mask = (
+                bets_df["layer_type"].astype(str).str.upper() == "MAIN"
+                if "layer_type" in bets_df.columns
+                else pd.Series([False] * len(bets_df))
             )
+
+            source_priority = [col for col in ["number", "number_or_digit", "predicted_number", "predicted", "num"] if col in bets_df.columns]
+
+            def _derive_number(row):
+                for col in source_priority:
+                    val = row.get(col)
+                    if is_valid_2d_number(val):
+                        return to_2d_str(val)
+                return ""
+
+            bets_df.loc[main_mask, "number"] = bets_df.loc[main_mask].apply(_derive_number, axis=1)
 
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
             bets_df.to_excel(writer, sheet_name='bets', index=False)

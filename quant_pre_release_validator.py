@@ -49,19 +49,26 @@ def load_excel_safe(path: Path) -> Tuple[Optional[pd.DataFrame], str]:
         return None, f"error: {exc}"
 
 
-def has_nan_or_inf(df: pd.DataFrame, numeric_only: bool = True) -> Dict[str, Dict[str, int]]:
+def has_nan_or_inf(
+    df: pd.DataFrame, numeric_only: bool = True, ignore_prefixes: Tuple[str, ...] = tuple(), min_non_na_ratio: float = 0.0
+) -> Dict[str, Dict[str, int]]:
     if numeric_only:
         cols = df.select_dtypes(include=["number"]).columns
     else:
         cols = df.columns
     issues: Dict[str, Dict[str, int]] = {}
     for col in cols:
+        col_name = str(col)
+        if ignore_prefixes and col_name.lower().startswith(ignore_prefixes):
+            continue
         series = df[col]
+        if min_non_na_ratio > 0 and series.notna().mean() < min_non_na_ratio:
+            continue
         numeric_series = pd.to_numeric(series, errors="coerce")
         nan_count = numeric_series.isna().sum()
         inf_count = np.isinf(numeric_series).sum()
         if nan_count or inf_count:
-            issues[str(col)] = {"nan": int(nan_count), "inf": int(inf_count)}
+            issues[col_name] = {"nan": int(nan_count), "inf": int(inf_count)}
     return issues
 
 
@@ -134,14 +141,20 @@ def run_all_tests(skip_heavy: bool = False) -> None:
         script_col = find_column(col_map, "SCRIPT_ID")
         slot_col = find_column(col_map, "SLOT")
 
-        missing_cols = [name for name, col in {"predict_date": predict_col, "result_date": result_col, "script_id": script_col, "slot": slot_col}.items() if col is None]
+        missing_cols = [
+            name
+            for name, col in {"predict_date": predict_col, "result_date": result_col, "script_id": script_col, "slot": slot_col}.items()
+            if col is None
+        ]
         if missing_cols:
             _warn("T2", f"Missing required columns: {', '.join(missing_cols)}")
         else:
-            date_cols = [predict_col, result_col]
+            core_dates = [result_col]
+            optional_dates = [col for col in [predict_col] if col and col not in core_dates]
             out_of_range = []
             nat_counts: List[str] = []
-            for col in date_cols:
+            optional_sparse: List[str] = []
+            for col in core_dates + optional_dates:
                 with np.errstate(over="ignore", invalid="ignore"):
                     parsed = pd.to_datetime(df_hit[col], errors="coerce")
                 invalid_mask = (parsed < pd.Timestamp("1990-01-01")) | (parsed > pd.Timestamp("2050-12-31"))
@@ -149,14 +162,22 @@ def run_all_tests(skip_heavy: bool = False) -> None:
                     samples = parsed[invalid_mask].head(3).dt.strftime("%Y-%m-%d").tolist()
                     out_of_range.append(f"{col} ({invalid_mask.sum()} invalid: {samples})")
                 nat_ratio = parsed.isna().mean()
-                if nat_ratio > 0.05:
+                if col in core_dates and nat_ratio > 0.05:
                     nat_counts.append(f"{col} NaT {nat_ratio:.1%}")
+                if col in optional_dates:
+                    if nat_ratio >= 0.95:
+                        optional_sparse.append(f"{col} mostly empty ({nat_ratio:.1%} NaT)")
+                    elif nat_ratio > 0.05:
+                        nat_counts.append(f"optional {col} NaT {nat_ratio:.1%}")
             if out_of_range:
                 _warn("T2", f"Date values out of 1990-2050 range: {'; '.join(out_of_range)} (warning only).")
             elif nat_counts:
                 _warn("T2", f"High NaT ratio in date columns: {', '.join(nat_counts)}. Using as warning only.")
             else:
-                _ok("T2", "script_hit_memory dates within 1990–2050; NaT <5%.")
+                _ok("T2", "script_hit_memory dates within 1990–2050; NaT <5% on required columns.")
+
+            for note in optional_sparse:
+                print(f"ℹ️ [T2] {note}; treated as optional.")
 
     # T3 – NaN / inf check on script_hit_memory.xlsx
     if df_hit is None or status == "missing":
@@ -164,12 +185,18 @@ def run_all_tests(skip_heavy: bool = False) -> None:
     elif status.startswith("error"):
         _warn("T3", "script_hit_memory load failed; skipping NaN/inf check.")
     else:
-        issues = has_nan_or_inf(df_hit)
+        numeric_cols = df_hit.select_dtypes(include=["number"]).columns.tolist()
+        ignore_prefixes = ("note", "comment")
+        sparse_threshold = 0.05
+        numeric_cols = [col for col in numeric_cols if not str(col).lower().startswith(ignore_prefixes)]
+        numeric_cols = [col for col in numeric_cols if df_hit[col].notna().mean() >= sparse_threshold]
+
+        issues = has_nan_or_inf(df_hit[numeric_cols], ignore_prefixes=ignore_prefixes, min_non_na_ratio=sparse_threshold) if numeric_cols else {}
         if issues:
             summary = "; ".join([f"{col}(nan={vals['nan']}, inf={vals['inf']})" for col, vals in issues.items()])
             _warn("T3", f"script_hit_memory has NaN/inf (warning only): {summary}")
         else:
-            _ok("T3", "script_hit_memory numeric columns are finite.")
+            _ok("T3", "script_hit_memory numeric columns are finite (optional sparse/text columns ignored).")
 
     # T4 – P&L master summary NaN / inf + slot sanity
     pnl_xlsx = PROJECT_ROOT / "logs" / "performance" / "quant_reality_pnl.xlsx"

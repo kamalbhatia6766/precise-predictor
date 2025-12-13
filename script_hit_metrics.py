@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,6 +26,44 @@ SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
 
 def safe(value: object) -> float:
     return float(np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0))
+
+
+def _json_sanitize(value: Any) -> Any:
+    """Recursively convert values to JSON-safe types."""
+
+    try:
+        import numpy as _np  # local import to avoid global dependency at import time
+    except Exception:  # pragma: no cover - defensive
+        _np = None
+
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    if isinstance(value, dict):
+        return {k: _json_sanitize(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_sanitize(v) for v in value]
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    if _np is not None and isinstance(value, (_np.integer,)):
+        return int(value)
+    if _np is not None and isinstance(value, (_np.floating,)):
+        if _np.isnan(value) or _np.isinf(value):
+            return None
+        return float(value)
+    if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+        return None
+    if isinstance(value, (pd.Series, pd.DataFrame)):
+        return _json_sanitize(value.to_dict())
+    return value
 
 
 def _normalise_slot(slot_value: object) -> Optional[str]:
@@ -454,7 +492,8 @@ def _export_script_hit_metrics_json(
             "slots": payload_slots,
         }
 
-        output_path.write_text(json.dumps(payload, indent=2))
+        safe_payload = _json_sanitize(payload)
+        output_path.write_text(json.dumps(safe_payload, indent=2))
     except Exception as exc:
         print(f"[script_hit_metrics] Warning: unable to write script_hit_metrics.json: {exc}")
 

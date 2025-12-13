@@ -1220,10 +1220,15 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
         base_dir = quant_paths.get_base_dir()
     except Exception:
         base_dir = Path(".")
-    metrics_json = _load_json(Path(base_dir) / SCRIPT_METRICS_JSON_PATH) or {}
+    try:
+        metrics_json = _load_json(Path(base_dir) / SCRIPT_METRICS_JSON_PATH) or {}
+    except Exception:
+        metrics_json = {}
     slots_block = metrics_json.get("slots") if isinstance(metrics_json, dict) else {}
+    league_block = metrics_json.get("league") if isinstance(metrics_json, dict) else {}
+    overall_block = metrics_json.get("overall") if isinstance(metrics_json, dict) else None
 
-    if slots_block:
+    if slots_block or league_block or overall_block:
         for slot in SLOTS:
             slot_block = slots_block.get(slot, {}) if isinstance(slots_block, dict) else {}
             heroes = slot_block.get("hero_scripts", []) or []
@@ -1231,10 +1236,35 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
             hero_label = ", ".join(sorted({str(h) for h in heroes if h})) or "n/a"
             weak_label = ", ".join(sorted({str(w) for w in weaks if w})) or "n/a"
             print(f"   {slot}: hero = {hero_label} | weak = {weak_label}")
-        return
+
+        league_overall = None
+        if league_block:
+            league_overall = league_block.get("overall") if isinstance(league_block, dict) else None
+        if overall_block and not league_overall:
+            league_overall = overall_block if isinstance(overall_block, dict) else None
+
+        if league_overall:
+            hero = league_overall.get("hero", {}) if isinstance(league_overall, dict) else {}
+            weak = league_overall.get("weak", {}) if isinstance(league_overall, dict) else {}
+            hero_id = hero.get("script_id") or "n/a"
+            weak_id = weak.get("script_id") or "n/a"
+            hero_score = hero.get("score")
+            weak_score = weak.get("score")
+            hero_rate = hero.get("hit_rate_exact")
+            weak_rate = weak.get("hit_rate_exact")
+            print(
+                f"   Overall hero: {hero_id} ({_fmt_scores(hero_score, hero_rate)}) "
+                f"| overall weak: {weak_id} ({_fmt_scores(weak_score, weak_rate)})"
+            )
+
+        if slots_block:
+            return
 
     # Fallback to live computation when JSON is missing
-    metrics, summary = get_metrics_table(window_days=window_days, mode="per_slot")
+    try:
+        metrics, summary = get_metrics_table(window_days=window_days, mode="per_slot")
+    except Exception:
+        metrics, summary = None, None
     if metrics is None or summary is None or metrics.empty:
         hit_memory, diag = load_script_hit_memory(return_diag=True)
         rows = len(hit_memory) if hasattr(hit_memory, "__len__") else 0
@@ -1247,6 +1277,7 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
         if latest_date:
             print(f"   Script hit memory: {rows} rows (as-of {latest_date}).")
         else:
+            print("   Script performance metrics unavailable (missing metrics file).")
             print(f"   Script hit memory unavailable ({note}).")
         return
     heroes_df = hero_weak_table(metrics, min_predictions=10)
@@ -1259,6 +1290,7 @@ def print_script_performance_section(window_days: int = SCRIPT_METRICS_WINDOW_DA
         weak_label = weak_id or "n/a"
         print(f"   {slot}: hero = {hero_label} | weak = {weak_label}")
 
+    league = build_script_league(metrics) if metrics is not None else {}
     overall = league.get("overall") if isinstance(league, dict) else None
     if overall:
         hero = overall.get("hero", {})
