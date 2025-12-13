@@ -65,6 +65,8 @@ PATTERN_BOOST_EXTRA = 1.10
 PATTERN_PENALTY_EXTRA = 0.95
 PATTERN_MULT_MIN = 0.5
 PATTERN_MULT_MAX = 1.8
+PATTERN_REGIME_MULTIPLIERS = {"BOOST": 1.2, "NORMAL": 1.0, "OFF": 0.7}
+PATTERN_REGIME_CLAMP = (0.8, 1.5)
 DEFAULT_BEST_N = 3
 MIN_SHORTLIST_K = 3
 MAX_SHORTLIST_K = 12
@@ -430,6 +432,33 @@ class PreciseBetEngine:
 
         mult = max(PATTERN_MULT_MIN, min(mult, PATTERN_MULT_MAX))
         return mult
+
+    def get_pattern_multiplier(self, slot: str, num: object) -> float:
+        """
+        Combine S40 and FAMILY_164950 regime multipliers for a given slot/number.
+        Returns a factor clamped to PATTERN_REGIME_CLAMP.
+        """
+        try:
+            num_str = to_2d_str(num)
+        except Exception:
+            return 1.0
+
+        if not is_valid_2d_number(num_str):
+            return 1.0
+
+        slot_key = str(slot).upper()
+        summary = self.pattern_regime_summary.get("per_slot", {}) if isinstance(self.pattern_regime_summary, dict) else {}
+        slot_regimes = summary.get(slot_key, {}) if isinstance(summary, dict) else {}
+
+        s40_regime = str(slot_regimes.get("S40", "NORMAL")).upper()
+        fam_regime = str(slot_regimes.get("FAMILY_164950", "NORMAL")).upper()
+
+        m_s40 = PATTERN_REGIME_MULTIPLIERS.get(s40_regime, 1.0) if is_s40_number(num_str) else 1.0
+        m_164950 = PATTERN_REGIME_MULTIPLIERS.get(fam_regime, 1.0) if is_164950_family(num_str) else 1.0
+
+        combined = m_s40 * m_164950
+        low, high = PATTERN_REGIME_CLAMP
+        return max(low, min(combined, high))
 
     def _get_shortlist_width(self, slot: str, candidate_count: int) -> int:
         profile = self.topn_shortlist_profile or {}
@@ -1552,6 +1581,19 @@ class PreciseBetEngine:
         self.pattern_regime_summary = self._load_pattern_regime_summary()
         self.topn_policy = self._load_topn_policy()
         self.slot_health_snapshot = self._load_slot_health_snapshot()
+
+        regime_line_parts = []
+        per_slot_regimes = self.pattern_regime_summary.get("per_slot", {}) if isinstance(self.pattern_regime_summary, dict) else {}
+        for slot in self.slots:
+            slot_key = str(slot).upper()
+            slot_regimes = per_slot_regimes.get(slot_key, {}) if isinstance(per_slot_regimes, dict) else {}
+            s40_regime = str(slot_regimes.get("S40", "NORMAL")).upper()
+            fam_regime = str(slot_regimes.get("FAMILY_164950", "NORMAL")).upper()
+            s40_mult = PATTERN_REGIME_MULTIPLIERS.get(s40_regime, 1.0)
+            fam_mult = PATTERN_REGIME_MULTIPLIERS.get(fam_regime, 1.0)
+            regime_line_parts.append(f"{slot_key}: S40={s40_mult:.1f}, 164950={fam_mult:.1f}")
+        if regime_line_parts:
+            print(f"PatternFactors {'; '.join(regime_line_parts)}")
         
         long_df = self.convert_wide_to_long_format(df, target_rows)
         target_df = long_df.copy()
@@ -1693,6 +1735,9 @@ class PreciseBetEngine:
                         stake = 1 * self.base_unit
                     else:
                         stake = 0.5 * self.base_unit
+
+                pattern_factor = self.get_pattern_multiplier(slot, number)
+                stake = round(stake * pattern_factor, 2)
 
                 potential_return = stake * 90
                 main_stake_total += stake
@@ -2020,6 +2065,23 @@ class PreciseBetEngine:
             )
 
         bets_df = apply_overlay_policy_to_bets(bets_df, slot_health_map, self.base_unit)
+
+        if not bets_df.empty:
+            pack_mask = bets_df["layer_type"].isin(["PackCore", "PackBooster"])
+            numeric_mask = bets_df["number_or_digit"].apply(is_valid_2d_number)
+            adjustable_mask = pack_mask & numeric_mask
+
+            for idx, row in bets_df.loc[adjustable_mask].iterrows():
+                slot_key = row.get("slot")
+                number = row.get("number_or_digit")
+                factor = self.get_pattern_multiplier(slot_key, number)
+                try:
+                    stake_val = float(row.get("stake", 0.0))
+                except Exception:
+                    continue
+                updated_stake = round(stake_val * factor, 2)
+                bets_df.at[idx, "stake"] = updated_stake
+                bets_df.at[idx, "potential_return"] = round(updated_stake * 90, 2)
 
         return bets_df, summary_df, diagnostic_df, quantum_debug_df, ultra_debug_df, explainability_df
 
