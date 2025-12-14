@@ -290,7 +290,7 @@ def _align_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in date_cols:
         if col in out.columns:
             out[col] = pd.to_datetime(out[col], errors="coerce")
-    out = out.dropna(subset=["predict_date", "result_date"], how="any")
+    out = out.dropna(subset=["predict_date", "result_date"], how="all")
     for col in ("predict_date", "result_date"):
         if col in out.columns:
             out[col] = out[col].dt.date
@@ -360,13 +360,9 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
         lowered = filled.str.lower()
         return lowered.isin({"true", "1", "yes", "y"})
 
-    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce").dt.date
-    df["date"] = pd.to_datetime(df.get("date"), errors="coerce").dt.date
-    before_drop = len(df)
-    df = df.dropna(subset=["result_date", "date"], how="all")
-    dropped = before_drop - len(df)
-    if dropped > 0:
-        print(f"[HitMemory] Dropped {dropped} rows with invalid dates from {xlsx_path}")
+    date_candidates = [col for col in ("result_date", "date", "predict_date") if col in df.columns]
+    for col in date_candidates:
+        df[col] = pd.to_datetime(df.get(col), errors="coerce")
     df["slot"] = df.get("slot").astype(str)
     df["script_id"] = df.get("script_id").astype(str)
     df["HIT_TYPE"] = df.get("hit_type").astype(str).str.upper()
@@ -377,7 +373,7 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
     df["is_near_miss"] = _to_bool(df.get("is_near_miss", False)) | df["HIT_TYPE"].isin(
         ["MIRROR", "NEIGHBOR", "CROSS_SLOT", "CROSS_DAY"]
     )
-    df, _ = normalize_date_column(df)
+    df, chosen_date = normalize_date_column(df)
     if df.empty:
         exists = xlsx_path.exists()
         size = xlsx_path.stat().st_size if exists else 0
@@ -406,8 +402,13 @@ def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = Non
     if df is None or df.empty:
         raise ValueError("Refusing to overwrite script hit memory with an empty dataframe")
 
+    df = df.reset_index(drop=True)
+    mandatory_dates = {"result_date", "date", "DATE"}
+    if not mandatory_dates.intersection(set(df.columns)):
+        raise ValueError("Hit memory must contain a date-like column before writing")
+
     aligned_df = _align_columns(df)
-    if "result_date" not in aligned_df.columns:
+    if "result_date" not in aligned_df.columns and "DATE" not in aligned_df.columns:
         raise ValueError("Hit memory must contain a result_date column before writing")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -420,7 +421,7 @@ def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = Non
     aligned_df.to_excel(xlsx_path, index=False)
 
     try:
-        reloaded = pd.read_excel(xlsx_path, engine="openpyxl")
+        raw = pd.read_excel(xlsx_path, engine="openpyxl")
     except Exception as exc:
         size = xlsx_path.stat().st_size if xlsx_path.exists() else 0
         print(
@@ -429,13 +430,30 @@ def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = Non
         _restore_latest_backup(xlsx_path)
         raise
 
-    if reloaded is None or reloaded.empty:
+    if raw.shape[0] == 0:
         size = xlsx_path.stat().st_size if xlsx_path.exists() else 0
         print(
             f"[FATAL] hit-memory write produced empty file at {xlsx_path} (size={size} bytes)"
         )
         _restore_latest_backup(xlsx_path)
         raise RuntimeError("Hit-memory write verification failed")
+
+    reloaded = _align_columns(raw)
+    normalized, date_col = normalize_date_column(reloaded)
+    if normalized is None:
+        normalized = pd.DataFrame(columns=reloaded.columns)
+    if normalized.empty:
+        date_columns_present = [c for c in ("DATE", "result_date", "date", "predict_date") if c in reloaded.columns]
+        print(
+            "[HitMemory] Write verification detected schema/date mismatch instead of empty write: "
+            f"raw_rows={raw.shape[0]}, raw_cols={raw.shape[1]}, normalized_rows={len(normalized)}, "
+            f"date_cols={date_columns_present}"
+        )
+        try:
+            print(f"[HitMemory] First rows preview:\n{raw.head(3)}")
+        except Exception:
+            pass
+        raise RuntimeError("Hit-memory write verification failed after normalization")
 
     _write_health_report(aligned_df, xlsx_path)
     return xlsx_path
@@ -509,13 +527,32 @@ def normalize_date_column(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[str]
         return pd.DataFrame(columns=df.columns if df is not None else []), None
 
     work_df = df.copy()
-    date_col = _choose_date_column(work_df)
-    if not date_col:
+    col_map = {str(c).lower(): c for c in work_df.columns}
+    candidates = []
+    for candidate in DATE_COLUMN_CANDIDATES + ("DATE",):
+        key = str(candidate).lower()
+        if key in col_map:
+            col_name = col_map[key]
+            if col_name not in candidates:
+                candidates.append(col_name)
+
+    if not candidates:
         return pd.DataFrame(columns=work_df.columns), None
 
-    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce").dt.normalize()
-    work_df = work_df.dropna(subset=[date_col])
-    return work_df, date_col
+    for col in candidates:
+        work_df[col] = pd.to_datetime(work_df[col], errors="coerce")
+
+    all_na_mask = work_df[candidates].isna().all(axis=1)
+    work_df = work_df.loc[~all_na_mask].copy()
+    if work_df.empty:
+        return pd.DataFrame(columns=df.columns), None
+
+    best_candidate = max(candidates, key=lambda col: work_df[col].notna().sum())
+    if work_df[best_candidate].notna().sum() == 0:
+        return pd.DataFrame(columns=df.columns), None
+
+    work_df["DATE"] = work_df[best_candidate].dt.date
+    return work_df, best_candidate
 
 
 def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFrame, int]:
