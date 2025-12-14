@@ -3,6 +3,7 @@
 This script decides between intraday vs next-day workflows, triggers the
 appropriate engines quietly, and prints a concise human-readable daily brief.
 """
+# PR57: reporting correctness fixes (pattern metrics, cross-slot snapshot, regimes)
 from __future__ import annotations
 
 import argparse
@@ -799,15 +800,31 @@ def load_pattern_summary_from_intel(window_days: int = 90) -> PatternSummary:
     daily_cover = summary_json.get("daily_cover", {})
     notes: List[str] = []
 
+    def _normalise_rate(raw_rate: object) -> float:
+        try:
+            rate_val = float(raw_rate)
+        except Exception:
+            return 0.0
+        if 0 < rate_val <= 1:
+            return rate_val * 100.0
+        return rate_val
+
     def _family_block(key: str, label: str) -> Dict[str, float]:
         fam_stats = patterns.get(key, {}) or {}
         cover = daily_cover.get("S40" if key == "S40" else "PACK_164950", {}) or {}
-        rate = fam_stats.get("hit_rate_overall", fam_stats.get("hit_rate_exact", 0.0)) or 0.0
+        rate_raw = fam_stats.get("hit_rate_overall")
+        if rate_raw is None:
+            rate_raw = fam_stats.get("hit_rate_exact")
+        if rate_raw is None:
+            rate_raw = fam_stats.get("hit_rate")
+        rate = _normalise_rate(rate_raw)
         by_slot = fam_stats.get("by_slot", {}) if isinstance(fam_stats, dict) else {}
         best_slot, weak_slot = _best_weak_from_by_slot(by_slot)
+        hits_total = int(fam_stats.get("hits_total") or fam_stats.get("exact_hits") or 0)
         return {
-            "hits": int(fam_stats.get("exact_hits", 0) or 0),
-            "hit_rate": float(rate) * 100.0,
+            "hits": hits_total,
+            "hits_total": hits_total,
+            "hit_rate": rate,
             "daily_rate": (cover.get("covered_days", 0) or 0) / (cover.get("total_days", 0) or 1) * 100.0,
             "daily_days": int(cover.get("covered_days", 0) or 0),
             "total_days": int(cover.get("total_days", 0) or 0),
@@ -1149,10 +1166,16 @@ def print_pattern_section(patterns: PatternSummary) -> None:
         print(f"   Hits analyzed    : {patterns.total_hits}")
     if patterns.s40:
         hr = patterns.s40.get("hit_rate", 0.0) or 0.0
-        hits = patterns.s40.get("hits")
+        hits = patterns.s40.get("hits_total") or patterns.s40.get("hits")
         total_rows = patterns.total_hits or 0
-        membership_hits = int(round((hr / 100.0) * total_rows)) if total_rows else int(hits or 0)
-        tagged_base = patterns.s40.get("exact_total") or patterns.s40.get("total_hits") or total_rows or hits or 0
+        membership_hits = int(hits or 0)
+        tagged_base = (
+            patterns.s40.get("exact_total")
+            or patterns.s40.get("total_hits")
+            or patterns.s40.get("hits_total")
+            or hits
+            or 0
+        )
         print(
             f"   S40 membership rate across all rows : {membership_hits}/{total_rows or 'n/a'} ({hr:.2f}%)"
         )
@@ -1163,9 +1186,15 @@ def print_pattern_section(patterns: PatternSummary) -> None:
         )
     if patterns.fam_164950:
         hr = patterns.fam_164950.get("hit_rate", 0.0) or 0.0
-        hits = patterns.fam_164950.get("hits")
-        fam_membership = int(round((hr / 100.0) * (patterns.total_hits or 0))) if patterns.total_hits else int(hits or 0)
-        tagged_base = patterns.fam_164950.get("exact_total") or patterns.fam_164950.get("total_hits") or patterns.total_hits or hits or 0
+        hits = patterns.fam_164950.get("hits_total") or patterns.fam_164950.get("hits")
+        fam_membership = int(hits or 0)
+        tagged_base = (
+            patterns.fam_164950.get("exact_total")
+            or patterns.fam_164950.get("total_hits")
+            or patterns.fam_164950.get("hits_total")
+            or hits
+            or 0
+        )
         print(
             f"   164950 membership across all rows   : {fam_membership}/{patterns.total_hits or 'n/a'} ({hr:.2f}%)"
         )
@@ -1302,8 +1331,8 @@ def print_pattern_family_snapshot() -> None:
         boosts = []
         offs = []
         for fam_name, fam_info in fam_block.items():
-            regime = str(fam_info.get("regime_30d", fam_info.get("regime" ,"NORMAL"))).upper()
-            hit_rate = fam_info.get("hit_rate_30d", fam_info.get("hit_rate", 0.0))
+            regime = str(fam_info.get("regime_30d", fam_info.get("regime", "UNKNOWN"))).upper()
+            hit_rate = fam_info.get("hit_rate_30d", fam_info.get("hit_rate"))
             if regime == "BOOST":
                 boosts.append((fam_name, hit_rate))
             elif regime == "OFF":
@@ -1312,7 +1341,10 @@ def print_pattern_family_snapshot() -> None:
         offs = sorted(offs, key=lambda x: (x[1] or 0, x[0]))[:2]
         boost_tags = "{" + ", ".join([b[0] for b in boosts]) + "}" if boosts else "{}"
         off_tags = "{" + ", ".join([o[0] for o in offs]) + "}" if offs else "{}"
-        print(f"   {slot}: BOOST={boost_tags} | OFF={off_tags}")
+        if not fam_block:
+            print(f"   {slot}: BOOST=UNKNOWN | OFF=UNKNOWN (per-slot family regimes unavailable)")
+        else:
+            print(f"   {slot}: BOOST={boost_tags} | OFF={off_tags}")
 
     print("\n   S40 & 164950 cross-slot snapshot:")
     def _fetch_family_block(slot_block: dict, family_key: str) -> dict:
@@ -1324,6 +1356,18 @@ def print_pattern_family_snapshot() -> None:
             fam = families.get("PACK_164950")
         return dict(fam or {})
 
+    def _hit_rate_from_block(block: Dict[str, object]) -> Optional[float]:
+        for key in ("hit_rate_30d", "hit_rate", "hit_rate_exact", "hit_rate_overall"):
+            if key in block and block.get(key) is not None:
+                try:
+                    val = float(block.get(key))
+                except Exception:
+                    continue
+                if 0 < val <= 1:
+                    val *= 100.0
+                return val
+        return None
+
     for fam in ["S40", "PACK_164950"]:
         per_slot: Dict[str, dict] = {}
         score_candidates: List[Tuple[str, float]] = []
@@ -1331,25 +1375,21 @@ def print_pattern_family_snapshot() -> None:
             slot_block = slots_block.get(slot, {}) if isinstance(slots_block, dict) else {}
             fam_info = _fetch_family_block(slot_block, fam)
             per_slot[slot] = fam_info
-            hit_rate = fam_info.get("hit_rate_30d")
-            if hit_rate is None:
-                hit_rate = fam_info.get("hit_rate")
-            if hit_rate is None:
+            hit_rate_val = _hit_rate_from_block(fam_info)
+            if hit_rate_val is None:
                 continue
-            try:
-                hit_rate_val = float(hit_rate)
-                score_candidates.append((slot, hit_rate_val))
-            except Exception:
-                continue
+            score_candidates.append((slot, hit_rate_val))
         if len(score_candidates) >= 2:
             best_slot = max(score_candidates, key=lambda x: x[1])[0]
             weak_slot = min(score_candidates, key=lambda x: x[1])[0]
+        elif len(score_candidates) == 1:
+            best_slot = weak_slot = score_candidates[0][0]
         else:
             best_slot = weak_slot = "N/A"
         parts = []
         for slot, info in per_slot.items():
-            regime = (info or {}).get("regime_30d") or (info or {}).get("regime")
-            parts.append(f"{slot}={regime or 'N/A'}")
+            regime = (info or {}).get("regime_30d") or (info or {}).get("regime") or "UNKNOWN"
+            parts.append(f"{slot}={regime}")
         label = fam if fam != "PACK_164950" else "FAMILY_164950"
         print(f"   {label}: best={best_slot}, weak={weak_slot}, regimes: {', '.join(parts)}")
 
