@@ -6,6 +6,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# PR57: clarify ALL-row scores and merge-window coverage
+
 import numpy as np
 
 import pandas as pd
@@ -183,6 +185,37 @@ def get_metrics_table(
 
     group_cols = ["script_id"] if mode == "overall" else ["script_id", "slot"]
 
+    def _global_row_from_window(window_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        if window_df is None or window_df.empty:
+            return None
+        total_predictions = len(window_df)
+        relations = window_df.get("_relation") if "_relation" in window_df.columns else window_df.apply(
+            lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1
+        )
+        exact_hits = int((relations == "EXACT").sum())
+        near_hits = int(
+            relations.isin({"MIRROR", "ADJACENT", "DIAGONAL_11", "REVERSE_CARRY", "SAME_DIGIT_COOL"}).sum()
+        )
+        hit_rate_exact = exact_hits / total_predictions if total_predictions else 0.0
+        near_miss_rate = near_hits / total_predictions if total_predictions else 0.0
+        blind_misses = max(total_predictions - exact_hits - near_hits, 0)
+        blind_miss_rate = blind_misses / total_predictions if total_predictions else 0.0
+        score = (120.0 * hit_rate_exact + 40.0 * near_miss_rate - 30.0 * blind_miss_rate)
+        score = (score + 0.20) * 100.0 if total_predictions else 0.0
+        row = {
+            "script_id": "ALL",
+            "total_predictions": int(total_predictions),
+            "exact_hits": int(exact_hits),
+            "near_hits": int(near_hits),
+            "hit_rate_exact": hit_rate_exact,
+            "near_miss_rate": near_miss_rate,
+            "blind_miss_rate": blind_miss_rate,
+            "score": score,
+        }
+        if mode != "overall":
+            row["slot"] = "ALL"
+        return pd.DataFrame([row])
+
     def _compute_window(label: str, days: Optional[int]) -> Tuple[pd.DataFrame, Dict[str, Any], pd.DataFrame]:
         if days is None:
             window_df = df.copy()
@@ -203,6 +236,9 @@ def get_metrics_table(
         if window_df.empty:
             return pd.DataFrame(), summary, window_df
         metrics = _aggregate_metrics(window_df, group_cols)
+        global_row = _global_row_from_window(window_df)
+        if global_row is not None:
+            metrics = pd.concat([global_row, metrics], ignore_index=True)
         if not metrics.empty and "score" in metrics.columns:
             metrics["score"] = (metrics["score"] + 0.20) * 100.0
         return metrics, summary, window_df
@@ -224,38 +260,6 @@ def get_metrics_table(
     merge_on = ["script_id"] if mode == "overall" else ["script_id", "slot"]
     for label, table in window_tables.items():
         metrics = metrics.merge(table[merge_on + [c for c in table.columns if c not in merge_on]], on=merge_on, how="outer")
-
-    if mode == "per_slot":
-        total_predictions = len(base_window_df)
-        relations = base_window_df.get("_relation") if "_relation" in base_window_df.columns else base_window_df.apply(
-            lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1
-        )
-        exact_hits = int((relations == "EXACT").sum())
-        near_hits = int(
-            relations.isin({"MIRROR", "ADJACENT", "DIAGONAL_11", "REVERSE_CARRY", "SAME_DIGIT_COOL"}).sum()
-        )
-        hit_rate_exact = exact_hits / total_predictions if total_predictions else 0.0
-        near_miss_rate = near_hits / total_predictions if total_predictions else 0.0
-        blind_misses = max(total_predictions - exact_hits - near_hits, 0)
-        blind_miss_rate = blind_misses / total_predictions if total_predictions else 0.0
-        score = (120.0 * hit_rate_exact + 40.0 * near_miss_rate - 30.0 * blind_miss_rate)
-        score = (score + 0.20) * 100.0 if total_predictions else 0.0
-        global_row = pd.DataFrame(
-            [
-                {
-                    "script_id": "ALL",
-                    "slot": "ALL",
-                    "total_predictions": int(total_predictions),
-                    "exact_hits": int(exact_hits),
-                    "near_hits": int(near_hits),
-                    "hit_rate_exact": hit_rate_exact,
-                    "near_miss_rate": near_miss_rate,
-                    "blind_miss_rate": blind_miss_rate,
-                    "score": score,
-                }
-            ]
-        )
-        metrics = pd.concat([global_row, metrics], ignore_index=True)
 
     for label, _ in window_defs:
         score_col = f"score_{label}"

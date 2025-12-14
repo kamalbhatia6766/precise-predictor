@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date, datetime
+import re
+import shutil
+import subprocess
+import sys
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
+
+# PR57: controlled regeneration for predictions + reporting backup
 
 import pandas as pd
 
+import quant_paths
 from quant_core import hit_core, pattern_core, pnl_core
 from quant_core.data_core import load_results_dataframe
 
@@ -31,6 +38,102 @@ def _backup_file(path: Path) -> None:
     backup = path.with_name(f"{path.stem}_backup_{ts}{path.suffix}")
     backup.write_bytes(path.read_bytes())
     print(f"Backup created: {backup}")
+
+
+def _parse_date(value: Optional[str]) -> Optional[date]:
+    if value is None:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _iter_dates(start: date, end: Optional[date]) -> Iterable[date]:
+    cursor = start
+    while True:
+        yield cursor
+        if end is None or cursor >= end:
+            break
+        cursor += timedelta(days=1)
+
+
+def _extract_date_from_name(path: Path) -> Optional[date]:
+    match = re.search(r"(20\d{2})(\d{2})(\d{2})", path.name)
+    if not match:
+        return None
+    try:
+        return datetime.strptime("".join(match.groups()), "%Y%m%d").date()
+    except Exception:
+        return None
+
+
+def _backup_prediction_files(script_dir: Path, date_range: Sequence[date]) -> None:
+    if not script_dir.exists():
+        return
+    date_set = set(date_range)
+    targets: List[Path] = []
+    for item in script_dir.iterdir():
+        if not item.is_file():
+            continue
+        file_date = _extract_date_from_name(item)
+        if file_date is None or (date_set and file_date not in date_set):
+            continue
+        targets.append(item)
+    if not targets:
+        return
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = script_dir.parent / "backups" / f"{script_dir.name}_{ts}"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    for item in targets:
+        dest = backup_dir / item.name
+        shutil.copy2(item, dest)
+    print(f"Backed up {len(targets)} files for {script_dir.name} to {backup_dir}")
+
+
+def regenerate_predictions(from_date: date, to_date: Optional[date], scripts: Sequence[str]) -> None:
+    predictions_root = quant_paths.get_predictions_dir()
+    if not predictions_root.exists():
+        print("[TimeMachine] predictions directory missing; nothing to regenerate.")
+        return
+
+    if not scripts:
+        print("[TimeMachine] No scripts provided for regeneration.")
+        return
+
+    date_range = list(_iter_dates(from_date, to_date))
+    script_ids = [s.strip().upper() for s in scripts if s.strip()]
+    if "ALL" in script_ids:
+        script_ids = [p.name for p in predictions_root.iterdir() if p.is_dir()]
+    available_dirs = {p.name.lower(): p for p in predictions_root.iterdir() if p.is_dir()}
+
+    def _matching_dirs(script_id: str) -> List[Path]:
+        lowered = script_id.lower()
+        direct = available_dirs.get(lowered)
+        if direct:
+            return [direct]
+        candidates = [p for name, p in available_dirs.items() if lowered in name]
+        return candidates
+
+    for script_id in script_ids:
+        dirs = _matching_dirs(script_id)
+        for script_dir in dirs:
+            _backup_prediction_files(script_dir, date_range)
+
+        scr_num = script_id.lower().replace("scr", "")
+        script_path = Path(__file__).resolve().parent / f"deepseek_scr{scr_num}.py"
+        if not script_path.exists():
+            print(f"[TimeMachine] Script path not found for {script_id}: {script_path}")
+            continue
+        print(f"[TimeMachine] Regenerating {script_id} via {script_path.name} for {len(date_range)} day(s)...")
+        result = subprocess.run([sys.executable, str(script_path)], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(
+                f"[TimeMachine] Regeneration failed for {script_id}: {result.returncode} | "
+                f"{(result.stderr or '').splitlines()[-1:]}"
+            )
+        else:
+            print(f"[TimeMachine] {script_id} regeneration completed.")
 
 
 def _write_golden_snapshot(snapshot: Optional[Dict], base_dir: Path) -> Optional[Path]:
@@ -144,13 +247,33 @@ def rebuild_from_date(from_date: str, rebuild_hit_memory: bool, rebuild_pnl: boo
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Reset/time-machine utilities for Precise Predictor")
-    parser.add_argument("--from-date", dest="from_date", required=True, help="YYYY-MM-DD from which to rebuild")
+    parser.add_argument("--from-date", dest="from_date", required=True, help="YYYY-MM-DD from which to rebuild/regenerate")
+    parser.add_argument("--to-date", dest="to_date", help="YYYY-MM-DD upper bound for regen")
     parser.add_argument("--rebuild-hit-memory", action="store_true")
     parser.add_argument("--rebuild-pnl", action="store_true")
     parser.add_argument("--rebuild-patterns", action="store_true")
+    parser.add_argument("--regen", action="store_true", help="Regenerate predictions for selected scripts")
+    parser.add_argument(
+        "--scripts",
+        type=str,
+        default="",
+        help="Comma-separated script ids for regeneration (e.g., SCR1,SCR2)",
+    )
     args = parser.parse_args()
 
+    parsed_from = _parse_date(args.from_date)
+    parsed_to = _parse_date(args.to_date)
+    if parsed_from is None:
+        raise SystemExit("--from-date must be in YYYY-MM-DD format")
+
+    if args.regen:
+        script_list = args.scripts.split(",") if args.scripts else []
+        regenerate_predictions(parsed_from, parsed_to, script_list)
+
     rebuild_flags = [args.rebuild_hit_memory, args.rebuild_pnl, args.rebuild_patterns]
+    if args.regen and not any(rebuild_flags):
+        # regen-only invocation
+        return 0
     if not any(rebuild_flags):
         args.rebuild_hit_memory = args.rebuild_pnl = args.rebuild_patterns = True
 
