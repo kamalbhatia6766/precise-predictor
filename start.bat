@@ -5,7 +5,7 @@ py -3.12 prediction_hit_memory.py --mode rebuild --window 90
 py -3.12 script_hit_metrics.py
 py -3.12 pattern_intelligence_enhanced.py
 py -3.12 topn_roi_scanner.py
-py -3.12 deepseek_scr9.py
+py -3.12 deepseek_scr9.py --mode tomorrow
 py -3.12 precise_bet_engine.py
 py -3.12 quant_arjun_mode.py
 py -3.12 bet_pnl_tracker.py

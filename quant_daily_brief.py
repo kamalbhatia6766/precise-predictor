@@ -75,6 +75,7 @@ class PnLSnapshot:
     worst_slot: Optional[Tuple[str, float]]
     golden_roi: Optional[float] = None
     golden_pnl: Optional[float] = None
+    golden_days: Optional[int] = None
 
 
 @dataclass
@@ -237,7 +238,7 @@ def run_intraday_pipeline(bet_date: date, dry_run: bool = False) -> None:
 
 
 def run_nextday_pipeline(target_date: date, dry_run: bool = False) -> None:
-    run_script("deepseek_scr9.py", ["--speed-mode", "fast"], dry_run=dry_run)
+    run_script("deepseek_scr9.py", ["--speed-mode", "fast", "--mode", "tomorrow"], dry_run=dry_run)
     run_script("prediction_hit_memory.py", dry_run=dry_run)
     run_script("pattern_intelligence_engine.py", dry_run=dry_run)
     run_script("pattern_intelligence_enhanced.py", dry_run=dry_run)
@@ -553,9 +554,56 @@ def _roi(pnl: float, stake: float) -> Optional[float]:
     return None
 
 
-def _load_golden_benchmark() -> Tuple[Optional[float], Optional[float]]:
-    data = _load_json(PERFORMANCE_DIR / "golden_days_snapshot.json") or {}
-    return data.get("total_pnl"), data.get("roi_pct") or data.get("roi")
+def _load_golden_benchmark() -> dict:
+    return _load_json(PERFORMANCE_DIR / "golden_days_snapshot.json") or {}
+
+
+def _compute_golden_metrics(
+    records: List[Tuple[date, dict]], snapshot: dict
+) -> Tuple[Optional[float], Optional[float], int]:
+    if not snapshot or not records:
+        return None, None, 0
+
+    window = snapshot.get("window") or {}
+    start_raw = window.get("start") or window.get("from")
+    end_raw = window.get("end") or window.get("to")
+    allowed_days = []
+
+    if isinstance(snapshot.get("days"), list):
+        for val in snapshot.get("days", []):
+            try:
+                allowed_days.append(parse_date(str(val)))
+            except Exception:
+                continue
+    else:
+        try:
+            if start_raw:
+                allowed_start = parse_date(str(start_raw))
+            else:
+                allowed_start = None
+            if end_raw:
+                allowed_end = parse_date(str(end_raw))
+            else:
+                allowed_end = None
+        except Exception:
+            allowed_start = allowed_end = None
+
+        if allowed_start and allowed_end:
+            allowed_days = [
+                d for d, _ in records if allowed_start <= d <= allowed_end
+            ]
+
+    if allowed_days:
+        matched = [(d, it) for d, it in records if d in allowed_days]
+    else:
+        return None, None, 0
+
+    if not matched:
+        return None, None, 0
+
+    stake = sum(it.get("total_stake", 0) or 0 for _, it in matched)
+    pnl = sum(it.get("pnl", 0) or 0 for _, it in matched)
+    return pnl, _roi(pnl, stake), len(matched)
 
 
 def load_pnl_snapshot() -> PnLSnapshot:
@@ -564,16 +612,15 @@ def load_pnl_snapshot() -> PnLSnapshot:
     daily = data.get("daily", [])
     by_slot = data.get("by_slot", [])
 
+    records: List[Tuple[date, dict]] = []
+    for item in daily:
+        try:
+            d = parse_date(item.get("date"))
+        except Exception:
+            continue
+        records.append((d, item))
+
     def _window(days: int) -> Tuple[Optional[float], Optional[float]]:
-        if not daily:
-            return None, None
-        records = []
-        for item in daily:
-            try:
-                d = parse_date(item["date"])
-            except Exception:
-                continue
-            records.append((d, item))
         if not records:
             return None, None
         latest = max(d for d, _ in records)
@@ -592,7 +639,8 @@ def load_pnl_snapshot() -> PnLSnapshot:
 
     last7_pnl, last7_roi = _window(7)
     last30_pnl, last30_roi = _window(30)
-    golden_pnl, golden_roi = _load_golden_benchmark()
+    golden_snapshot = _load_golden_benchmark()
+    golden_pnl, golden_roi, golden_days = _compute_golden_metrics(records, golden_snapshot)
 
     return PnLSnapshot(
         overall_pnl=overall.get("total_pnl"),
@@ -605,6 +653,7 @@ def load_pnl_snapshot() -> PnLSnapshot:
         worst_slot=worst_slot,
         golden_roi=golden_roi,
         golden_pnl=golden_pnl,
+        golden_days=golden_days,
     )
 
 
@@ -1006,7 +1055,11 @@ def print_pnl_section(pnl: PnLSnapshot) -> None:
     worst = f"{pnl.worst_slot[0]} {currency(pnl.worst_slot[1])}" if pnl.worst_slot else "N/A"
     print(f"   Best slot        : {best}")
     print(f"   Weak slot        : {worst}")
-    if pnl.golden_roi is not None:
+    if pnl.golden_days == 0:
+        print("   Golden days ROI  : N/A (no matched days)")
+    elif pnl.golden_days:
+        print(f"   Golden days ROI  : {pct(pnl.golden_roi)} (P&L {currency(pnl.golden_pnl)})")
+    elif pnl.golden_roi is not None:
         print(f"   Golden days ROI  : {pct(pnl.golden_roi)} (P&L {currency(pnl.golden_pnl)})")
 
 
