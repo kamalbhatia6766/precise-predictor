@@ -12,7 +12,11 @@ import pandas as pd
 from quant_core import hit_core, pattern_core
 from quant_core.pattern_metrics_core import compute_pattern_metrics
 from quant_stats_core import compute_pack_hit_stats
-from script_hit_memory_utils import filter_hits_by_window, normalize_date_column
+from script_hit_memory_utils import (
+    filter_hits_by_window,
+    get_script_hit_memory_xlsx_path,
+    normalize_date_column,
+)
 import quant_paths
 import pattern_packs
 
@@ -109,8 +113,12 @@ class PatternIntelligenceEnhanced:
             except Exception:
                 pass
         if df.empty:
+            path = get_script_hit_memory_xlsx_path()
+            exists = path.exists()
+            size = path.stat().st_size if exists else 0
             print(
-                f"[PatternIntel+] Not enough hit data in the last {self.window_days} days (found 0 rows). Skipping enhanced analysis."
+                f"[PatternIntel+] Hit-memory window ({self.window_days}d) produced 0 rows. "
+                f"Source={path} (exists={exists}, size={size} bytes). Skipping enhanced analysis."
             )
             return True
         enhanced = pattern_core.run_enhanced_pattern_intel(hit_df=df, window_days=self.window_days)

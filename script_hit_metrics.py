@@ -16,6 +16,7 @@ from quant_stats_core import compute_pack_hit_stats as compute_pack_hit_stats_co
 from script_hit_memory_utils import (
     classify_relation,
     filter_hits_by_window,
+    get_script_hit_memory_xlsx_path,
     load_script_hit_memory,
     normalize_date_column,
 )
@@ -36,8 +37,10 @@ def _normalise_slot(slot_value: object) -> Optional[str]:
 
 
 def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, Optional[str]]:
+    xlsx_path = get_script_hit_memory_xlsx_path(base_dir=base_dir)
     df = load_script_hit_memory(base_dir=base_dir)
     if df.empty:
+        print(f"[HitMemory][Metrics] No data found at canonical path: {xlsx_path}")
         return pd.DataFrame(), None
 
     df, date_col = normalize_date_column(df)
@@ -81,14 +84,33 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
     if df.empty:
         return pd.DataFrame(), empty_summary
 
+    total_available_days = int(df[date_col].dt.date.nunique())
+    window_end = df[date_col].max().date() if hasattr(df[date_col].max(), "date") else df[date_col].max()
+    window_start = window_end - timedelta(days=window_days - 1) if window_end else None
+
     window_df, effective_days = filter_hits_by_window(df, window_days)
     if window_df.empty:
+        print(
+            f"[HitMemory][Metrics] Window filter returned 0 rows (requested={window_days}d, "
+            f"window_start={window_start}, window_end={window_end}, available_days={total_available_days})"
+        )
+        empty_summary.update(
+            {
+                "effective_window_days": int(effective_days),
+                "available_days": int(effective_days),
+                "available_days_total": total_available_days,
+                "window_start": window_start,
+                "window_end": window_end,
+                "latest_date": window_end,
+                "earliest_date": df[date_col].min().date() if hasattr(df[date_col].min(), "date") else df[date_col].min(),
+                "total_rows": 0,
+            }
+        )
         return pd.DataFrame(), empty_summary
 
     window_df[date_col] = pd.to_datetime(window_df[date_col], errors="coerce").dt.date
     latest_date = window_df[date_col].max()
     earliest_date = df[date_col].min().date() if hasattr(df[date_col].min(), "date") else df[date_col].min()
-    total_available_days = int(df[date_col].dt.date.nunique())
     window_start = latest_date - timedelta(days=window_days - 1)
 
     filtered = window_df.copy()
@@ -146,7 +168,18 @@ def get_metrics_table(
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     df, date_col = _prepare_memory_df(base_dir=base_dir)
     if df.empty:
-        return pd.DataFrame(), {"requested_window_days": window_days, "total_rows": 0}
+        summary = {
+            "requested_window_days": window_days,
+            "effective_window_days": 0,
+            "available_days": 0,
+            "available_days_total": 0,
+            "window_start": None,
+            "window_end": None,
+            "latest_date": None,
+            "earliest_date": None,
+            "total_rows": 0,
+        }
+        return pd.DataFrame(), summary
 
     group_cols = ["script_id"] if mode == "overall" else ["script_id", "slot"]
 

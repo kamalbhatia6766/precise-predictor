@@ -21,7 +21,11 @@ from pattern_helpers import (
     is_164950_number,
     is_s40_number,
 )
-from script_hit_memory_utils import load_script_hit_memory, normalize_date_column
+from script_hit_memory_utils import (
+    get_script_hit_memory_xlsx_path,
+    load_script_hit_memory,
+    normalize_date_column,
+)
 warnings.filterwarnings('ignore')
 
 quant_stats = get_quant_stats()
@@ -866,9 +870,15 @@ class PreciseBetEngine:
         return target_date
 
     def load_script_hit_memory(self, target_date):
+        canonical_path = get_script_hit_memory_xlsx_path()
         df = load_script_hit_memory(base_dir=quant_paths.get_project_root())
         if df is None or df.empty:
-            print("⚠️  No script_hit_memory.xlsx found - using pure SCR9 ranks")
+            exists = canonical_path.exists()
+            size = canonical_path.stat().st_size if exists else 0
+            print(
+                "⚠️  Hit-memory missing or empty at "
+                f"{canonical_path} (exists={exists}, size={size}); using pure SCR9 ranks"
+            )
             return None
 
         df, date_col = normalize_date_column(df)

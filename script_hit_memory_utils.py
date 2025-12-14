@@ -1,8 +1,10 @@
 from datetime import date, datetime, timedelta
+import json
 import logging
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 from zipfile import BadZipFile
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -62,6 +64,15 @@ def _resolve_base_dir(base_dir: Optional[Path] = None) -> Path:
     return Path(base_dir) if base_dir else quant_paths.get_project_root()
 
 
+def _resolve_performance_dir(base_dir: Optional[Path] = None) -> Path:
+    if base_dir:
+        logs_dir = Path(base_dir) / "logs" / "performance"
+    else:
+        logs_dir = quant_paths.get_performance_logs_dir()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    return logs_dir
+
+
 def _normalise_slot(value: Optional[str]) -> Optional[str]:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
@@ -80,24 +91,16 @@ def _clean_script(value: Optional[str]) -> Optional[str]:
 
 
 def get_script_hit_memory_path(base_dir: Optional[Path] = None) -> Path:
-    """
-    Return the absolute path to script_hit_memory.csv inside the project's logs/performance folder.
-    Use quant_paths.get_project_root() / "logs" / "performance" / "script_hit_memory.csv".
-    Ensure parent folders exist.
-    """
+    """Return the canonical CSV hit-memory path under logs/performance."""
 
-    project_root = _resolve_base_dir(base_dir)
-    logs_dir = project_root / "logs" / "performance"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = _resolve_performance_dir(base_dir)
     return logs_dir / "script_hit_memory.csv"
 
 
 def get_script_hit_memory_xlsx_path(base_dir: Optional[Path] = None) -> Path:
     """Return the path to the canonical script_hit_memory.xlsx file."""
 
-    project_root = _resolve_base_dir(base_dir)
-    logs_dir = project_root / "logs" / "performance"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = _resolve_performance_dir(base_dir)
     return logs_dir / "script_hit_memory.xlsx"
 
 
@@ -338,6 +341,7 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
         df = pd.read_csv(csv_path, dtype=str)
 
     if df is None:
+        print(f"[HitMemory] Canonical file missing at {xlsx_path}; returning empty frame.")
         return pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
 
     df = _align_columns(df)
@@ -356,7 +360,13 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
         lowered = filled.str.lower()
         return lowered.isin({"true", "1", "yes", "y"})
 
-    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
+    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce").dt.date
+    df["date"] = pd.to_datetime(df.get("date"), errors="coerce").dt.date
+    before_drop = len(df)
+    df = df.dropna(subset=["result_date", "date"], how="all")
+    dropped = before_drop - len(df)
+    if dropped > 0:
+        print(f"[HitMemory] Dropped {dropped} rows with invalid dates from {xlsx_path}")
     df["slot"] = df.get("slot").astype(str)
     df["script_id"] = df.get("script_id").astype(str)
     df["HIT_TYPE"] = df.get("hit_type").astype(str).str.upper()
@@ -368,6 +378,20 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
         ["MIRROR", "NEIGHBOR", "CROSS_SLOT", "CROSS_DAY"]
     )
     df, _ = normalize_date_column(df)
+    if df.empty:
+        exists = xlsx_path.exists()
+        size = xlsx_path.stat().st_size if exists else 0
+        columns = list(df.columns)
+        print(
+            "[HitMemory] Loaded empty DataFrame after normalization; "
+            f"path={xlsx_path}, exists={exists}, size={size} bytes, columns={columns}"
+        )
+        try:
+            preview = pd.read_excel(xlsx_path, nrows=3, engine="openpyxl")
+            print(f"[HitMemory] First rows preview:\n{preview}")
+        except Exception:
+            pass
+        print("[HitMemory] Suggested action: rerun prediction_hit_memory.py --mode rebuild to regenerate hit-memory.")
     return df
 
 
@@ -380,13 +404,69 @@ def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = Non
     xlsx_path = get_script_hit_memory_xlsx_path(base_dir=base_dir)
 
     if df is None or df.empty:
-        aligned_df = pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
-    else:
-        aligned_df = _align_columns(df)
+        raise ValueError("Refusing to overwrite script hit memory with an empty dataframe")
+
+    aligned_df = _align_columns(df)
+    if "result_date" not in aligned_df.columns:
+        raise ValueError("Hit memory must contain a result_date column before writing")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if xlsx_path.exists() and xlsx_path.stat().st_size > 0:
+        backup_path = xlsx_path.with_name(f"{xlsx_path.stem}_backup_{timestamp}{xlsx_path.suffix}")
+        shutil.copy2(xlsx_path, backup_path)
+        print(f"[HitMemory] Backup created at {backup_path}")
 
     aligned_df.to_csv(csv_path, index=False)
     aligned_df.to_excel(xlsx_path, index=False)
+
+    try:
+        reloaded = pd.read_excel(xlsx_path, engine="openpyxl")
+    except Exception as exc:
+        size = xlsx_path.stat().st_size if xlsx_path.exists() else 0
+        print(
+            f"[FATAL] hit-memory write produced unreadable file at {xlsx_path} (size={size} bytes): {exc}"
+        )
+        _restore_latest_backup(xlsx_path)
+        raise
+
+    if reloaded is None or reloaded.empty:
+        size = xlsx_path.stat().st_size if xlsx_path.exists() else 0
+        print(
+            f"[FATAL] hit-memory write produced empty file at {xlsx_path} (size={size} bytes)"
+        )
+        _restore_latest_backup(xlsx_path)
+        raise RuntimeError("Hit-memory write verification failed")
+
+    _write_health_report(aligned_df, xlsx_path)
     return xlsx_path
+
+
+def _latest_backup(xlsx_path: Path) -> Optional[Path]:
+    pattern = f"{xlsx_path.stem}_backup_*{xlsx_path.suffix}"
+    candidates = sorted(xlsx_path.parent.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _restore_latest_backup(xlsx_path: Path) -> None:
+    backup = _latest_backup(xlsx_path)
+    if backup and backup.exists():
+        shutil.copy2(backup, xlsx_path)
+        print(f"[HitMemory] Restored from backup {backup}")
+    else:
+        print("[HitMemory] No backup available to restore.")
+
+
+def _write_health_report(aligned_df: pd.DataFrame, xlsx_path: Path) -> None:
+    health_path = xlsx_path.parent / "script_hit_memory_health.json"
+    date_series = pd.to_datetime(aligned_df.get("result_date"), errors="coerce")
+    health = {
+        "row_count": int(len(aligned_df)),
+        "min_date": None if date_series.empty else (date_series.min().date().isoformat() if pd.notna(date_series.min()) else None),
+        "max_date": None if date_series.empty else (date_series.max().date().isoformat() if pd.notna(date_series.max()) else None),
+        "file_size_bytes": xlsx_path.stat().st_size if xlsx_path.exists() else 0,
+        "last_written_timestamp": datetime.now().isoformat(),
+    }
+    health_path.write_text(json.dumps(health, indent=2))
 
 
 def append_script_hit_row(row: Dict[str, object], base_dir: Optional[Path] = None) -> None:
@@ -455,11 +535,13 @@ def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFr
     if work_df.empty or not date_col:
         return pd.DataFrame(columns=df.columns if df is not None else []), 0
 
-    window_end = work_df[date_col].max().normalize()
+    window_end = work_df[date_col].max().normalize().date()
     window_start = window_end - timedelta(days=window_days - 1)
-    filtered = work_df[(work_df[date_col] >= window_start) & (work_df[date_col] <= window_end)]
+    date_series = pd.to_datetime(work_df[date_col], errors="coerce").dt.date
+    filtered = work_df[(date_series >= window_start) & (date_series <= window_end)].copy()
 
-    used_days = filtered[date_col].dt.date.nunique()
+    filtered[date_col] = pd.to_datetime(filtered[date_col], errors="coerce").dt.date
+    used_days = filtered[date_col].dropna().nunique()
     logger = logging.getLogger(__name__)
     if logger.isEnabledFor(logging.INFO):
         logger.info(
