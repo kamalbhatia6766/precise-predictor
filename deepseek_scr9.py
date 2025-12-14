@@ -12,6 +12,7 @@ import re
 import time
 import json
 from pathlib import Path
+import quant_paths
 import quant_data_core
 from quant_core import execution_core, hit_core
 from script_hit_metrics import (
@@ -74,8 +75,15 @@ def _normalize_number(value: object) -> Optional[int]:
 def load_learning_scores(base_dir, window_days=LEARN_WINDOW_DAYS):
     """Load recent hit/near-hit memory and build per-slot learning scores and weights."""
 
-    canonical_path = get_script_hit_memory_xlsx_path()
-    df = load_script_hit_memory(base_dir=quant_paths.get_project_root())
+    base_dir_path = Path(base_dir) if base_dir else Path(__file__).resolve().parent
+    canonical_path = get_script_hit_memory_xlsx_path(base_dir=base_dir_path)
+    try:
+        df = load_script_hit_memory(base_dir=base_dir_path)
+    except Exception as exc:
+        reason = str(exc)
+        neutral_weights = {slot: {} for slot in SLOTS}
+        print(f"[LEARNING] disabled: {reason}; using neutral weights")
+        return {}, neutral_weights, {"window": window_days, "rows": 0, "reason": reason}
     if df is None or df.empty:
         exists = canonical_path.exists()
         size = canonical_path.stat().st_size if exists else 0
