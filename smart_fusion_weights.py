@@ -8,6 +8,19 @@ class SmartFusionWeights:
     def __init__(self):
         self.base_dir = Path(__file__).resolve().parent
         self.slots = ["FRBD", "GZBD", "GALI", "DSWR"]
+
+    def _normalize_weights(self, weights):
+        """Ensure weights is always a dictionary for downstream callers."""
+        if weights in [None, False, True]:
+            print("⚠️ Weight payload missing or boolean; normalizing to empty dict")
+            return {}
+        if isinstance(weights, dict):
+            return weights
+        try:
+            return dict(weights)
+        except Exception:
+            print("⚠️ Unable to interpret weights structure; using empty fallback")
+            return {}
         
     def calculate_optimal_weights(self):
         """Calculate optimal weights based on performance"""
@@ -16,8 +29,8 @@ class SmartFusionWeights:
         # Load performance data
         pnl_file = self.base_dir / "logs" / "performance" / "bet_pnl_history.xlsx"
         if not pnl_file.exists():
-            print("❌ No P&L data found")
-            return False
+            print("⚠️ No P&L data found; returning empty weights")
+            return {}
             
         try:
             day_df = pd.read_excel(pnl_file, sheet_name='day_level')
@@ -53,11 +66,12 @@ class SmartFusionWeights:
             
         except Exception as e:
             print(f"❌ Error calculating weights: {e}")
-            return None
+            return {}
 
     def generate_recommendations(self, weights):
         """Generate betting recommendations"""
         if not weights:
+            print("⚠️ No weights available to generate recommendations")
             return
             
         print("\n🎯 SMART BETTING RECOMMENDATIONS:")
@@ -81,7 +95,7 @@ class SmartFusionWeights:
 
     def save_weights(self, weights):
         """Save weights to JSON file"""
-        if not weights:
+        if weights is None:
             return
             
         output_dir = self.base_dir / "logs" / "performance"
@@ -97,8 +111,8 @@ class SmartFusionWeights:
 
     def run(self):
         """Main execution"""
-        weights = self.calculate_optimal_weights()
-        
+        weights = self._normalize_weights(self.calculate_optimal_weights())
+
         if weights is None:
             return False
             

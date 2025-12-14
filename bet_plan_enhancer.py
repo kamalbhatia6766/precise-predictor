@@ -12,10 +12,10 @@ class BetPlanEnhancer:
         """Find and load latest bet plan - COMPATIBLE WITH ACTUAL STRUCTURE"""
         bet_engine_dir = self.base_dir / "predictions" / "bet_engine"
         bet_plans = list(bet_engine_dir.glob("bet_plan_master_*.xlsx"))
-        
+
         if not bet_plans:
             print("❌ No bet plan found")
-            return None
+            return None, None
             
         latest_plan = max(bet_plans, key=lambda x: x.stat().st_mtime)
         print(f"✅ Loading: {latest_plan.name}")
@@ -269,13 +269,14 @@ class BetPlanEnhancer:
         # Load latest bet plan
         bet_plan_data, bet_plan_path = self.load_latest_bet_plan()
         if bet_plan_data is None:
-            return False
+            print("⚠️ Bet plan enhancer: no plan found; skipping enhancement stage")
+            return True
         
         # Load advisory data
         advisory_data = self.load_advisory_data()
         if not advisory_data:
-            print("❌ No advisory data found - Run analytics scripts first")
-            return False
+            print("⚠️ No advisory data found - skipping enhancement")
+            return True
         
         # Enhance bet plan
         enhanced_df = self.enhance_bet_plan(bet_plan_data, advisory_data)

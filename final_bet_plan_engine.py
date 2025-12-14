@@ -14,6 +14,7 @@ import pandas as pd
 import json
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 import sys
 
 # 🆕 Import central helpers
@@ -35,18 +36,27 @@ class FinalBetPlanEngine:
     def __init__(self):
         self.base_dir = quant_paths.get_project_root()
         self.target_date = None
+        self.bet_engine_dir = quant_paths.get_bet_engine_dir()
         self.strategy_data = {}
         self.confidence_data = {}
         self.dynamic_stakes = {}
         self.recovery_plan = {}
         self.bet_plans = {}
+
+    def _find_latest_plan(self, pattern: str) -> Optional[Path]:
+        """Try to locate the most recent file matching the pattern."""
+        if not self.bet_engine_dir or not self.bet_engine_dir.exists():
+            return None
+        matches = list(self.bet_engine_dir.glob(pattern))
+        if not matches:
+            return None
+        return max(matches, key=lambda p: p.stat().st_mtime)
         
     def discover_latest_files(self):
         """Discover latest bet plan files and determine target date"""
-        bet_engine_dir = quant_paths.get_bet_engine_dir()
-        
-        if not bet_engine_dir.exists():
-            print("❌ Bet engine directory not found")
+        if not self.bet_engine_dir.exists():
+            print("⚠️ Bet engine directory not found; skipping plan discovery")
+            self.target_date = datetime.now().strftime("%Y%m%d")
             return False
         
         # Find all bet plan files and extract dates
@@ -59,7 +69,7 @@ class FinalBetPlanEngine:
         found_dates = set()
         
         for plan_type, pattern in file_patterns.items():
-            files = list(bet_engine_dir.glob(pattern))
+            files = list(self.bet_engine_dir.glob(pattern))
             if files:
                 # Extract date from filename
                 for file in files:
@@ -70,7 +80,8 @@ class FinalBetPlanEngine:
                         print(f"✅ Found {plan_type} plan: {file.name}")
         
         if not found_dates:
-            print("❌ No bet plan files found")
+            print("⚠️ No bet plan files found; using fallback target date")
+            self.target_date = datetime.now().strftime("%Y%m%d")
             return False
         
         # Use the latest date
@@ -191,8 +202,21 @@ class FinalBetPlanEngine:
     
     def extract_slot_stakes(self, file_path, plan_type):
         """Extract slot stakes from bet plan files"""
-        if not file_path.exists():
-            print(f"⚠️ {plan_type} plan file not found: {file_path}")
+        resolved_path = file_path
+        if resolved_path is None:
+            resolved_path = self._find_latest_plan({
+                'master': "bet_plan_master_*.xlsx",
+                'enhanced': "enhanced_bet_plan_*.xlsx",
+                'conviction': "high_conviction_bet_plan_*.xlsx",
+            }.get(plan_type, "*.xlsx"))
+            if resolved_path:
+                print(f"⚠️ Missing {plan_type} path; using latest available: {resolved_path.name}")
+        if resolved_path is None:
+            print(f"⚠️ {plan_type} plan path unavailable; using empty stakes")
+            return {}
+
+        if not resolved_path.exists():
+            print(f"⚠️ {plan_type} plan file not found: {resolved_path}")
             return {}
         
         try:
@@ -200,7 +224,7 @@ class FinalBetPlanEngine:
             if plan_type == 'master':
                 # Try summary sheet first, then main sheet
                 sheet_name = None
-                excel_file = pd.ExcelFile(file_path)
+                excel_file = pd.ExcelFile(resolved_path)
                 if 'summary' in [sheet.lower() for sheet in excel_file.sheet_names]:
                     sheet_name = [sheet for sheet in excel_file.sheet_names if sheet.lower() == 'summary'][0]
                 elif 'bets' in [sheet.lower() for sheet in excel_file.sheet_names]:
@@ -209,7 +233,7 @@ class FinalBetPlanEngine:
                 if not sheet_name:
                     sheet_name = excel_file.sheet_names[0]  # Fallback to first sheet
                 
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                df = pd.read_excel(resolved_path, sheet_name=sheet_name)
                 
                 # Find columns case-insensitively
                 slot_col = self._find_column_case_insensitive(df, 'slot')
@@ -243,14 +267,14 @@ class FinalBetPlanEngine:
             elif plan_type == 'conviction':
                 # Conviction plan has high_conviction_plan sheet
                 sheet_name = None
-                excel_file = pd.ExcelFile(file_path)
+                excel_file = pd.ExcelFile(resolved_path)
                 if 'high_conviction_plan' in [sheet.lower() for sheet in excel_file.sheet_names]:
                     sheet_name = [sheet for sheet in excel_file.sheet_names if sheet.lower() == 'high_conviction_plan'][0]
                 
                 if not sheet_name:
                     sheet_name = excel_file.sheet_names[0]
                 
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                df = pd.read_excel(resolved_path, sheet_name=sheet_name)
                 
                 # Find columns case-insensitively
                 slot_col = self._find_column_case_insensitive(df, 'slot')
@@ -284,6 +308,7 @@ class FinalBetPlanEngine:
     
     def generate_final_plan(self):
         """Generate the final bet plan"""
+        safe_target = self.target_date or datetime.now().strftime("%Y%m%d")
         # Extract stakes from all plan types
         base_stakes = self.extract_slot_stakes(self.bet_plans.get('master'), 'master')
         dynamic_stakes = self.extract_slot_stakes(self.bet_plans.get('enhanced'), 'enhanced')
@@ -317,7 +342,7 @@ class FinalBetPlanEngine:
             
             # Add to plan data
             final_plan_data.append({
-                'date': f"{self.target_date[:4]}-{self.target_date[4:6]}-{self.target_date[6:8]}",
+                'date': f"{safe_target[:4]}-{safe_target[4:6]}-{safe_target[6:8]}",
                 'slot': slot,
                 'meta_strategy': meta_strategy,
                 'numeric_strategy': numeric_strategy,
@@ -355,9 +380,10 @@ class FinalBetPlanEngine:
     def generate_meta_summary(self, final_plan_data):
         """Generate meta summary sheet"""
         strategy_stats = self.strategy_data.get('strategies', {})
-        
+        safe_target = self.target_date or datetime.now().strftime("%Y%m%d")
+
         meta_data = [{
-            'target_date': f"{self.target_date[:4]}-{self.target_date[4:6]}-{self.target_date[6:8]}",
+            'target_date': f"{safe_target[:4]}-{safe_target[4:6]}-{safe_target[6:8]}",
             'meta_strategy': self.strategy_data.get('meta_strategy', 'DYNAMIC'),
             'numeric_strategy': self.strategy_data.get('numeric_strategy', 'DYNAMIC'),
             'meta_confidence_level': self.strategy_data.get('confidence_level', 'LOW'),
@@ -400,11 +426,13 @@ class FinalBetPlanEngine:
         """Run complete final bet plan engine"""
         print("🧠 FINAL BET PLAN ENGINE - Consolidated Strategy Generator")
         print("=" * 60)
-        
+
         # Step 1: Discover files and target date
-        if not self.discover_latest_files():
-            return False
-        
+        plans_found = self.discover_latest_files()
+        if not plans_found and not self.bet_plans:
+            print("⚠️ No bet plan files discovered; skipping final plan generation")
+            return True
+
         # Step 2: Load strategy recommendation
         if not self.load_strategy_recommendation():
             return False
@@ -419,10 +447,10 @@ class FinalBetPlanEngine:
         
         # Step 5: Generate final plan
         final_plan_data, total_final_stake = self.generate_final_plan()
-        
+
         # Step 6: Generate meta summary
         meta_summary_data = self.generate_meta_summary(final_plan_data)
-        
+
         # Step 7: Save final plan
         output_file = self.save_final_plan(final_plan_data, meta_summary_data)
         
