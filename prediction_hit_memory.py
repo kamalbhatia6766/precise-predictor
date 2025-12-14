@@ -460,6 +460,11 @@ def _rebuild_script_hit_memory(window_days: int) -> None:
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
+    if df.empty:
+        raise RuntimeError("Rebuild produced an empty hit-memory dataframe; aborting write")
+    if "result_date" not in df.columns:
+        raise RuntimeError("Rebuild dataframe missing required result_date column")
+
     memory_path = overwrite_script_hit_memory(df, base_dir=base_dir)
     print(f"Built {len(rows)} script-hit rows for {len(dates)} dates and 9 scripts.")
     print(f"Script hit memory rebuilt at {memory_path}")

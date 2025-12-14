@@ -22,7 +22,7 @@ from script_hit_metrics import (
     compute_script_metrics,
     hero_weak_table,
 )
-from script_hit_memory_utils import load_script_hit_memory
+from script_hit_memory_utils import get_script_hit_memory_xlsx_path, load_script_hit_memory
 import pattern_packs
 warnings.filterwarnings('ignore')
 
@@ -74,9 +74,15 @@ def _normalize_number(value: object) -> Optional[int]:
 def load_learning_scores(base_dir, window_days=LEARN_WINDOW_DAYS):
     """Load recent hit/near-hit memory and build per-slot learning scores and weights."""
 
-    df = load_script_hit_memory(base_dir=Path(base_dir))
+    canonical_path = get_script_hit_memory_xlsx_path()
+    df = load_script_hit_memory(base_dir=quant_paths.get_project_root())
     if df is None or df.empty:
-        print("[LEARNING] Hit-memory file not found or empty; proceeding without learning boost.")
+        exists = canonical_path.exists()
+        size = canonical_path.stat().st_size if exists else 0
+        print(
+            f"[LEARNING] Hit-memory empty at {canonical_path} (exists={exists}, size={size}). "
+            "Proceeding without learning boost."
+        )
         return {}, {}, {"window": window_days, "rows": 0}
 
     df = df.copy()

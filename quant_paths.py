@@ -89,7 +89,3 @@ def get_base_dir():
 def get_bet_plans_dir():
     """Compatibility function"""
     return get_bet_engine_dir()
-
-def get_performance_logs_dir():
-    """Compatibility function"""
-    return get_project_root() / "logs" / "performance"
