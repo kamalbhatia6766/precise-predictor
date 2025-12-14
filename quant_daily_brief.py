@@ -76,6 +76,7 @@ class PnLSnapshot:
     golden_roi: Optional[float] = None
     golden_pnl: Optional[float] = None
     golden_days: Optional[int] = None
+    golden_status: Optional[str] = None
 
 
 @dataclass
@@ -640,7 +641,16 @@ def load_pnl_snapshot() -> PnLSnapshot:
     last7_pnl, last7_roi = _window(7)
     last30_pnl, last30_roi = _window(30)
     golden_snapshot = _load_golden_benchmark()
+    golden_available = bool(golden_snapshot)
     golden_pnl, golden_roi, golden_days = _compute_golden_metrics(records, golden_snapshot)
+    if not golden_available or golden_days == 0:
+        golden_status = "not_available"
+        golden_pnl = None
+        golden_roi = None
+    elif golden_days < 3:
+        golden_status = "insufficient"
+    else:
+        golden_status = "ok"
 
     return PnLSnapshot(
         overall_pnl=overall.get("total_pnl"),
@@ -654,6 +664,7 @@ def load_pnl_snapshot() -> PnLSnapshot:
         golden_roi=golden_roi,
         golden_pnl=golden_pnl,
         golden_days=golden_days,
+        golden_status=golden_status,
     )
 
 
@@ -754,6 +765,29 @@ def _extract_extra_family(summary_json: Dict) -> Optional[Dict[str, object]]:
     return best
 
 
+def _best_weak_from_by_slot(by_slot: Dict[str, dict]) -> Tuple[str, str]:
+    scores: List[Tuple[str, float]] = []
+    for slot in SLOTS:
+        info = by_slot.get(slot, {}) if isinstance(by_slot, dict) else {}
+        hit_rate = (
+            info.get("hit_rate_30d")
+            or info.get("hit_rate_exact")
+            or info.get("hit_rate_overall")
+            or info.get("hit_rate")
+        )
+        if hit_rate is None:
+            continue
+        try:
+            scores.append((slot, float(hit_rate)))
+        except Exception:
+            continue
+    if len(scores) >= 2:
+        best = max(scores, key=lambda kv: kv[1])[0]
+        weak = min(scores, key=lambda kv: kv[1])[0]
+        return best, weak
+    return "N/A", "N/A"
+
+
 def load_pattern_summary_from_intel(window_days: int = 90) -> PatternSummary:
     """Build pattern summary directly from saved PatternIntel JSON outputs."""
 
@@ -769,14 +803,16 @@ def load_pattern_summary_from_intel(window_days: int = 90) -> PatternSummary:
         fam_stats = patterns.get(key, {}) or {}
         cover = daily_cover.get("S40" if key == "S40" else "PACK_164950", {}) or {}
         rate = fam_stats.get("hit_rate_overall", fam_stats.get("hit_rate_exact", 0.0)) or 0.0
+        by_slot = fam_stats.get("by_slot", {}) if isinstance(fam_stats, dict) else {}
+        best_slot, weak_slot = _best_weak_from_by_slot(by_slot)
         return {
             "hits": int(fam_stats.get("exact_hits", 0) or 0),
             "hit_rate": float(rate) * 100.0,
             "daily_rate": (cover.get("covered_days", 0) or 0) / (cover.get("total_days", 0) or 1) * 100.0,
             "daily_days": int(cover.get("covered_days", 0) or 0),
             "total_days": int(cover.get("total_days", 0) or 0),
-            "best_slot": fam_stats.get("best_slot"),
-            "weak_slot": fam_stats.get("weak_slot"),
+            "best_slot": fam_stats.get("best_slot") or best_slot,
+            "weak_slot": fam_stats.get("weak_slot") or weak_slot,
         }
 
     s40_block = _family_block("S40", "S40")
@@ -813,6 +849,8 @@ def _pattern_slot_stats(window_days: int = 30) -> Dict[str, Dict[str, float]]:
         return {}
     baseline_s40 = stats.get("S40", {}).get("hit_rate", 0.0)
     baseline_fam = stats.get("FAMILY_164950", {}).get("hit_rate", 0.0)
+    if not baseline_fam:
+        baseline_fam = stats.get("PACK_164950", {}).get("hit_rate", 0.0)
     per_slot = stats.get("per_slot", {})
     summary: Dict[str, Dict[str, float]] = {}
     for slot in SLOTS:
@@ -994,42 +1032,58 @@ def print_plan_section(
     plan: Optional[PlanSummary], execution: ExecutionReadiness, mode: str, final_plan: Optional[dict] = None
 ) -> None:
     print("1️⃣ PREDICTION SNAPSHOT")
+    base_multiplier = execution.multiplier if execution.multiplier is not None else 1.0
+    skip_today = str(execution.mode).upper() == "SKIP_TODAY" if execution.mode else False
+    effective_multiplier = 0.0 if skip_today or base_multiplier == 0 else base_multiplier
+    show_planned = effective_multiplier != 1.0
+
     if mode == "NEXT_DAY" and final_plan:
         for slot in SLOTS:
             if slot not in final_plan.get("slots", {}):
                 continue
             slot_data = final_plan["slots"][slot]
             numbers = slot_data.get("numbers") or []
-            mains = (
-                ", ".join(f"{n['num']}({n.get('tier', '?')} ₹{n.get('stake', 0):.0f})" for n in numbers)
-                if numbers
-                else "-"
-            )
+            def _stake_block(val: Optional[float]) -> str:
+                planned_val = val or 0.0
+                effective_val = planned_val * effective_multiplier
+                if show_planned:
+                    return f"₹{effective_val:.0f} (planned ₹{planned_val:.0f})"
+                return f"₹{effective_val:.0f}"
+
+            mains = "-"
+            if numbers:
+                parts = []
+                for n in numbers:
+                    planned_stake = n.get("stake", 0)
+                    stake_text = _stake_block(planned_stake)
+                    parts.append(f"{n['num']}({n.get('tier', '?')} {stake_text})")
+                mains = ", ".join(parts)
             extras = []
             if slot_data.get("andar_digit") is not None:
                 stake = slot_data.get("andar_stake")
-                stake_val = stake if stake is not None else 0
-                extras.append(f"ANDAR={slot_data['andar_digit']}(₹{stake_val:.0f})")
+                extras.append(f"ANDAR={slot_data['andar_digit']}({_stake_block(stake)})")
             if slot_data.get("bahar_digit") is not None:
                 stake = slot_data.get("bahar_stake")
-                stake_val = stake if stake is not None else 0
-                extras.append(f"BAHAR={slot_data['bahar_digit']}(₹{stake_val:.0f})")
+                extras.append(f"BAHAR={slot_data['bahar_digit']}({_stake_block(stake)})")
+            planned_slot_stake = slot_data.get("slot_stake", 0) or 0
             if extras:
                 print(
-                    f"   {slot}: {mains} | {', '.join(extras)} → Slot stake: ₹{slot_data.get('slot_stake', 0):.0f}"
+                    f"   {slot}: {mains} | {', '.join(extras)} → Slot stake: {_stake_block(planned_slot_stake)}"
                 )
             else:
-                print(f"   {slot}: {mains} → Slot stake: ₹{slot_data.get('slot_stake', 0):.0f}")
+                print(f"   {slot}: {mains} → Slot stake: {_stake_block(planned_slot_stake)}")
 
         total_planned = final_plan.get("total_stake")
         if total_planned is None:
             total_planned = sum(s.get("slot_stake", 0) or 0 for s in final_plan.get("slots", {}).values())
-        if execution.recommended_stake:
-            print(
-                f"   TOTAL planned stake: {currency(total_planned)} → Recommended live stake: {currency(execution.recommended_stake)}"
-            )
+        effective_total = (total_planned or 0) * effective_multiplier
+        if show_planned:
+            total_line = f"   TOTAL planned stake: {currency(total_planned)} → Effective stake: {currency(effective_total)}"
         else:
-            print(f"   TOTAL planned stake: {currency(total_planned)}")
+            total_line = f"   TOTAL planned stake: {currency(effective_total)}"
+        if execution.recommended_stake:
+            total_line = f"{total_line} → Recommended live stake: {currency(execution.recommended_stake)}"
+        print(total_line)
         return
 
     if not plan or not plan.slots:
@@ -1037,13 +1091,26 @@ def print_plan_section(
         return
     for slot in plan.slots:
         mains = ", ".join(slot.main_numbers) if slot.main_numbers else "-"
-        andar = f"ANDAR={slot.andar}(₹{slot.andar_stake:.0f})" if slot.andar else "ANDAR=NA"
-        bahar = f"BAHAR={slot.bahar}(₹{slot.bahar_stake:.0f})" if slot.bahar else "BAHAR=NA"
-        print(f"   {slot.slot}: {mains} | {andar}, {bahar} → Slot stake: ₹{slot.slot_stake:.0f}")
+        andar_effective = slot.andar_stake * effective_multiplier
+        bahar_effective = slot.bahar_stake * effective_multiplier
+        andar_planned = f"₹{andar_effective:.0f} (planned ₹{slot.andar_stake:.0f})" if show_planned else f"₹{andar_effective:.0f}"
+        bahar_planned = f"₹{bahar_effective:.0f} (planned ₹{slot.bahar_stake:.0f})" if show_planned else f"₹{bahar_effective:.0f}"
+        andar = f"ANDAR={slot.andar}({andar_planned})" if slot.andar else "ANDAR=NA"
+        bahar = f"BAHAR={slot.bahar}({bahar_planned})" if slot.bahar else "BAHAR=NA"
+        planned_slot_stake = slot.slot_stake
+        slot_stake_text = f"₹{planned_slot_stake * effective_multiplier:.0f}"
+        if show_planned:
+            slot_stake_text = f"{slot_stake_text} (planned ₹{planned_slot_stake:.0f})"
+        print(f"   {slot.slot}: {mains} | {andar}, {bahar} → Slot stake: {slot_stake_text}")
+    effective_total = plan.total_stake * effective_multiplier
+    total_line = (
+        f"   TOTAL planned stake: {currency(plan.total_stake)} → Effective stake: {currency(effective_total)}"
+        if show_planned
+        else f"   TOTAL planned stake: {currency(effective_total)}"
+    )
     if execution.recommended_stake:
-        print(f"   TOTAL planned stake: {currency(plan.total_stake)} → Recommended live stake: {currency(execution.recommended_stake)}")
-    else:
-        print(f"   TOTAL planned stake: {currency(plan.total_stake)}")
+        total_line = f"{total_line} → Recommended live stake: {currency(execution.recommended_stake)}"
+    print(total_line)
 
 
 def print_pnl_section(pnl: PnLSnapshot) -> None:
@@ -1055,12 +1122,25 @@ def print_pnl_section(pnl: PnLSnapshot) -> None:
     worst = f"{pnl.worst_slot[0]} {currency(pnl.worst_slot[1])}" if pnl.worst_slot else "N/A"
     print(f"   Best slot        : {best}")
     print(f"   Weak slot        : {worst}")
-    if pnl.golden_days == 0:
-        print("   Golden days ROI  : N/A (no matched days)")
-    elif pnl.golden_days:
-        print(f"   Golden days ROI  : {pct(pnl.golden_roi)} (P&L {currency(pnl.golden_pnl)})")
-    elif pnl.golden_roi is not None:
-        print(f"   Golden days ROI  : {pct(pnl.golden_roi)} (P&L {currency(pnl.golden_pnl)})")
+    status = pnl.golden_status or ("ok" if pnl.golden_days else "not_available")
+    if status == "not_available":
+        print("   Golden benchmark : not available")
+    elif status == "insufficient":
+        print(f"   Golden benchmark : insufficient days ({pnl.golden_days})")
+    else:
+        print(
+            f"   Golden benchmark : ROI {pct(pnl.golden_roi)} (P&L {currency(pnl.golden_pnl)}, days {pnl.golden_days})"
+        )
+        if (
+            pnl.golden_roi is not None
+            and pnl.golden_roi < 0
+            and pnl.last30_roi is not None
+            and pnl.last30_roi > 30
+        ):
+            print(
+                "   Golden benchmark warning : negative golden ROI while last30 ROI is strongly positive; "
+                "validate snapshot alignment."
+            )
 
 
 def print_pattern_section(patterns: PatternSummary) -> None:
@@ -1224,15 +1304,43 @@ def print_pattern_family_snapshot() -> None:
         print(f"   {slot}: BOOST={boost_tags} | OFF={off_tags}")
 
     print("\n   S40 & 164950 cross-slot snapshot:")
-    for fam in ["S40", "FAMILY_164950"]:
-        per_slot = {}
+    def _fetch_family_block(slot_block: dict, family_key: str) -> dict:
+        families = slot_block.get("families", {}) if isinstance(slot_block, dict) else {}
+        fam = families.get(family_key)
+        if fam is None and family_key == "PACK_164950":
+            fam = families.get("FAMILY_164950")
+        if fam is None and family_key == "FAMILY_164950":
+            fam = families.get("PACK_164950")
+        return fam or {}
+
+    for fam in ["S40", "PACK_164950"]:
+        per_slot: Dict[str, dict] = {}
+        score_candidates: List[Tuple[str, float]] = []
         for slot in SLOTS:
-            fam_info = ((slots_block.get(slot, {}) or {}).get("families", {}) or {}).get(fam, {})
+            slot_block = slots_block.get(slot, {}) if isinstance(slots_block, dict) else {}
+            fam_info = _fetch_family_block(slot_block, fam)
             per_slot[slot] = fam_info
-        best_slot = max(per_slot.items(), key=lambda x: x[1].get("hit_rate_30d", 0.0) if isinstance(x[1], dict) else 0.0)[0]
-        weak_slot = min(per_slot.items(), key=lambda x: x[1].get("hit_rate_30d", 0.0) if isinstance(x[1], dict) else 0.0)[0]
-        parts = [f"{slot}={str((info or {}).get('regime_30d') or (info or {}).get('regime') or 'NORMAL')}" for slot, info in per_slot.items()]
-        print(f"   {fam}: best={best_slot}, weak={weak_slot}, regimes: {', '.join(parts)}")
+            hit_rate = fam_info.get("hit_rate_30d")
+            if hit_rate is None:
+                hit_rate = fam_info.get("hit_rate")
+            if hit_rate is None:
+                continue
+            try:
+                hit_rate_val = float(hit_rate)
+                score_candidates.append((slot, hit_rate_val))
+            except Exception:
+                continue
+        if len(score_candidates) >= 2:
+            best_slot = max(score_candidates, key=lambda x: x[1])[0]
+            weak_slot = min(score_candidates, key=lambda x: x[1])[0]
+        else:
+            best_slot = weak_slot = "N/A"
+        parts = []
+        for slot, info in per_slot.items():
+            regime = (info or {}).get("regime_30d") or (info or {}).get("regime")
+            parts.append(f"{slot}={regime or 'N/A'}")
+        label = fam if fam != "PACK_164950" else "FAMILY_164950"
+        print(f"   {label}: best={best_slot}, weak={weak_slot}, regimes: {', '.join(parts)}")
 
 
 def print_risk_section(strategy: StrategySummary, money: MoneyManagerSummary, execution: ExecutionReadiness, confidence: ConfidenceSummary) -> None:
