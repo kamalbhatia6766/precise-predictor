@@ -1,4 +1,5 @@
 # precise_bet_engine.py - ULTRA v5 ROCKET MODE - CLEAR DATES + BREAKDOWN
+import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -10,6 +11,7 @@ import warnings
 import argparse
 import json
 import quant_data_core
+import quant_paths
 from quant_slot_health import get_slot_health, SlotHealth
 from quant_stats_core import compute_topn_roi, get_quant_stats
 from pattern_intelligence_engine import load_near_miss_boosts
@@ -19,6 +21,7 @@ from pattern_helpers import (
     is_164950_number,
     is_s40_number,
 )
+from script_hit_memory_utils import load_script_hit_memory, normalize_date_column
 warnings.filterwarnings('ignore')
 
 quant_stats = get_quant_stats()
@@ -863,39 +866,45 @@ class PreciseBetEngine:
         return target_date
 
     def load_script_hit_memory(self, target_date):
-        memory_file = Path(__file__).resolve().parent / "logs" / "performance" / "script_hit_memory.xlsx"
-        if not memory_file.exists():
+        df = load_script_hit_memory(base_dir=quant_paths.get_project_root())
+        if df is None or df.empty:
             print("⚠️  No script_hit_memory.xlsx found - using pure SCR9 ranks")
             return None
-        try:
-            df = pd.read_excel(memory_file)
-            df.columns = [str(c).strip() for c in df.columns]
 
-            possible_hit_type_cols = ['hit_type', 'HIT_TYPE', 'HitType', 'hitType', 'HIT TYPE']
-            normalized_map = {re.sub(r"[\s_]+", "", str(col)).lower(): col for col in df.columns}
-            resolved_col = None
-            for col in possible_hit_type_cols:
-                normalized = re.sub(r"[\s_]+", "", col).lower()
-                if normalized in normalized_map:
-                    resolved_col = normalized_map[normalized]
-                    break
-
-            if resolved_col is None:
-                print("⚠️  Warning: No hit_type/HIT_TYPE column found in script_hit_memory; skipping hit-type-based weighting.")
-                df['hit_type'] = 'UNKNOWN'
-                resolved_col = 'hit_type'
-            elif resolved_col != 'hit_type':
-                df['hit_type'] = df[resolved_col]
-
-            print(f"✅ Using hit type column: {resolved_col} → exposed as 'hit_type'")
-            df['date'] = pd.to_datetime(df['date']).dt.date
-            cutoff_date = target_date - timedelta(days=self.N_DAYS)
-            filtered_df = df[df['date'] >= cutoff_date]
-            print(f"📊 Loaded script hit memory: {len(filtered_df)} records")
-            return filtered_df
-        except Exception as e:
-            print(f"⚠️  Error loading script_hit_memory: {e}")
+        df, date_col = normalize_date_column(df)
+        if not date_col or df.empty:
+            print("⚠️  Could not normalise hit-memory dates; using pure SCR9 ranks")
             return None
+
+        possible_hit_type_cols = ['hit_type', 'HIT_TYPE', 'HitType', 'hitType', 'HIT TYPE']
+        normalized_map = {re.sub(r"[\s_]+", "", str(col)).lower(): col for col in df.columns}
+        resolved_col = None
+        for col in possible_hit_type_cols:
+            normalized = re.sub(r"[\s_]+", "", col).lower()
+            if normalized in normalized_map:
+                resolved_col = normalized_map[normalized]
+                break
+
+        if resolved_col is None:
+            print("⚠️  Warning: No hit_type/HIT_TYPE column found in script_hit_memory; skipping hit-type-based weighting.")
+            df['hit_type'] = 'UNKNOWN'
+            resolved_col = 'hit_type'
+        elif resolved_col != 'hit_type':
+            df['hit_type'] = df[resolved_col]
+
+        print(f"✅ Using hit type column: {resolved_col} → exposed as 'hit_type'")
+
+        df[date_col] = pd.to_datetime(df[date_col], errors='coerce').dt.normalize()
+        target_ts = pd.to_datetime(target_date).normalize()
+        cutoff_date = target_ts - timedelta(days=self.N_DAYS - 1)
+        filtered_df = df[(df[date_col] >= cutoff_date) & (df[date_col] <= target_ts)].copy()
+        if filtered_df.empty:
+            print("⚠️  No recent hit-memory rows found; using pure SCR9 ranks")
+            return None
+
+        filtered_df['date'] = filtered_df[date_col].dt.date
+        print(f"Loaded script hit memory: {len(filtered_df)} records")
+        return filtered_df
 
     def build_history_table(self, memory_df):
         history = defaultdict(lambda: {'direct_hits': 0, 'cross_hits': 0, 's40_hits': 0, 'digit_tags': set()})
@@ -2125,7 +2134,16 @@ class PreciseBetEngine:
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = f"bet_plan_master_{target_date.strftime('%Y%m%d')}.xlsx"
         file_path = output_dir / filename
-        
+
+        today = datetime.now().date()
+        historical_regen = target_date < today
+        overwrite_guard = os.environ.get("ALLOW_BET_PLAN_OVERWRITE", "").lower() in {"1", "true", "yes"}
+        if historical_regen and file_path.exists() and not overwrite_guard:
+            safe_dir = output_dir / "historical_regen"
+            safe_dir.mkdir(parents=True, exist_ok=True)
+            file_path = safe_dir / filename
+            print(f"🛡️ Historical bet plan preserved; writing regenerated copy to {file_path}")
+
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
             bets_df.to_excel(writer, sheet_name='bets', index=False)
             summary_df.to_excel(writer, sheet_name='summary', index=False)
@@ -2133,8 +2151,8 @@ class PreciseBetEngine:
             quantum_debug_df.to_excel(writer, sheet_name='quantum_debug', index=False)
             ultra_debug_df.to_excel(writer, sheet_name='ultra_debug', index=False)
             explainability_df.to_excel(writer, sheet_name='explainability', index=False)
-        
-        explain_json = output_dir / f"bet_engine_explainability_{target_date.strftime('%Y%m%d')}.json"
+
+        explain_json = file_path.parent / f"bet_engine_explainability_{target_date.strftime('%Y%m%d')}.json"
         explain_summary = {
             "timestamp": datetime.now().isoformat(),
             "target_date": target_date.strftime('%Y-%m-%d'),

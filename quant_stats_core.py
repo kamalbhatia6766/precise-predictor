@@ -13,7 +13,12 @@ import numpy as np
 import pandas as pd
 
 import quant_paths
-from script_hit_memory_utils import classify_relation, filter_hits_by_window, load_script_hit_memory
+from script_hit_memory_utils import (
+    classify_relation,
+    filter_hits_by_window,
+    load_script_hit_memory,
+    normalize_date_column,
+)
 import pattern_packs
 
 
@@ -40,14 +45,13 @@ def _load_ultimate_performance() -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_csv(path)
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    elif "result_date" in df.columns:
-        df["date"] = pd.to_datetime(df["result_date"], errors="coerce")
-    else:
+    df, date_col = normalize_date_column(df)
+    if date_col is None or df.empty:
         return pd.DataFrame()
+    if "date" not in df.columns and date_col:
+        df["date"] = df[date_col]
     df = df.dropna(subset=["date"])
-    df["date"] = df["date"].dt.normalize()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
     df["slot"] = df.get("slot", "").astype(str).str.upper()
     return df
 
@@ -178,7 +182,23 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
             len(window_df),
         )
 
-    topn_flags = {n: f"hit_top{n}" for n in range(1, max_n + 1)}
+    col_map = {str(c).lower(): c for c in window_df.columns}
+
+    def _resolve_flag_col(n: int) -> Optional[str]:
+        candidates = [
+            f"hit_top{n}",
+            f"hit_top_{n}",
+            f"top{n}_hit",
+            f"hit_top{n:02d}",
+            f"hit_top_{n:02d}",
+        ]
+        for cand in candidates:
+            key = cand.lower()
+            if key in col_map:
+                return col_map[key]
+        return None
+
+    topn_flags = {n: _resolve_flag_col(n) for n in range(1, max_n + 1)}
 
     def _roi_for_subset(subset: pd.DataFrame, label: str) -> Dict[str, Dict[int, float]]:
         roi_map: Dict[int, float] = {}
@@ -200,6 +220,8 @@ def compute_topn_roi(window_days: int = 30, max_n: int = 10) -> Dict:
             except Exception:
                 near_mask = None
         for n, flag_col in topn_flags.items():
+            if not flag_col:
+                continue
             raw_flags = subset.get(flag_col, None)
             if raw_flags is None:
                 continue

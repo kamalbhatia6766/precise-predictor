@@ -47,6 +47,16 @@ SCRIPT_HIT_MEMORY_HEADERS: List[str] = [
     "note",
 ]
 
+DATE_COLUMN_CANDIDATES: Tuple[str, ...] = (
+    "predict_date",
+    "result_date",
+    "date",
+    "resultdate",
+    "predictdate",
+    "DATE",
+    "ResultDate",
+)
+
 
 def _resolve_base_dir(base_dir: Optional[Path] = None) -> Path:
     return Path(base_dir) if base_dir else quant_paths.get_project_root()
@@ -357,6 +367,7 @@ def load_script_hit_memory(base_dir: Optional[Path] = None) -> pd.DataFrame:
     df["is_near_miss"] = _to_bool(df.get("is_near_miss", False)) | df["HIT_TYPE"].isin(
         ["MIRROR", "NEIGHBOR", "CROSS_SLOT", "CROSS_DAY"]
     )
+    df, _ = normalize_date_column(df)
     return df
 
 
@@ -397,10 +408,34 @@ def append_script_hit_row(row: Dict[str, object], base_dir: Optional[Path] = Non
 
 
 def _choose_date_column(df: pd.DataFrame) -> Optional[str]:
-    for col in ("predict_date", "result_date", "date"):
-        if col in df.columns and not df[col].isna().all():
-            return col
+    if df is None or df.empty:
+        return None
+
+    col_map = {str(c).lower(): c for c in df.columns}
+    for candidate in DATE_COLUMN_CANDIDATES:
+        key = str(candidate).lower()
+        if key in col_map:
+            col_name = col_map[key]
+            series = df[col_name] if col_name in df.columns else None
+            if series is not None and not pd.isna(series).all():
+                return col_name
     return None
+
+
+def normalize_date_column(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Return a copy with the best date column normalised and NaT rows dropped."""
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=df.columns if df is not None else []), None
+
+    work_df = df.copy()
+    date_col = _choose_date_column(work_df)
+    if not date_col:
+        return pd.DataFrame(columns=work_df.columns), None
+
+    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce").dt.normalize()
+    work_df = work_df.dropna(subset=[date_col])
+    return work_df, date_col
 
 
 def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFrame, int]:
@@ -416,18 +451,12 @@ def filter_hits_by_window(df: pd.DataFrame, window_days: int) -> Tuple[pd.DataFr
     if df is None or df.empty:
         return pd.DataFrame(columns=df.columns if df is not None else []), 0
 
-    date_col = _choose_date_column(df)
-    if not date_col:
-        return pd.DataFrame(columns=df.columns), 0
-
-    work_df = df.copy()
-    work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce").dt.normalize()
-    work_df = work_df.dropna(subset=[date_col])
-    if work_df.empty:
-        return work_df, 0
+    work_df, date_col = normalize_date_column(df)
+    if work_df.empty or not date_col:
+        return pd.DataFrame(columns=df.columns if df is not None else []), 0
 
     window_end = work_df[date_col].max().normalize()
-    window_start = window_end - timedelta(days=window_days)
+    window_start = window_end - timedelta(days=window_days - 1)
     filtered = work_df[(work_df[date_col] >= window_start) & (work_df[date_col] <= window_end)]
 
     used_days = filtered[date_col].dt.date.nunique()
@@ -487,8 +516,8 @@ def load_script_weights(window_days: int = 30, base_dir: Optional[Path] = None) 
     df["slot"] = df.get("slot").apply(_normalise_slot)
     df["script_name"] = df.get("script_name").astype(str).str.upper()
 
-    date_col = _choose_date_column(df)
-    if date_col is None:
+    df, date_col = normalize_date_column(df)
+    if date_col is None or df.empty:
         return _neutral_weight_map()
 
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date

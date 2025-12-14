@@ -17,6 +17,7 @@ from script_hit_memory_utils import (
     classify_relation,
     filter_hits_by_window,
     load_script_hit_memory,
+    normalize_date_column,
 )
 
 SLOTS = ["FRBD", "GZBD", "GALI", "DSWR"]
@@ -39,10 +40,14 @@ def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, O
     if df.empty:
         return pd.DataFrame(), None
 
+    df, date_col = normalize_date_column(df)
+    if df.empty:
+        return pd.DataFrame(), None
+
+    date_col = date_col or "result_date"
+
     df = df.copy()
-    df["result_date"] = pd.to_datetime(df.get("result_date"), errors="coerce")
-    df = df.dropna(subset=["result_date"])
-    df["result_date"] = df["result_date"].dt.date
+    df[date_col] = pd.to_datetime(df.get(date_col), errors="coerce").dt.date
     df["slot"] = df.get("slot").apply(_normalise_slot)
     df["script_id"] = df.get("script_id").astype(str).str.strip().str.upper()
     df["HIT_TYPE"] = df.get("HIT_TYPE", "MISS").astype(str).str.upper()
@@ -51,7 +56,7 @@ def _prepare_memory_df(base_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, O
     df["is_near_hit"] = df.get("is_near_hit", False).astype(bool)
     df["_relation"] = df.apply(lambda r: classify_relation(r.get("predicted_number"), r.get("real_number")), axis=1)
     df = df.dropna(subset=["slot", "script_id"])
-    return df, "result_date"
+    return df, date_col
 
 
 def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) -> Tuple[pd.DataFrame, Dict[str, Any]]:
@@ -71,17 +76,22 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
         return pd.DataFrame(), empty_summary
 
     df = df.copy()
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.normalize()
     df = df.dropna(subset=[date_col])
     if df.empty:
         return pd.DataFrame(), empty_summary
 
-    latest_date = df[date_col].max()
-    earliest_date = df[date_col].min()
-    total_available_days = int(df[date_col].nunique())
+    window_df, effective_days = filter_hits_by_window(df, window_days)
+    if window_df.empty:
+        return pd.DataFrame(), empty_summary
+
+    window_df[date_col] = pd.to_datetime(window_df[date_col], errors="coerce").dt.date
+    latest_date = window_df[date_col].max()
+    earliest_date = df[date_col].min().date() if hasattr(df[date_col].min(), "date") else df[date_col].min()
+    total_available_days = int(df[date_col].dt.date.nunique())
     window_start = latest_date - timedelta(days=window_days - 1)
 
-    filtered = df[(df[date_col] >= window_start) & (df[date_col] <= latest_date)].copy()
+    filtered = window_df.copy()
     if filtered.empty:
         return pd.DataFrame(), empty_summary
 
@@ -91,11 +101,11 @@ def _window_memory(df: pd.DataFrame, date_col: Optional[str], window_days: int) 
 
     summary = {
         "requested_window_days": int(window_days),
-        "effective_window_days": int(available_days),
-        "available_days": available_days,
+        "effective_window_days": int(effective_days),
+        "available_days": int(effective_days),
         "available_days_total": total_available_days,
         "window_end": latest_date,
-        "window_start": window_start,
+        "window_start": filtered[date_col].min(),
         "latest_date": latest_date,
         "earliest_date": earliest_date,
         "window_earliest_date": filtered[date_col].min(),
