@@ -186,13 +186,17 @@ def load_learning_scores(base_dir, window_days=LEARN_WINDOW_DAYS):
 class UltimatePredictionEngine:
     """
     ULTIMATE PREDICTION ENGINE - WITH SPEED MODE
-    ✓ Full mode: All scripts (24min) 
+    ✓ Full mode: All scripts (24min)
     ✓ Fast mode: Critical scripts only (10-12min)
     """
-    
-    def __init__(self, speed_mode='full'):
+
+    def __init__(self, speed_mode='full', mode: Optional[str] = None):
         self.slot_names = {1: "FRBD", 2: "GZBD", 3: "GALI", 4: "DSWR"}
         self.speed_mode = speed_mode  # 'full' or 'fast'
+        # Target mode for predictions: None (default/both), 'intraday', or 'nextday'
+        if mode == "tomorrow":
+            mode = "nextday"
+        self.target_mode = mode
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.script_weights = {}
         self.slot_script_weights = None
@@ -986,15 +990,19 @@ class UltimatePredictionEngine:
     def generate_predictions(self, df):
         """Generate complete predictions"""
         latest_date, filled_slots, empty_slots = self.detect_status(df)
-        
+
         print(f"\n📅 Latest Date: {latest_date.strftime('%Y-%m-%d')}")
         print(f"✅ Filled: {[self.slot_names[s] for s in filled_slots]}")
         print(f"❌ Empty: {[self.slot_names[s] for s in empty_slots]}")
-        
+
+        target_mode = (self.target_mode or "both").lower()
+        include_today = target_mode in ("intraday", "both")
+        include_nextday = target_mode in ("nextday", "both")
+
         predictions = []
-        
+
         # TODAY'S EMPTY SLOTS (skip in FAST mode)
-        if self.speed_mode != 'fast' and empty_slots:
+        if include_today and self.speed_mode != 'fast' and empty_slots:
             print(f"\n🎯 Predicting TODAY's empty slots...")
             date_str = latest_date.strftime('%Y-%m-%d')
 
@@ -1025,35 +1033,51 @@ class UltimatePredictionEngine:
                         'final_score': score_details.get(num, {}).get('final_score'),
                         'opposites': ', '.join([f"{n:02d}" for n in opposites]) if rank == 1 else ''
                     })
-        elif self.speed_mode == 'fast' and empty_slots:
+        elif include_today and self.speed_mode == 'fast' and empty_slots:
             print("\n⚡ FAST MODE: Skipping today's empty-slot predictions")
-        
-        # TOMORROW'S ALL SLOTS
-        tomorrow = latest_date + timedelta(days=1)
-        date_str = tomorrow.strftime('%Y-%m-%d')
-        print(f"\n🎯 Predicting TOMORROW ({date_str})...")
-        
-        # Use the main prediction function
-        tomorrow_preds = self.predict_for_target_date(df, tomorrow)
-        
-        for slot_name, pred_numbers in tomorrow_preds.items():
-            opposites = [self.get_opposite(n) for n in pred_numbers[:3]]
-            slot_details = self.latest_score_details.get(slot_name, {}) if hasattr(self, 'latest_score_details') else {}
 
-            for rank, num in enumerate(pred_numbers, 1):
-                details = slot_details.get(num, {})
-                predictions.append({
-                    'date': date_str,
-                    'slot': slot_name,
-                    'number': f"{num:02d}",
-                    'rank': rank,
-                    'type': 'TOMORROW',
-                    'base_score': details.get('base_score'),
-                    'learning_score': details.get('learning_score'),
-                    'final_score': details.get('final_score'),
-                    'opposites': ', '.join([f"{n:02d}" for n in opposites]) if rank == 1 else ''
-                })
-        
+        # TOMORROW'S ALL SLOTS
+        if include_nextday:
+            tomorrow = latest_date + timedelta(days=1)
+            date_str = tomorrow.strftime('%Y-%m-%d')
+            print(f"\n🎯 Predicting TOMORROW ({date_str})...")
+
+            # Use the main prediction function
+            tomorrow_preds = self.predict_for_target_date(df, tomorrow)
+
+            for slot_name, pred_numbers in tomorrow_preds.items():
+                opposites = [self.get_opposite(n) for n in pred_numbers[:3]]
+                slot_details = self.latest_score_details.get(slot_name, {}) if hasattr(self, 'latest_score_details') else {}
+
+                for rank, num in enumerate(pred_numbers, 1):
+                    details = slot_details.get(num, {})
+                    predictions.append({
+                        'date': date_str,
+                        'slot': slot_name,
+                        'number': f"{num:02d}",
+                        'rank': rank,
+                        'type': 'TOMORROW',
+                        'base_score': details.get('base_score'),
+                        'learning_score': details.get('learning_score'),
+                        'final_score': details.get('final_score'),
+                        'opposites': ', '.join([f"{n:02d}" for n in opposites]) if rank == 1 else ''
+                    })
+
+        if not predictions:
+            return pd.DataFrame(
+                columns=[
+                    'date',
+                    'slot',
+                    'number',
+                    'rank',
+                    'type',
+                    'base_score',
+                    'learning_score',
+                    'final_score',
+                    'opposites',
+                ]
+            )
+
         return pd.DataFrame(predictions)
     
     def create_outputs(self, predictions_df, df, backtest_results):
@@ -1085,7 +1109,23 @@ class UltimatePredictionEngine:
                         date_data[f'{slot}_OPP'] = opp
             wide_data.append(date_data)
         
-        wide_df = pd.DataFrame(wide_data)
+        if wide_data:
+            wide_df = pd.DataFrame(wide_data)
+        else:
+            wide_df = pd.DataFrame(
+                columns=[
+                    'date',
+                    'type',
+                    'FRBD',
+                    'GZBD',
+                    'GALI',
+                    'DSWR',
+                    'FRBD_OPP',
+                    'GZBD_OPP',
+                    'GALI_OPP',
+                    'DSWR_OPP',
+                ]
+            )
         
         # Define file paths in the dedicated SCR9 folder
         pred_file = os.path.join(scr9_pred_dir, f'ultimate_predictions_{timestamp}.xlsx')
@@ -1249,9 +1289,14 @@ if __name__ == "__main__":
         action='store_true',
         help='Show detailed BOOST logs during backtest',
     )
+    parser.add_argument(
+        '--mode',
+        choices=['intraday', 'nextday', 'tomorrow'],
+        help='Prediction target: intraday (today open slots) or nextday/tomorrow',
+    )
 
     args = parser.parse_args()
     VERBOSE_BACKTEST = args.verbose_backtest
 
-    predictor = UltimatePredictionEngine(speed_mode=args.speed_mode)
+    predictor = UltimatePredictionEngine(speed_mode=args.speed_mode, mode=args.mode)
     predictor.run('number prediction learn.xlsx')
