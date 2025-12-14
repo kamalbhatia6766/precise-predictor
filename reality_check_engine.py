@@ -497,12 +497,12 @@ class RealityCheckEngine:
         print("🔍 REALITY CHECK ENGINE - Strategy Performance Analyzer")
         print("=" * 60)
         print(f"Analyzing last {days} days of performance data...")
-        
+
         # Step 1: Load P&L history
         pnl_df = self.load_pnl_history(days)
         if pnl_df is None or pnl_df.empty:
-            print("❌ No P&L data available for analysis")
-            return False
+            print("⚠️ No P&L data available for analysis; skipping reality check outputs")
+            return True
         
         # Step 2: Load dynamic stakes
         dynamic_total_stake = self.load_dynamic_stakes()

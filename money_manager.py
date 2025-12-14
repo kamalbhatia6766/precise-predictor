@@ -343,10 +343,30 @@ class MoneyManager:
         
         # Load data
         data = self.load_financial_data()
-        
+
         if 'pnl' not in data:
-            print("❌ No financial data found")
-            return False
+            print("⚠️ No financial data found; emitting neutral money plan")
+            risk_mode = data.get('strategy', {}).get('risk_mode', 'DEFENSIVE')
+            daily_caps = self.get_daily_caps({'risk_mode': risk_mode})
+            bankroll_rules = {
+                'current_bankroll': self.reference_bankroll,
+                'reference_bankroll': self.reference_bankroll,
+                'realized_bankroll': self.reference_bankroll,
+                'realized_pnl': 0,
+                'recommended_daily_risk': min(daily_caps['total'], self.reference_bankroll * 0.1),
+                'max_single_loss': daily_caps['single'],
+                'sharpe_ratio': 0,
+                'max_drawdown': 0,
+                'risk_adjustment': 'CONSERVATIVE',
+                'daily_caps': daily_caps,
+                'risk_mode': risk_mode,
+                'bankroll_mode': 'STATIC_REFERENCE',
+            }
+            kelly_stakes = {}
+            recommendations = self.generate_money_recommendations(kelly_stakes, bankroll_rules)
+            self.print_console_report(kelly_stakes, bankroll_rules, recommendations)
+            self.save_money_management_plan(kelly_stakes, bankroll_rules, recommendations)
+            return True
             
         # Calculate money management
         kelly_stakes = self.calculate_kelly_criterion(data)

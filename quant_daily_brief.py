@@ -1150,7 +1150,13 @@ def print_pattern_section(patterns: PatternSummary) -> None:
     if patterns.s40:
         hr = patterns.s40.get("hit_rate", 0.0) or 0.0
         hits = patterns.s40.get("hits")
-        print(f"   S40 family       : {hr:.2f}% per-row, {hits} tagged hits")
+        total_rows = patterns.total_hits or 0
+        membership_hits = int(round((hr / 100.0) * total_rows)) if total_rows else int(hits or 0)
+        tagged_base = patterns.s40.get("exact_total") or patterns.s40.get("total_hits") or total_rows or hits or 0
+        print(
+            f"   S40 membership rate across all rows : {membership_hits}/{total_rows or 'n/a'} ({hr:.2f}%)"
+        )
+        print(f"   S40 tagged within exact hits        : {int(hits or 0)}/{int(tagged_base or 0)}")
         print(
             f"   S40 daily cover  : {patterns.s40.get('daily_rate', 0.0):.1f}% of days "
             f"({patterns.s40.get('daily_days', 0)}/{patterns.s40.get('total_days', 0)}) with ≥1 S40 result"
@@ -1158,7 +1164,12 @@ def print_pattern_section(patterns: PatternSummary) -> None:
     if patterns.fam_164950:
         hr = patterns.fam_164950.get("hit_rate", 0.0) or 0.0
         hits = patterns.fam_164950.get("hits")
-        print(f"   164950 family    : {hr:.2f}% per-row, {hits} tagged hits")
+        fam_membership = int(round((hr / 100.0) * (patterns.total_hits or 0))) if patterns.total_hits else int(hits or 0)
+        tagged_base = patterns.fam_164950.get("exact_total") or patterns.fam_164950.get("total_hits") or patterns.total_hits or hits or 0
+        print(
+            f"   164950 membership across all rows   : {fam_membership}/{patterns.total_hits or 'n/a'} ({hr:.2f}%)"
+        )
+        print(f"   164950 tagged within exact hits     : {int(hits or 0)}/{int(tagged_base or 0)}")
         print(
             f"   164950 daily     : {patterns.fam_164950.get('daily_rate', 0.0):.1f}% of days "
             f"({patterns.fam_164950.get('daily_days', 0)}/{patterns.fam_164950.get('total_days', 0)}) with ≥1 164950 result"
@@ -1311,7 +1322,7 @@ def print_pattern_family_snapshot() -> None:
             fam = families.get("FAMILY_164950")
         if fam is None and family_key == "FAMILY_164950":
             fam = families.get("PACK_164950")
-        return fam or {}
+        return dict(fam or {})
 
     for fam in ["S40", "PACK_164950"]:
         per_slot: Dict[str, dict] = {}

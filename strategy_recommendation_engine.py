@@ -270,6 +270,7 @@ class StrategyRecommendationEngine:
         # Step 1: Load pattern intelligence
         pattern_data = self.load_pattern_intelligence()
         if pattern_data is None:
+            print("⚠️ Pattern intelligence missing; emitting safe default recommendation")
             strategy_recommendation = self.build_recommendation_payload(
                 strategy="STRAT_S40_BOOST",
                 confidence="LOW",
@@ -282,7 +283,7 @@ class StrategyRecommendationEngine:
             )
             self.save_strategy_recommendation(strategy_recommendation)
             self.print_console_summary(strategy_recommendation)
-            return False
+            return True
 
         # Step 2: Load reality performance
         performance_data = self.load_reality_performance()
