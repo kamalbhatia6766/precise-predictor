@@ -201,7 +201,6 @@ def get_metrics_table(
         blind_misses = max(total_predictions - exact_hits - near_hits, 0)
         blind_miss_rate = blind_misses / total_predictions if total_predictions else 0.0
         score = (120.0 * hit_rate_exact + 40.0 * near_miss_rate - 30.0 * blind_miss_rate)
-        score = (score + 0.20) * 100.0 if total_predictions else 0.0
         row = {
             "script_id": "ALL",
             "total_predictions": int(total_predictions),
