@@ -94,6 +94,23 @@ class PatternIntelligenceEnhanced:
         hit_core.rebuild_hit_memory(window_days=self.window_days)
         df, base_summary = compute_pattern_metrics(window_days=self.window_days, base_dir=self.base_dir)
         df, date_col = normalize_date_column(df)
+
+        df = df.copy()
+        hit_flag_col = df.get("hit_flag") if "hit_flag" in df.columns else df.get("HIT_FLAG")
+        if hit_flag_col is not None:
+            try:
+                df["hit_flag"] = pd.to_numeric(hit_flag_col, errors="coerce").fillna(0).astype(int)
+            except Exception:
+                df["hit_flag"] = 0
+        hit_type_series = df.get("hit_type") if "hit_type" in df.columns else df.get("HIT_TYPE")
+        if hit_type_series is not None:
+            df["_hit_type_norm"] = hit_type_series.astype(str).str.upper()
+        else:
+            df["_hit_type_norm"] = ""
+        exact_series = pd.to_numeric(df.get("is_exact_hit", False), errors="coerce")
+        df["is_exact_hit"] = exact_series.fillna(0).astype(int)
+        df.loc[df["_hit_type_norm"] == "DIRECT", "is_exact_hit"] = 1
+
         if date_col:
             try:
                 date_series = pd.to_datetime(df[date_col], errors="coerce")
@@ -226,9 +243,16 @@ class PatternIntelligenceEnhanced:
                     return []
 
             def _is_hit(row: pd.Series) -> bool:
+                flag_val = row.get("hit_flag") if "hit_flag" in row else row.get("HIT_FLAG")
+                try:
+                    if flag_val is not None and int(flag_val) == 1:
+                        return True
+                except Exception:
+                    pass
+
                 hit_type = str(row.get("hit_type") or row.get("HIT_TYPE") or "").strip().upper()
                 if hit_type:
-                    return hit_type == "HIT"
+                    return hit_type in {"HIT", "DIRECT"}
                 return bool(row.get("is_exact_hit"))
 
             work_df["_families"] = work_df.get("real_number").apply(_families_for_number)

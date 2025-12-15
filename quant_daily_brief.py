@@ -92,6 +92,7 @@ class ExecutionReadiness:
 @dataclass
 class PatternSummary:
     total_hits: Optional[int]
+    exact_hits_total: Optional[int]
     s40: Optional[Dict[str, float]]
     fam_164950: Optional[Dict[str, float]]
     extra_family: Optional[Dict[str, object]]
@@ -375,10 +376,15 @@ def load_plan_for_mode(mode: str, bet_date: date, target_date: date, dry_run: bo
     if plan or dry_run:
         return plan
 
+    print("   Plan not found for target date. To generate, run: py -3.12 precise_bet_engine.py --target tomorrow")
+
     # Fallback: attempt to regenerate tomorrow plan using latest SCR9 predictions.
     run_script("deepseek_scr9.py", ["--speed-mode", "fast"], dry_run=dry_run)
     run_script("precise_bet_engine.py", ["--target", "tomorrow"], dry_run=dry_run)
-    return load_plan_from_excel(master_path)
+    refreshed = load_plan_from_excel(master_path)
+    if not refreshed:
+        print("   Plan still missing after regeneration attempt. Re-run: py -3.12 precise_bet_engine.py --target tomorrow")
+    return refreshed
 
 
 def _find_column(columns: Iterable[str], keywords: List[str], require_all: bool = False) -> Optional[str]:
@@ -820,7 +826,13 @@ def load_pattern_summary_from_intel(window_days: int = 90) -> PatternSummary:
         rate = _normalise_rate(rate_raw)
         by_slot = fam_stats.get("by_slot", {}) if isinstance(fam_stats, dict) else {}
         best_slot, weak_slot = _best_weak_from_by_slot(by_slot)
-        hits_total = int(fam_stats.get("hits_total") or fam_stats.get("exact_hits") or 0)
+        hits_total = int(
+            fam_stats.get("hits_total")
+            or fam_stats.get("hits")
+            or fam_stats.get("rows")
+            or fam_stats.get("exact_hits")
+            or 0
+        )
         return {
             "hits": hits_total,
             "hits_total": hits_total,
@@ -847,7 +859,14 @@ def load_pattern_summary_from_intel(window_days: int = 90) -> PatternSummary:
     extra_family = _extract_extra_family(summary_json)
 
     return PatternSummary(
-        total_hits=int(summary_json.get("rows", 0) or 0),
+        total_hits=int(summary_json.get("rows", 0) or summary_json.get("total_rows", 0) or 0),
+        exact_hits_total=int(
+            summary_json.get("exact_hits_total")
+            or summary_json.get("exact_hits")
+            or summary_json.get("exact_total")
+            or summary_json.get("total_exact_hits")
+            or 0
+        ),
         s40=s40_block,
         fam_164950=fam_block,
         extra_family=extra_family,
@@ -1050,7 +1069,7 @@ def print_plan_section(
 ) -> None:
     print("1️⃣ PREDICTION SNAPSHOT")
     base_multiplier = execution.multiplier if execution.multiplier is not None else 1.0
-    skip_today = str(execution.mode).upper() == "SKIP_TODAY" if execution.mode else False
+    skip_today = (execution.mode and str(execution.mode).upper() == "SKIP_TODAY") or (plan is None and final_plan is None)
     effective_multiplier = 0.0 if skip_today or base_multiplier == 0 else base_multiplier
     show_planned = effective_multiplier != 1.0
 
@@ -1162,6 +1181,7 @@ def print_pnl_section(pnl: PnLSnapshot) -> None:
 
 def print_pattern_section(patterns: PatternSummary) -> None:
     print("\n3️⃣ PATTERN & LEARNING (pattern window baseline)")
+    overall_exact_hits = patterns.exact_hits_total or patterns.total_hits or 0
     if patterns.total_hits is not None:
         print(f"   Hits analyzed    : {patterns.total_hits}")
     if patterns.s40:
@@ -1169,13 +1189,7 @@ def print_pattern_section(patterns: PatternSummary) -> None:
         hits = patterns.s40.get("hits_total") or patterns.s40.get("hits")
         total_rows = patterns.total_hits or 0
         membership_hits = int(hits or 0)
-        tagged_base = (
-            patterns.s40.get("exact_total")
-            or patterns.s40.get("total_hits")
-            or patterns.s40.get("hits_total")
-            or hits
-            or 0
-        )
+        tagged_base = overall_exact_hits
         print(
             f"   S40 membership rate across all rows : {membership_hits}/{total_rows or 'n/a'} ({hr:.2f}%)"
         )
@@ -1188,13 +1202,7 @@ def print_pattern_section(patterns: PatternSummary) -> None:
         hr = patterns.fam_164950.get("hit_rate", 0.0) or 0.0
         hits = patterns.fam_164950.get("hits_total") or patterns.fam_164950.get("hits")
         fam_membership = int(hits or 0)
-        tagged_base = (
-            patterns.fam_164950.get("exact_total")
-            or patterns.fam_164950.get("total_hits")
-            or patterns.fam_164950.get("hits_total")
-            or hits
-            or 0
-        )
+        tagged_base = overall_exact_hits
         print(
             f"   164950 membership across all rows   : {fam_membership}/{patterns.total_hits or 'n/a'} ({hr:.2f}%)"
         )
@@ -1682,13 +1690,14 @@ def print_header(bet_date: date, target_date: date, mode: str, strategy: Strateg
     if execution.mode:
         mult = execution.multiplier if execution.multiplier is not None else 1.0
         print(f"Execution mode    : {execution.mode} ({mult}x)")
-    if execution.base_stake or execution.recommended_stake or (plan and plan.total_stake):
-        base = execution.base_stake or (plan.total_stake if plan else None)
-        if base is not None:
-            line = f"Final plan stake  : {currency(base)}"
-            if execution.recommended_stake:
-                line += f" → Recommended live stake: {currency(execution.recommended_stake)}"
-            print(line)
+    planned_total = plan.total_stake if plan else None
+    if planned_total is not None:
+        line = f"Final plan stake  : {currency(planned_total)}"
+        if execution.recommended_stake:
+            line += f" → Recommended live stake: {currency(execution.recommended_stake)}"
+        print(line)
+    else:
+        print("Final plan stake  : N/A")
 
 
 def build_brief(mode: str, bet_date: date, target_date: date, dry_run: bool = False) -> None:
