@@ -400,7 +400,23 @@ def overwrite_script_hit_memory(df: pd.DataFrame, base_dir: Optional[Path] = Non
     xlsx_path = get_script_hit_memory_xlsx_path(base_dir=base_dir)
 
     if df is None or df.empty:
-        raise ValueError("Refusing to overwrite script hit memory with an empty dataframe")
+        exists = xlsx_path.exists()
+        size = xlsx_path.stat().st_size if exists else 0
+        if exists and size > 0:
+            raise ValueError("Refusing to overwrite script hit memory with an empty dataframe")
+
+        print(
+            "[HitMemory] Empty hit dataframe in bootstrap mode – keeping canonical file as-is. "
+            f"path={xlsx_path}, exists={exists}, size={size} bytes"
+        )
+        if not exists or size == 0:
+            try:
+                empty_df = pd.DataFrame(columns=SCRIPT_HIT_MEMORY_HEADERS)
+                empty_df.to_csv(csv_path, index=False)
+                empty_df.to_excel(xlsx_path, index=False)
+            except Exception as exc:
+                print(f"[HitMemory] Warning: could not create bootstrap hit-memory placeholder: {exc}")
+        return xlsx_path
 
     df = df.reset_index(drop=True)
     mandatory_dates = {"result_date", "date", "DATE"}
