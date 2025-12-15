@@ -677,14 +677,20 @@ def load_pnl_snapshot() -> PnLSnapshot:
 
 def _empty_pattern_summary(notes: Optional[List[str]] = None) -> PatternSummary:
     notes = notes or []
+    per_slot: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for slot in SLOTS:
+        per_slot[slot] = {"S40": {}, "PACK_164950": {}}
+
     return PatternSummary(
         total_hits=0,
+        exact_hits_total=0,
         s40={
             "hits": 0,
             "hit_rate": 0.0,
             "daily_rate": 0.0,
             "daily_days": 0,
             "total_days": 0,
+            "hits_total": 0,
         },
         fam_164950={
             "hits": 0,
@@ -692,10 +698,11 @@ def _empty_pattern_summary(notes: Optional[List[str]] = None) -> PatternSummary:
             "daily_rate": 0.0,
             "daily_days": 0,
             "total_days": 0,
+            "hits_total": 0,
         },
         extra_family=None,
         notes=notes,
-        per_slot={},
+        per_slot=per_slot,
     )
 
 
@@ -799,8 +806,15 @@ def load_pattern_summary_from_intel(window_days: int = 90) -> PatternSummary:
     """Build pattern summary directly from saved PatternIntel JSON outputs."""
 
     summary_json = quant_learning_core.load_pattern_summary_json(window_days=window_days)
-    if not summary_json:
+    if not summary_json or not isinstance(summary_json, dict):
         return _empty_pattern_summary(["Pattern summary unavailable (missing file)"])
+
+    try:
+        total_rows = int(summary_json.get("rows", 0) or summary_json.get("total_rows", 0) or 0)
+    except Exception:
+        total_rows = 0
+    if total_rows == 0:
+        return _empty_pattern_summary(["Pattern summary unavailable (no pattern data yet)"])
 
     patterns = summary_json.get("patterns", {})
     daily_cover = summary_json.get("daily_cover", {})

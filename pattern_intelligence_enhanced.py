@@ -91,7 +91,16 @@ class PatternIntelligenceEnhanced:
             )
 
     def run(self) -> bool:
-        hit_core.rebuild_hit_memory(window_days=self.window_days)
+        try:
+            hit_core.rebuild_hit_memory(window_days=self.window_days)
+        except ValueError as exc:
+            if "empty dataframe" in str(exc):
+                warning = "[PatternIntel] Hit memory rebuild skipped: bootstrap empty-data mode."
+                if self.logger:
+                    self.logger.warning(warning)
+                print(warning)
+            else:
+                raise
         df, base_summary = compute_pattern_metrics(window_days=self.window_days, base_dir=self.base_dir)
         df, date_col = normalize_date_column(df)
 
